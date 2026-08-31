@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "slottd",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "slottd-db",
+      "database_id": "local-d1-placeholder",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "slottd-media"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "*",
+    "ENABLE_PUBLIC_REGISTRATION": "false"
+  }
+}

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="iconWarm1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD043" />
+      <stop offset="50%" stop-color="#FF8A00" />
+      <stop offset="100%" stop-color="#E53E3E" />
+    </linearGradient>
+    <linearGradient id="iconWarm2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFE082" />
+      <stop offset="100%" stop-color="#FF6D00" />
+    </linearGradient>
+    <linearGradient id="iconRail" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FF9E0B" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+  </defs>
+
+  <!-- Horizontal Slot Guide Rail -->
+  <rect x="64" y="236" width="384" height="40" rx="8" fill="#1e293b" stroke="url(#iconRail)" stroke-width="8" />
+  <rect x="80" y="250" width="352" height="12" rx="3" fill="#0f172a" />
+
+  <!-- Main Interlocking 'D' Segments -->
+  <!-- Left Spine -->
+  <path d="M 160 120 H 216 V 392 H 160 Z" fill="url(#iconWarm1)" rx="4" />
+  <!-- Top Arc -->
+  <path d="M 224 120 H 304 C 364 120 408 164 408 224 H 344 C 344 190 320 176 296 176 H 224 Z" fill="url(#iconWarm2)" />
+  <!-- Bottom Arc -->
+  <path d="M 224 336 H 296 C 320 336 344 322 344 288 H 408 C 408 348 364 392 304 392 H 224 Z" fill="url(#iconWarm1)" />
+
+  <!-- Center Sliding Keyway Block -->
+  <rect x="200" y="244" width="112" height="24" rx="4" fill="#FFE082" stroke="#FF8A00" stroke-width="2" />
+</svg>
