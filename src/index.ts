@@ -7,6 +7,7 @@ import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGi
 import { createDb } from './db/client.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
+import { requireWriteAuth, requireStudioAuth } from './auth/guard.js';
 import type { Env } from './types.js';
 
 export * from './types.js';
@@ -15,6 +16,7 @@ export * from './packs/blog.js';
 export * from './api/views.js';
 export * from './db/client.js';
 export * from './sync/git-sync.js';
+export * from './auth/guard.js';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -73,10 +75,11 @@ app.get('/media/:key', async (c) => {
 });
 
 // 5. Micro-Studio Admin UI (SlotWire deep-linkable)
+app.use('/admin/*', requireStudioAuth);
 app.route('/admin', adminRouter);
 
 // 6. Bi-Directional Git Sync API
-app.post('/api/sync/hydrate', async (c) => {
+app.post('/api/sync/hydrate', requireWriteAuth, async (c) => {
   const body = await c.req.json();
   const db = createDb(c.env.DB);
   const items = Array.isArray(body) ? body : body.items || [];
@@ -92,7 +95,7 @@ app.get('/api/sync/export', async (c) => {
 });
 
 // 7. Git Release & Promotion Trigger
-app.post('/api/release/publish', async (c) => {
+app.post('/api/release/publish', requireWriteAuth, async (c) => {
   const env = c.env;
   if (!env.GITHUB_TOKEN) {
     return c.json({ error: 'GITHUB_TOKEN secret not configured in Cloudflare Worker' }, 400);

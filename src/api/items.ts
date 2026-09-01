@@ -3,9 +3,25 @@ import { sql } from 'kysely';
 import { createDb } from '../db/client.js';
 import { compileDirectusQuery, parseQueryParams } from './query-compiler.js';
 import { syncCollectionView } from './views.js';
+import { requireWriteAuth } from '../auth/guard.js';
 import type { Env } from '../types.js';
 
 export const itemsRouter = new Hono<{ Bindings: Env }>();
+
+// Guard all mutating methods (POST, PATCH, DELETE)
+itemsRouter.use('/:collection', async (c, next) => {
+  if (['POST', 'PATCH', 'DELETE'].includes(c.req.method)) {
+    return requireWriteAuth(c, next);
+  }
+  return next();
+});
+
+itemsRouter.use('/:collection/:id', async (c, next) => {
+  if (['POST', 'PATCH', 'DELETE'].includes(c.req.method)) {
+    return requireWriteAuth(c, next);
+  }
+  return next();
+});
 
 // 1. Query items in collection (Directus AST Compatible)
 itemsRouter.get('/:collection', async (c) => {

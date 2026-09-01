@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/client.js';
+import { requireWriteAuth } from '../auth/guard.js';
 import type { Env } from '../types.js';
 
 export const filesRouter = new Hono<{ Bindings: Env }>();
@@ -24,7 +25,7 @@ function sanitizeFilename(originalName: string): { base: string; ext: string; ke
 }
 
 // 1. Upload File (Directus compatible POST /files with descriptive R2 key preservation)
-filesRouter.post('/', async (c) => {
+filesRouter.post('/', requireWriteAuth, async (c) => {
   const formData = await c.req.formData();
   const file = formData.get('file') as File | null;
 

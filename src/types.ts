@@ -1,8 +1,11 @@
 export interface Env {
   DB: D1Database;
   MEDIA: R2Bucket;
+  ENVIRONMENT?: string;
   ALLOWED_ORIGINS?: string;
+  ADMIN_API_KEY?: string;
   ADMIN_TOKEN?: string;
+  PREVIEW_SECRET?: string;
   GITHUB_TOKEN?: string;
   PRODUCTION_DEPLOY_HOOK_URL?: string;
   STAGING_DEPLOY_HOOK_URL?: string;

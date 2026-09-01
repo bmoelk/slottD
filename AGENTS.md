@@ -31,3 +31,18 @@ This file defines coding standards, repository policies, and architectural guard
      - `mime_type`: Content-Type
      - `size`: Byte count
    - Directus and SlotWire API consumers can query or request files by **either UUID or descriptive key** (`GET /files/:idOrKey` or `GET /assets/:idOrKey`). SlottD transparently resolves the UUID to the descriptive R2 key and streams the media.
+
+---
+
+## ⚡ Lean JS & Zero-Build Architecture Directive (SlottD Studio UI)
+
+1. **Zero-Build & Lean Frontend**:
+   - The SlottD Studio UI MUST remain lightweight, blazing fast, and dependency-lean.
+   - **NO heavy client frameworks**: Do NOT introduce React, Vue, Angular, Svelte client-side runtimes, or hydration bundles into SlottD.
+   - **NO frontend bundler pipelines**: The UI is server-rendered on-demand via `hono/html` directly inside the Cloudflare Worker isolate.
+2. **Vanilla, Web Components & Micro-Libraries**:
+   - Prefer plain vanilla JavaScript and native HTML5/DOM APIs.
+   - Native Web Components, custom elements, and lightweight libraries (like **HTMX** or **Alpine.js**) are welcome when progressive enhancement is needed.
+3. **Graceful Fallbacks & Resilience**:
+   - Third-party CDN widgets (e.g. rich text / markdown editors) MUST have robust error handling and immediate graceful fallbacks to standard semantic HTML elements (e.g. standard `<textarea>`) so the UI never breaks or renders blank voids if a CDN fails or is blocked.
+
