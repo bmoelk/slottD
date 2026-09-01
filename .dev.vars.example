@@ -1,0 +1,9 @@
+# .dev.vars (Git-Ignored Local Development Secrets)
+# Copy this file to .dev.vars and fill in values for local testing:
+# cp .dev.vars.example .dev.vars
+
+# Optional JWT secret for admin auth
+JWT_SECRET="local-dev-jwt-secret-slottd-2026"
+
+# Optional SlotWire preview secret
+PREVIEW_SECRET="brainendeavor-preview-secret-2026"

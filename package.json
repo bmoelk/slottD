@@ -11,8 +11,10 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy -c wrangler.overrides.toml",
+    "deploy:overrides": "wrangler deploy -c wrangler.overrides.toml",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
-    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote -c wrangler.overrides.toml",
     "test": "vitest run",
     "build": "tsc"
   },

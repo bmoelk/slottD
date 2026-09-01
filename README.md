@@ -1,7 +1,10 @@
-# SlottD (Pronounced *"Slotted"*)
+<div align="center">
+  <img src="assets/logo.svg" width="64" height="64" alt="SlottD Logo" />
+  <h1>SlottD (*"Slotted"*)</h1>
+  <p><strong>The ultra-lightweight, edge-native micro-CMS built for Cloudflare Workers, D1, and R2 — designed to slot directly into Astro and SlotWire.</strong></p>
+</div>
 
-> **The ultra-lightweight, edge-native micro-CMS built for Cloudflare Workers, D1, and R2 — designed to slot directly into Astro and SlotWire.**
-
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Cloudflare D1](https://img.shields.io/badge/Cloudflare-D1_SQLite-F38020?logo=sqlite&logoColor=white)](https://developers.cloudflare.com/d1/)
 [![Astro](https://img.shields.io/badge/Astro-Content_Layer-BC52EE?logo=astro&logoColor=white)](https://astro.build/)

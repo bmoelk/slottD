@@ -2,9 +2,15 @@
 node_modules/
 dist/
 
-# Cloudflare Wrangler
+# Cloudflare Wrangler & Secrets
 .wrangler/
 .dev.vars
+wrangler.overrides.toml
+*.overrides.toml
+wrangler.local.toml
+*.local.toml
+.env*
+*.log
 
 # Testing & Coverage
 coverage/
