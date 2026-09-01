@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Ultra-lightweight edge-native micro-CMS for Cloudflare Workers, D1, and R2 — designed to slot directly into Astro and SlotWire.",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",

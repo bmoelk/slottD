@@ -9,13 +9,29 @@ export const adminRouter = new Hono<{ Bindings: Env }>();
 // 1. Dashboard: Collections List
 adminRouter.get('/', async (c) => {
   const db = createDb(c.env.DB);
-  const collectionsResult = await db
-    .selectFrom('documents')
-    .select('collection')
-    .distinct()
-    .execute();
+  let collectionsList: { name: string; display_name?: string; icon?: string | null; pack_name?: string; pack_author?: string | null }[] = [];
 
-  const collections = collectionsResult.map((r) => r.collection);
+  try {
+    const metas = await db.selectFrom('collections').selectAll().execute();
+    if (metas.length > 0) {
+      collectionsList = metas.map((m) => ({
+        name: m.name,
+        display_name: m.display_name,
+        icon: m.icon,
+        pack_name: m.pack_name,
+        pack_author: m.pack_author,
+      }));
+    }
+  } catch {}
+
+  if (collectionsList.length === 0) {
+    const collectionsResult = await db
+      .selectFrom('documents')
+      .select('collection')
+      .distinct()
+      .execute();
+    collectionsList = collectionsResult.map((r) => ({ name: r.collection, display_name: r.collection }));
+  }
 
   return c.html(renderLayout('SlottD Studio', html`
     <div class="header">
@@ -33,18 +49,24 @@ adminRouter.get('/', async (c) => {
     </div>
 
     <div class="card">
-      <h2>Collections</h2>
-      <p class="subtitle">Select a collection to manage records or create a new model.</p>
+      <h2>Collections & Model Packs</h2>
+      <p class="subtitle">Select a collection to manage records, preview drafts, or release content.</p>
       
       <div class="collection-grid">
-        ${collections.length === 0 ? html`
+        ${collectionsList.length === 0 ? html`
           <div class="empty-state">
             <p>No collections found yet.</p>
-            <p>Create your first collection by running a migration or creating a record.</p>
+            <p>Register collections via <code>slottd.config.ts</code> or run a migration.</p>
           </div>
-        ` : collections.map((col) => html`
-          <a href="/admin/content/${col}" class="collection-item">
-            <span class="col-name">📁 ${col}</span>
+        ` : collectionsList.map((col) => html`
+          <a href="/admin/content/${col.name}" class="collection-item">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span>${col.icon || '📁'}</span>
+              <div>
+                <strong style="display: block; color: var(--text);">${col.display_name || col.name}</strong>
+                ${col.pack_name ? html`<small style="color: var(--muted); font-size: 11px;">${col.pack_name}${col.pack_author ? ` (${col.pack_author})` : ''}</small>` : ''}
+              </div>
+            </div>
             <span class="col-arrow">→</span>
           </a>
         `)}
