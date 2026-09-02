@@ -1,7 +1,7 @@
 import { html } from 'hono/html';
 import { adminStyles } from './styles.js';
 
-export type AdminTab = 'content' | 'models' | 'media';
+export type AdminTab = 'home' | 'content' | 'media' | 'models' | 'logs' | 'activity' | 'sync' | 'git' | 'docs' | 'help';
 
 export function renderLayout(
   title: string,
@@ -16,6 +16,7 @@ export function renderLayout(
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>${title}</title>
+      <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%231e293b'/%3E%3Cpath d='M 160 128 H 210 V 384 H 160 Z' fill='%23FFD043'/%3E%3Cpath d='M 218 128 H 304 C 364 128 408 172 408 232 H 344 C 344 198 320 184 296 184 H 218 Z' fill='%23FF8A00'/%3E%3Cpath d='M 218 328 H 296 C 320 328 344 314 344 280 H 408 C 408 340 364 384 304 384 H 218 Z' fill='%23FFD043'/%3E%3Crect x='200' y='244' width='112' height='24' rx='4' fill='%23FFE082'/%3E%3C/svg%3E" />
       <!-- Head-injected Third Party Styles & Micro-Libraries -->
       <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css" />
       <link rel="stylesheet" href="https://unpkg.com/trix@2.0.8/dist/trix.css" />
@@ -27,7 +28,7 @@ export function renderLayout(
     </head>
     <body>
       <div class="topbar">
-        <div class="brand">
+        <a href="/admin/home" class="brand" style="text-decoration: none; color: inherit;">
           <svg viewBox="0 0 512 512" width="28" height="28">
             <rect width="512" height="512" rx="96" fill="#1e293b"/>
             <path d="M 160 128 H 210 V 384 H 160 Z" fill="#FFD043"/>
@@ -36,11 +37,15 @@ export function renderLayout(
             <rect x="200" y="244" width="112" height="24" rx="4" fill="#FFE082"/>
           </svg>
           <h1>SlottD Studio</h1>
-        </div>
+        </a>
         <div class="nav-tabs">
+          <a href="/admin/home" class="nav-tab ${activeTab === 'home' ? 'active' : ''}">Home</a>
           <a href="/admin" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
-          <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
+          <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
+          <a href="/admin/logs" class="nav-tab ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs</a>
+          <a href="/admin/git" class="nav-tab ${activeTab === 'git' ? 'active' : ''}">Git</a>
+          <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
         <div class="user-badge">
           <span>●</span>

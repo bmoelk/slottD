@@ -22,7 +22,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 // 1. CORS Middleware
 app.use('*', async (c, next) => {
-  const origin = c.env.ALLOWED_ORIGINS || '*';
+  const origin = c.env?.ALLOWED_ORIGINS || '*';
   return cors({
     origin,
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -55,10 +55,29 @@ app.route('/files', filesRouter);
 app.get('/media/:key', async (c) => {
   const key = c.req.param('key');
   const bucket = c.env.MEDIA;
-  if (!bucket) return c.text('Media storage unavailable', 503);
+  let object = bucket ? await bucket.get(key) : null;
 
-  const object = await bucket.get(key);
-  if (!object) return c.text('Media object not found', 404);
+  if (!object) {
+    // Graceful fallback to remote Cloudflare R2 bucket for local development
+    const remoteUrl = c.env.REMOTE_MEDIA_URL || 'https://cms.brainendeavor.com/media';
+    try {
+      const res = await fetch(`${remoteUrl}/${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const body = await res.arrayBuffer();
+        if (bucket) {
+          c.executionCtx?.waitUntil?.(
+            bucket.put(key, body, {
+              httpMetadata: { contentType: res.headers.get('content-type') || 'image/jpeg' },
+            }).catch(() => {})
+          );
+        }
+        const headers = new Headers(res.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        return new Response(body, { headers });
+      }
+    } catch {}
+    return c.text('Media object not found', 404);
+  }
 
   const headers = new Headers();
   object.writeHttpMetadata(headers);
@@ -77,6 +96,17 @@ app.get('/media/:key', async (c) => {
 // 5. Micro-Studio Admin UI (SlotWire deep-linkable)
 app.use('/admin/*', requireStudioAuth);
 app.route('/admin', adminRouter);
+app.get('/docs/user', (c) => c.redirect('/admin/docs'));
+
+const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#1e293b"/><path d="M 160 128 H 210 V 384 H 160 Z" fill="#FFD043"/><path d="M 218 128 H 304 C 364 128 408 172 408 232 H 344 C 344 198 320 184 296 184 H 218 Z" fill="#FF8A00"/><path d="M 218 328 H 296 C 320 328 344 314 344 280 H 408 C 408 340 364 384 304 384 H 218 Z" fill="#FFD043"/><rect x="200" y="244" width="112" height="24" rx="4" fill="#FFE082"/></svg>`;
+app.get('/favicon.ico', (c) => {
+  return new Response(faviconSvg, {
+    headers: {
+      'Content-Type': 'image/svg+xml',
+      'Cache-Control': 'public, max-age=86400',
+    },
+  });
+});
 
 // 6. Bi-Directional Git Sync API
 app.post('/api/sync/hydrate', requireWriteAuth, async (c) => {
