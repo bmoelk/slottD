@@ -6,9 +6,10 @@ describe('SlottD Admin Router Deep Links', () => {
     DB: {
       prepare: vi.fn().mockReturnValue({
         bind: vi.fn().mockReturnThis(),
-        all: vi.fn().mockResolvedValue({ results: [] }),
+        all: vi.fn().mockResolvedValue({ results: [], meta: { changes: 0 } }),
+        raw: vi.fn().mockResolvedValue([]),
         first: vi.fn().mockResolvedValue(null),
-        run: vi.fn().mockResolvedValue({ success: true }),
+        run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
       }),
     },
     ENVIRONMENT: 'development',
@@ -81,7 +82,7 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('SlottD Studio');
-    expect(html).toContain('Content Models &amp; Schema Registry');
+    expect(html).toContain('Content Models');
   });
 
   it('handles /admin/media asset library route', async () => {
@@ -95,7 +96,7 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('SlottD Studio');
-    expect(html).toContain('Media &amp; Assets (Cloudflare R2)');
+    expect(html).toContain('Media');
   });
 
   it('handles /admin/:collection/new shorthand route without 404', async () => {

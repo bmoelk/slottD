@@ -43,7 +43,11 @@ export function compileDirectusQuery(
     for (const sortField of sortClauses) {
       const isDesc = sortField.startsWith('-');
       const cleanField = isDesc ? sortField.slice(1) : sortField;
-      query = query.orderBy(cleanField as any, isDesc ? 'desc' : 'asc');
+      if (cleanField === 'order') {
+        query = query.orderBy(sql`CAST("order" AS NUMERIC)`, isDesc ? 'desc' : 'asc');
+      } else {
+        query = query.orderBy(cleanField as any, isDesc ? 'desc' : 'asc');
+      }
     }
   } else {
     query = query.orderBy('created_at' as any, 'desc');

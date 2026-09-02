@@ -3,7 +3,8 @@ import { sql } from 'kysely';
 import { createDb } from '../db/client.js';
 import { compileDirectusQuery, parseQueryParams } from './query-compiler.js';
 import { syncCollectionView } from './views.js';
-import { requireWriteAuth } from '../auth/guard.js';
+import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
+import { logActivity } from '../db/audit.js';
 import type { Env } from '../types.js';
 
 export const itemsRouter = new Hono<{ Bindings: Env }>();
@@ -158,6 +159,7 @@ itemsRouter.post('/:collection', async (c) => {
       slug,
       title,
       status,
+      schema_version: 1,
       data: JSON.stringify(customData),
       created_at: now,
       updated_at: now,
@@ -169,6 +171,16 @@ itemsRouter.post('/:collection', async (c) => {
   if (customKeys.length > 0) {
     await syncCollectionView(db, collection, customKeys);
   }
+
+  const user = getAuthenticatedUser(c);
+  await logActivity(db, {
+    actor: user?.email || 'admin@localhost',
+    action: 'create',
+    collection,
+    documentId: id,
+    documentTitle: title,
+    details: { slug, status },
+  });
 
   return c.json(
     {
@@ -232,6 +244,16 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   // Sync view if new keys were introduced
   await syncCollectionView(db, collection, Object.keys(mergedData));
 
+  const user = getAuthenticatedUser(c);
+  await logActivity(db, {
+    actor: user?.email || 'admin@localhost',
+    action: 'update',
+    collection,
+    documentId: existing.id,
+    documentTitle: updatedTitle,
+    details: { slug: updatedSlug, status: updatedStatus },
+  });
+
   return c.json({
     data: {
       id: existing.id,
@@ -252,11 +274,30 @@ itemsRouter.delete('/:collection/:id', async (c) => {
   const idOrSlug = c.req.param('id');
   const db = createDb(c.env.DB);
 
+  const existing = await db
+    .selectFrom('documents')
+    .where('collection', '=', collection)
+    .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
+    .selectAll()
+    .executeTakeFirst();
+
   await db
     .deleteFrom('documents')
     .where('collection', '=', collection)
     .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
     .execute();
+
+  if (existing) {
+    const user = getAuthenticatedUser(c);
+    await logActivity(db, {
+      actor: user?.email || 'admin@localhost',
+      action: 'delete',
+      collection,
+      documentId: existing.id,
+      documentTitle: existing.title || existing.slug,
+      details: { slug: existing.slug },
+    });
+  }
 
   return c.body(null, 204);
 });

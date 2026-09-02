@@ -4,8 +4,32 @@ import { renderLayout } from '../layout.js';
 export function renderTableView(
   collection: string,
   items: any[],
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  contextFilter?: { pageSlug?: string; sectionKey?: string }
 ) {
+  const pageSlug = contextFilter?.pageSlug?.toLowerCase();
+  const sectionKey = contextFilter?.sectionKey?.toLowerCase();
+
+  const filteredItems = items.filter((item) => {
+    let parsed: any = {};
+    try {
+      parsed = typeof item.data === 'string' ? JSON.parse(item.data) : item.data || {};
+    } catch {}
+
+    const itemPageSlug = (parsed.pageSlug || item.pageSlug || '').toLowerCase();
+    const itemSectionKey = (parsed.sectionKey || item.sectionKey || parsed.galleryKey || item.galleryKey || '').toLowerCase();
+
+    if (pageSlug && itemPageSlug && itemPageSlug !== pageSlug) {
+      return false;
+    }
+    if (sectionKey && itemSectionKey && itemSectionKey !== sectionKey) {
+      return false;
+    }
+    return true;
+  });
+
+  const displayItems = (pageSlug || sectionKey) ? filteredItems : items;
+
   return renderLayout(`${collection} — SlottD Studio`, 'content', user, html`
     <div class="header">
       <div class="breadcrumbs">
@@ -14,9 +38,22 @@ export function renderTableView(
         <span class="current">${collection}</span>
       </div>
       <div class="header-actions">
-        <a href="/admin/content/${collection}/+" class="btn btn-primary">+ New ${collection.slice(0, -1) || 'Record'}</a>
+        <a href="/admin/content/${collection}/+${pageSlug ? `?pageSlug=${encodeURIComponent(pageSlug)}${sectionKey ? `&sectionKey=${encodeURIComponent(sectionKey)}` : ''}` : ''}" class="btn btn-primary">+ New ${collection.slice(0, -1) || 'Record'}</a>
       </div>
     </div>
+
+    ${(pageSlug || sectionKey) ? html`
+      <div class="card context-banner" style="display: flex; align-items: center; justify-content: space-between; background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); padding: 10px 16px; margin-bottom: 16px; border-radius: 8px;">
+        <div style="display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text-primary); flex-wrap: wrap;">
+          <span style="font-size: 16px;">🎯</span>
+          <strong style="color: #a5b4fc;">Filtered by Context:</strong>
+          ${pageSlug ? html`<span class="badge" style="background: rgba(99, 102, 241, 0.25); color: #c7d2fe; font-family: monospace; padding: 2px 8px; border-radius: 4px;">Page: ${pageSlug}</span>` : ''}
+          ${sectionKey ? html`<span class="badge" style="background: rgba(99, 102, 241, 0.25); color: #c7d2fe; font-family: monospace; padding: 2px 8px; border-radius: 4px;">Section: ${sectionKey}</span>` : ''}
+          <span style="color: var(--text-muted);">(${displayItems.length} of ${items.length} records)</span>
+        </div>
+        <a href="/admin/content/${collection}" class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px; white-space: nowrap;">✕ Clear Filter (Show All)</a>
+      </div>
+    ` : ''}
 
     <!-- Table Filter & Search Toolbar -->
     <div class="toolbar card">
@@ -37,7 +74,7 @@ export function renderTableView(
           <button type="button" class="pill-btn" data-status="draft" onclick="filterByStatus('draft', this)">Draft</button>
           <button type="button" class="pill-btn" data-status="archived" onclick="filterByStatus('archived', this)">Archived</button>
         </div>
-        <span class="stat-pill" id="itemCountBadge">${items.length} records</span>
+        <span class="stat-pill" id="itemCountBadge">${displayItems.length} records</span>
       </div>
     </div>
 
@@ -56,11 +93,11 @@ export function renderTableView(
           </tr>
         </thead>
         <tbody id="itemsTableBody">
-          ${items.length === 0 ? html`
+          ${displayItems.length === 0 ? html`
             <tr id="initialEmptyRow">
-              <td colspan="6" class="empty-cell">No records in this collection yet. Click "+ New" above to create one.</td>
+              <td colspan="6" class="empty-cell">No records matching context in this collection. Click "+ New" above to create one.</td>
             </tr>
-          ` : items.map((item) => html`
+          ` : displayItems.map((item) => html`
             <tr
               class="item-row"
               id="row_${item.id}"
@@ -133,6 +170,12 @@ export function renderTableView(
           e.preventDefault();
           search?.focus();
           search?.select();
+          return;
+        }
+
+        if ((e.key === 'n' || e.key === 'c') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          window.location.href = '/admin/content/' + currentCollection + '/new';
           return;
         }
 
