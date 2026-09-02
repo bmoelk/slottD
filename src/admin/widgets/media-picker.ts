@@ -13,8 +13,8 @@ export function renderMediaPickerWidget(field: { name: string; label: string }, 
         <div class="media-preview-details">
           <span class="media-preview-path">${val}</span>
           <div class="media-preview-actions">
-            <button type="button" class="btn-text" onclick="openMediaModal('${field.name}')">Change</button>
-            <button type="button" class="btn-text text-danger" onclick="document.getElementById('${field.name}_input').value=''; updateThumbnailPreview('${field.name}', '')">Remove</button>
+            <button type="button" class="btn-text" onclick="window.openMediaModal('${field.name}')">Change</button>
+            <button type="button" class="btn-text text-danger" onclick="document.getElementById('${field.name}_input').value=''; window.updateThumbnailPreview('${field.name}', '')">Remove</button>
           </div>
         </div>
       </div>
@@ -28,12 +28,12 @@ export function renderMediaPickerWidget(field: { name: string; label: string }, 
           value="${val}"
           class="input-text"
           placeholder="/media/hero-banner.png or https://..."
-          oninput="updateThumbnailPreview('${field.name}', this.value)"
+          oninput="window.updateThumbnailPreview('${field.name}', this.value)"
         />
-        <button type="button" class="btn btn-secondary" onclick="openMediaModal('${field.name}')">Browse R2</button>
+        <button type="button" class="btn btn-secondary" onclick="window.openMediaModal('${field.name}')">Browse R2</button>
         <label class="btn btn-secondary" style="cursor: pointer;">
           Upload
-          <input type="file" style="display: none;" onchange="uploadFieldAsset(this, '${field.name}')" />
+          <input type="file" style="display: none;" onchange="window.uploadFieldAsset(this, '${field.name}')" />
         </label>
       </div>
     </div>
@@ -46,14 +46,14 @@ export function renderMediaModal() {
       <div class="modal-dialog">
         <div class="modal-header">
           <h3>Select Asset from Cloudflare R2</h3>
-          <button type="button" class="btn-close" onclick="closeMediaModal()">✕</button>
+          <button type="button" class="btn-close" onclick="window.closeMediaModal()">✕</button>
         </div>
         <div class="modal-body">
           <div class="modal-actions">
-            <input type="text" id="mediaSearchInput" class="input-text" placeholder="Search filename..." oninput="filterMediaModal(this.value)" />
+            <input type="text" id="mediaSearchInput" class="input-text" placeholder="Search filename..." oninput="window.filterMediaModal(this.value)" />
             <label class="btn btn-secondary" style="cursor: pointer; white-space: nowrap;">
               + Upload File
-              <input type="file" style="display: none;" onchange="uploadModalAsset(this)" />
+              <input type="file" style="display: none;" onchange="window.uploadModalAsset(this)" />
             </label>
           </div>
           <div id="modalMediaGrid" class="modal-media-grid">

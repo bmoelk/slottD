@@ -4,7 +4,7 @@ import { renderLayout } from '../layout.js';
 export interface DashboardCollectionItem {
   name: string;
   display_name?: string;
-  description?: string;
+  description?: string | null;
   icon?: string | null;
   pack_name?: string;
   pack_author?: string | null;
@@ -14,7 +14,8 @@ export interface DashboardCollectionItem {
 export function renderDashboardView(
   collectionsList: DashboardCollectionItem[],
   packs: string[],
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  recentActivity: any[] = []
 ) {
   return renderLayout('SlottD Studio', 'content', user, html`
     <div class="header">
@@ -58,32 +59,44 @@ export function renderDashboardView(
 
         <div class="toolbar-right-controls">
           <!-- Sort Dropdown -->
-          <div class="sort-control">
-            <label for="colSort" class="sort-label">Sort:</label>
-            <select id="colSort" class="input-select sort-select" onchange="applySortAndFilter()">
-              <option value="name-asc" selected>Name (A → Z)</option>
-              <option value="name-desc">Name (Z → A)</option>
-              <option value="count-desc">Records (High → Low)</option>
-              <option value="count-asc">Records (Low → High)</option>
-              <option value="pack">Pack / Source</option>
+          <div class="custom-select-wrap">
+            <select id="colSortSelect" class="select-control" onchange="applySortAndFilter()">
+              <option value="name-asc">Sort: Name (A-Z)</option>
+              <option value="name-desc">Sort: Name (Z-A)</option>
+              <option value="count-desc">Sort: Most Records</option>
+              <option value="count-asc">Sort: Least Records</option>
             </select>
           </div>
 
-          <!-- View Layout Switcher (Rows vs. Grid) -->
-          <div class="view-toggle">
-            <button type="button" class="view-btn active" id="viewBtnRows" onclick="setViewMode('rows')" title="Row / List Layout">☰ Rows</button>
-            <button type="button" class="view-btn" id="viewBtnGrid" onclick="setViewMode('grid')" title="Card Grid Layout">⊞ Grid</button>
+          <!-- Grid/List View Mode Toggle -->
+          <div class="view-toggle-group">
+            <button type="button" id="btnGridView" class="toggle-btn active" onclick="setViewMode('grid')" title="Grid View">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                <rect x="14" y="14" width="7" height="7" rx="1.5" />
+              </svg>
+            </button>
+            <button type="button" id="btnListView" class="toggle-btn" onclick="setViewMode('list')" title="List View">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="3" y="4" width="18" height="3" rx="1" />
+                <rect x="3" y="10.5" width="18" height="3" rx="1" />
+                <rect x="3" y="17" width="18" height="3" rx="1" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Collection Cards / Rows Container -->
-    <div class="collection-grid view-rows" id="collectionGrid">
+    <!-- Collections Grid / List Container -->
+    <div class="collection-grid view-grid" id="collectionGrid">
       ${collectionsList.map((col) => {
-        const pack = col.pack_name || 'custom';
         const displayName = col.display_name || col.name;
+        const pack = col.pack_name || 'custom';
         const desc = col.description || '';
+
         return html`
           <div
             class="collection-card-wrapper"
@@ -158,6 +171,13 @@ export function renderDashboardView(
           return;
         }
 
+        // Press 'n' or 'c' to open New Collection modal
+        if ((e.key === 'n' || e.key === 'c') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+          e.preventDefault();
+          openCreateModal();
+          return;
+        }
+
         const visible = getVisibleCards();
         if (visible.length === 0) return;
 
@@ -213,15 +233,15 @@ export function renderDashboardView(
           if (b.dataset.pack === 'all') b.classList.add('active');
           else b.classList.remove('active');
         });
-        const sort = document.getElementById('colSort');
+        const sort = document.getElementById('colSortSelect');
         if (sort) sort.value = 'name-asc';
         applySortAndFilter();
       }
 
       function setViewMode(mode) {
         const grid = document.getElementById('collectionGrid');
-        const btnGrid = document.getElementById('viewBtnGrid');
-        const btnRows = document.getElementById('viewBtnRows');
+        const btnGrid = document.getElementById('btnGridView');
+        const btnRows = document.getElementById('btnRowsView');
 
         if (mode === 'rows') {
           grid?.classList.add('view-rows');
@@ -247,8 +267,8 @@ export function renderDashboardView(
       } catch {}
 
       function applySortAndFilter() {
-        const query = (document.getElementById('colSearch').value || '').trim().toLowerCase();
-        const sortMode = document.getElementById('colSort').value;
+        const query = (document.getElementById('colSearch')?.value || '').trim().toLowerCase();
+        const sortMode = document.getElementById('colSortSelect')?.value || 'name-asc';
         const grid = document.getElementById('collectionGrid');
         const cards = Array.from(grid.querySelectorAll('.collection-card-wrapper'));
         let visibleCount = 0;

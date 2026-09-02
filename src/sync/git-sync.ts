@@ -182,15 +182,41 @@ export async function publishReleaseToGitHub(options: {
   const refData: any = await refRes.json();
   const latestCommitSha = refData.object.sha;
 
-  // 2. Create Tree with files
+  // 1b. Fetch existing tree to discover deleted content files and mirror deletions
+  const newPathSet = new Set(files.map((f) => f.path));
+  const deleteEntries: any[] = [];
+  try {
+    const baseTreeRes = await fetch(`${baseUrl}/git/trees/${latestCommitSha}?recursive=1`, { headers });
+    if (baseTreeRes.ok) {
+      const baseTreeData: any = await baseTreeRes.json();
+      const existingContentFiles = (baseTreeData.tree || []).filter(
+        (node: any) => node.type === 'blob' && node.path.startsWith('content/')
+      );
+      for (const oldNode of existingContentFiles) {
+        if (!newPathSet.has(oldNode.path)) {
+          deleteEntries.push({
+            path: oldNode.path,
+            mode: '100644',
+            type: 'blob',
+            sha: null,
+          });
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Create Tree with updated and deleted files
   const treePayload = {
     base_tree: latestCommitSha,
-    tree: files.map((f) => ({
-      path: f.path,
-      mode: '100644',
-      type: 'blob',
-      content: f.content,
-    })),
+    tree: [
+      ...files.map((f) => ({
+        path: f.path,
+        mode: '100644',
+        type: 'blob',
+        content: f.content,
+      })),
+      ...deleteEntries,
+    ],
   };
 
   const treeRes = await fetch(`${baseUrl}/git/trees`, {

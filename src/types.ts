@@ -10,6 +10,7 @@ export interface Env {
   PRODUCTION_DEPLOY_HOOK_URL?: string;
   STAGING_DEPLOY_HOOK_URL?: string;
   DEPLOY_HOOK_URL?: string;
+  REMOTE_MEDIA_URL?: string;
 }
 
 export type DocumentStatus = 'draft' | 'scheduled' | 'published' | 'archived';
@@ -50,6 +51,17 @@ export interface MediaRow {
   width?: number | null;
   height?: number | null;
   created_at: number;
+}
+
+export interface ActivityLogRow {
+  id: string;
+  timestamp: number;
+  actor: string;
+  action: string;
+  collection: string;
+  document_id: string;
+  document_title?: string | null;
+  details?: string | null;
 }
 
 export interface DirectusQueryParams {

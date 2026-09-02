@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/client.js';
-import { requireWriteAuth } from '../auth/guard.js';
+import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
+import { logActivity } from '../db/audit.js';
 import type { Env } from '../types.js';
 
 export const filesRouter = new Hono<{ Bindings: Env }>();
@@ -155,9 +156,27 @@ filesRouter.get('/:idOrKey', async (c) => {
 
   // 2. Resolve R2 key: use mapped key from D1 record or fallback to direct key
   const r2Key = mediaRecord ? mediaRecord.key : idOrKey;
-  const object = await c.env.MEDIA.get(r2Key);
+  let object = c.env.MEDIA ? await c.env.MEDIA.get(r2Key) : null;
 
   if (!object) {
+    // Fallback to remote Cloudflare R2 bucket for local development
+    const remoteUrl = c.env.REMOTE_MEDIA_URL || 'https://cms.brainendeavor.com/media';
+    try {
+      const res = await fetch(`${remoteUrl}/${encodeURIComponent(r2Key)}`);
+      if (res.ok) {
+        const body = await res.arrayBuffer();
+        if (c.env.MEDIA) {
+          c.executionCtx?.waitUntil?.(
+            c.env.MEDIA.put(r2Key, body, {
+              httpMetadata: { contentType: res.headers.get('content-type') || mediaRecord?.mime_type || 'image/jpeg' },
+            }).catch(() => {})
+          );
+        }
+        const headers = new Headers(res.headers);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        return new Response(body, { headers });
+      }
+    } catch {}
     return c.text('File not found', 404);
   }
 
@@ -172,4 +191,35 @@ filesRouter.get('/:idOrKey', async (c) => {
   return new Response(object.body, {
     headers,
   });
+});
+
+// 4. Delete File
+filesRouter.delete('/:idOrKey', async (c) => {
+  const idOrKey = c.req.param('idOrKey');
+  const db = createDb(c.env.DB);
+
+  const mediaRecord = await db
+    .selectFrom('media')
+    .where((eb) => eb.or([eb('id', '=', idOrKey), eb('key', '=', idOrKey)]))
+    .selectAll()
+    .executeTakeFirst();
+
+  if (mediaRecord) {
+    await db.deleteFrom('media').where('id', '=', mediaRecord.id).execute();
+    if (c.env.MEDIA) {
+      await c.env.MEDIA.delete(mediaRecord.key).catch(() => {});
+    }
+
+    const user = getAuthenticatedUser(c);
+    await logActivity(db, {
+      actor: user?.email || 'admin@localhost',
+      action: 'delete',
+      collection: 'media',
+      documentId: mediaRecord.id,
+      documentTitle: mediaRecord.filename,
+      details: { key: mediaRecord.key },
+    });
+  }
+
+  return c.body(null, 204);
 });

@@ -69,7 +69,7 @@ export const requireWriteAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   }
 
   // Attach user to context
-  c.set('user' as any, user);
+  (c as any).set('user', user);
   return next();
 };
 
@@ -105,6 +105,6 @@ export const requireStudioAuth: MiddlewareHandler<{ Bindings: Env }> = async (c,
     );
   }
 
-  c.set('user' as any, user || { email: 'guest@edge', authMethod: 'local-dev' });
+  (c as any).set('user', user || { email: 'guest@edge', authMethod: 'local-dev' });
   return next();
 };

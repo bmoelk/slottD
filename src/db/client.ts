@@ -7,6 +7,6 @@ import type { Database } from './schema.js';
  */
 export function createDb(d1: D1Database): Kysely<Database> {
   return new Kysely<Database>({
-    dialect: new D1Dialect({ database: d1 }),
+    dialect: new D1Dialect({ database: d1 }) as any,
   });
 }
