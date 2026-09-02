@@ -68,9 +68,16 @@ export function renderDashboardView(
             </select>
           </div>
 
-          <!-- Grid/List View Mode Toggle -->
+          <!-- Rows / Grid View Mode Toggle -->
           <div class="view-toggle-group">
-            <button type="button" id="btnGridView" class="toggle-btn active" onclick="setViewMode('grid')" title="Grid View">
+            <button type="button" id="btnRowsView" class="toggle-btn active" onclick="setViewMode('rows')" title="Rows View">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="3" y="4" width="18" height="3" rx="1" />
+                <rect x="3" y="10.5" width="18" height="3" rx="1" />
+                <rect x="3" y="17" width="18" height="3" rx="1" />
+              </svg>
+            </button>
+            <button type="button" id="btnGridView" class="toggle-btn" onclick="setViewMode('grid')" title="Grid View">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <rect x="3" y="3" width="7" height="7" rx="1.5" />
                 <rect x="14" y="3" width="7" height="7" rx="1.5" />
@@ -78,20 +85,13 @@ export function renderDashboardView(
                 <rect x="14" y="14" width="7" height="7" rx="1.5" />
               </svg>
             </button>
-            <button type="button" id="btnListView" class="toggle-btn" onclick="setViewMode('list')" title="List View">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="3" y="4" width="18" height="3" rx="1" />
-                <rect x="3" y="10.5" width="18" height="3" rx="1" />
-                <rect x="3" y="17" width="18" height="3" rx="1" />
-              </svg>
-            </button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Collections Grid / List Container -->
-    <div class="collection-grid view-grid" id="collectionGrid">
+    <!-- Collections Grid / List Container (Default: view-rows) -->
+    <div class="collection-grid view-rows" id="collectionGrid">
       ${collectionsList.map((col) => {
         const displayName = col.display_name || col.name;
         const pack = col.pack_name || 'custom';
@@ -243,14 +243,15 @@ export function renderDashboardView(
         const btnGrid = document.getElementById('btnGridView');
         const btnRows = document.getElementById('btnRowsView');
 
-        if (mode === 'rows') {
-          grid?.classList.add('view-rows');
-          btnRows?.classList.add('active');
-          btnGrid?.classList.remove('active');
-        } else {
+        if (mode === 'grid') {
           grid?.classList.remove('view-rows');
           btnGrid?.classList.add('active');
           btnRows?.classList.remove('active');
+        } else {
+          // Default to 'rows'
+          grid?.classList.add('view-rows');
+          btnRows?.classList.add('active');
+          btnGrid?.classList.remove('active');
         }
 
         try {
@@ -258,13 +259,13 @@ export function renderDashboardView(
         } catch {}
       }
 
-      // Restore saved layout mode
+      // Restore saved layout mode, defaulting to 'rows'
       try {
-        const savedView = localStorage.getItem('slottd_collection_view');
-        if (savedView) {
-          setViewMode(savedView);
-        }
-      } catch {}
+        const savedView = localStorage.getItem('slottd_collection_view') || 'rows';
+        setViewMode(savedView);
+      } catch {
+        setViewMode('rows');
+      }
 
       function applySortAndFilter() {
         const query = (document.getElementById('colSearch')?.value || '').trim().toLowerCase();
@@ -326,14 +327,15 @@ export function renderDashboardView(
           grid.style.display = 'none';
         } else {
           emptyState.style.display = 'none';
-          grid.style.display = 'flex';
+          grid.style.display = '';
         }
 
         const badge = document.getElementById('totalCollectionsBadge');
         if (badge) {
-          badge.innerText = visibleCount === cards.length ? \`\${cards.length} Collections\` : \`\${visibleCount} of \${cards.length} Collections\`;
+          badge.innerText = (visibleCount === cards.length ? cards.length : visibleCount + ' of ' + cards.length) + ' Collections';
         }
       }
     </script>
   `);
 }
+

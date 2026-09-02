@@ -49,10 +49,37 @@ export const adminStyles = `
   .sort-select { padding: 5px 10px; font-size: 12px; width: auto; background: #090d16; }
 
   /* View Layout Toggle */
-  .view-toggle { display: flex; background: #090d16; border: 1px solid var(--surface-border); border-radius: 8px; padding: 2px; }
-  .view-btn { background: transparent; border: none; color: var(--text-muted); padding: 4px 10px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: 0.15s; }
-  .view-btn:hover { color: #fff; }
-  .view-btn.active { background: #1e293b; color: #fff; }
+  .view-toggle, .view-toggle-group {
+    display: flex;
+    background: #090d16;
+    border: 1px solid var(--surface-border);
+    border-radius: 8px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .view-btn, .toggle-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    padding: 5px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .view-btn:hover, .toggle-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .view-btn.active, .toggle-btn.active {
+    background: #1e293b;
+    color: var(--primary);
+    border-color: #334155;
+  }
 
   /* Collection Grid View (Default Cards) */
   .collection-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
@@ -61,14 +88,14 @@ export const adminStyles = `
   .collection-card-wrapper.keyboard-highlight { border-color: var(--primary) !important; box-shadow: 0 0 0 2px var(--primary), 0 8px 24px rgba(0,0,0,0.5) !important; background: #1e293b !important; transform: translateY(-2px); }
   .collection-card { padding: 18px 18px 14px; text-decoration: none; color: inherit; flex: 1; display: flex; flex-direction: column; gap: 12px; }
   .col-card-header { display: flex; justify-content: space-between; align-items: center; }
-  .col-icon-box { font-size: 26px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: #090d16; border-radius: 8px; border: 1px solid var(--surface-border); }
+  .col-icon-box { font-size: 26px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: #090d16; border-radius: 8px; border: 1px solid var(--surface-border); flex-shrink: 0; }
   .col-badges { display: flex; align-items: center; gap: 6px; }
   .pack-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
   .pack-slotwire-pack, .pack-slotwire { background: rgba(255, 138, 0, 0.15); color: var(--primary); border-color: rgba(255, 138, 0, 0.3); }
   .pack-site-custom, .pack-custom { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); }
   .pack-blog-pack, .pack-blog { background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3); }
   .count-pill { font-size: 11px; font-weight: 700; color: #fff; background: #090d16; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--surface-border); white-space: nowrap; }
-  .col-info { display: flex; flex-direction: column; gap: 4px; }
+  .col-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .col-title-group { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .col-title { font-size: 16px; font-weight: 700; color: #fff; }
   .col-key { font-size: 12px; color: var(--text-dim); font-family: monospace; }
@@ -83,22 +110,27 @@ export const adminStyles = `
   .collection-grid.view-rows {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
   .collection-grid.view-rows .collection-card-wrapper {
     flex-direction: row;
     align-items: center;
-    padding: 8px 14px;
+    justify-content: space-between;
+    padding: 10px 16px;
     border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
   }
   .collection-grid.view-rows .collection-card-wrapper:hover {
     transform: translateX(4px);
+    border-color: var(--primary);
+    background: #141f36;
   }
   .collection-grid.view-rows .collection-card-wrapper.keyboard-highlight {
     border-color: var(--primary) !important;
     box-shadow: 0 0 0 2px var(--primary), 0 8px 24px rgba(0,0,0,0.5) !important;
     background: #1e293b !important;
-    transform: translateX(8px) !important;
+    transform: translateX(6px) !important;
   }
   .collection-grid.view-rows .collection-card {
     flex-direction: row;
@@ -124,11 +156,11 @@ export const adminStyles = `
     min-width: 0;
   }
   .collection-grid.view-rows .col-title-group {
-    flex: 0 0 240px;
+    flex: 0 0 220px;
     min-width: 0;
   }
   .collection-grid.view-rows .col-title {
-    font-size: 14px;
+    font-size: 15px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -138,7 +170,9 @@ export const adminStyles = `
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 480px;
+    flex: 1;
+    min-width: 0;
+    max-width: 500px;
     margin-top: 0;
     color: var(--text-dim);
     font-size: 13px;
@@ -146,6 +180,9 @@ export const adminStyles = `
   .collection-grid.view-rows .col-badges {
     margin-left: auto;
     flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .collection-grid.view-rows .col-card-footer {
     border-top: none;
@@ -169,14 +206,17 @@ export const adminStyles = `
   .collection-grid.view-rows .btn-card-action:hover {
     background: #1e293b;
     color: #fff;
+    border-color: #334155;
   }
   .collection-grid.view-rows .btn-card-primary {
-    border: none;
+    border: 1px solid var(--primary);
     background: var(--primary);
     color: #000;
+    font-weight: 700;
   }
   .collection-grid.view-rows .btn-card-primary:hover {
     background: var(--primary-hover);
+    border-color: var(--primary-hover);
   }
 
   /* Tables & Row Selection */
