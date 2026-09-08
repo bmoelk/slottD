@@ -5,6 +5,7 @@ import { compileDirectusQuery, parseQueryParams } from './query-compiler.js';
 import { syncCollectionView } from './views.js';
 import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
 import { logActivity } from '../db/audit.js';
+import { runItemHook, formatHookErrorResponse } from '../hooks/index.js';
 import type { Env, DocumentRow } from '../types.js';
 
 export const itemsRouter = new Hono<{ Bindings: Env }>();
@@ -23,6 +24,16 @@ itemsRouter.use('/:collection/:id', async (c, next) => {
   }
   return next();
 });
+
+function safeWaitUntil(c: any, promise: Promise<any>) {
+  try {
+    if (c.executionCtx?.waitUntil) {
+      c.executionCtx.waitUntil(promise);
+      return;
+    }
+  } catch {}
+  promise.catch(() => {});
+}
 
 /**
  * Helper to apply draft or version delta overlay onto a document record.
@@ -229,64 +240,89 @@ itemsRouter.post('/:collection', async (c) => {
   const collection = c.req.param('collection');
   const body = await c.req.json();
   const db = createDb(c.env.DB);
+  const user = await getAuthenticatedUser(c);
 
   const id = body.id || crypto.randomUUID();
   const slug = body.slug || generateSlug(body.title || id);
   const title = body.title || slug;
   const isDraft = body.draft === true || body.status === 'draft';
+  const force = body.force === true || c.req.query('force') === 'true';
   const status = isDraft ? 'draft' : (body.status || 'published');
   const draftStatus = isDraft ? 'new' : 'none';
   const now = Date.now();
 
   // Extract core columns, everything else goes to JSON data
-  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, ...customData } = body;
+  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...customData } = body;
+
+  const hookCtx = {
+    collection,
+    id,
+    data: { id, slug, title, status, ...customData },
+    db,
+    env: c.env,
+    user: user || undefined,
+    isDraft,
+    force,
+  };
+
+  const hookResult = await runItemHook('beforeCreate', hookCtx);
+  if (hookResult.status === 'error') {
+    return formatHookErrorResponse(c, hookResult);
+  }
+
+  const finalData = hookResult.data || hookCtx.data;
+  const finalSlug = finalData.slug || slug;
+  const finalTitle = finalData.title || title;
+  const finalStatus = isDraft ? 'draft' : (finalData.status || status);
+  const { id: _fId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
 
   await db
     .insertInto('documents')
     .values({
       id,
       collection,
-      slug,
-      title,
-      status,
+      slug: finalSlug,
+      title: finalTitle,
+      status: finalStatus,
       draft_status: draftStatus,
-      draft_data: isDraft ? JSON.stringify(customData) : null,
+      draft_data: isDraft ? JSON.stringify(finalCustomData) : null,
       draft_updated_at: isDraft ? now : null,
       schema_version: 1,
-      data: JSON.stringify(customData),
+      data: JSON.stringify(finalCustomData),
       created_at: now,
       updated_at: now,
     })
     .execute();
 
   // Sync / update the collection SQLite view with any new custom fields
-  const customKeys = Object.keys(customData);
+  const customKeys = Object.keys(finalCustomData);
   if (customKeys.length > 0) {
     await syncCollectionView(db, collection, customKeys);
   }
 
-  const user = await getAuthenticatedUser(c);
   await logActivity(db, {
     actor: user?.email || 'admin@localhost',
     action: 'create',
     collection,
     documentId: id,
-    documentTitle: title,
-    details: JSON.stringify({ slug, status, draftStatus }),
+    documentTitle: finalTitle,
+    details: JSON.stringify({ slug: finalSlug, status: finalStatus, draftStatus }),
   });
+
+  safeWaitUntil(c, runItemHook('afterCreate', { ...hookCtx, data: finalData }));
 
   return c.json(
     {
       data: {
         id,
         collection,
-        slug,
-        title,
-        status,
+        slug: finalSlug,
+        title: finalTitle,
+        status: finalStatus,
         draft_status: draftStatus,
         created_at: now,
         updated_at: now,
-        ...customData,
+        ...finalCustomData,
       },
     },
     201
@@ -379,6 +415,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   const idOrSlug = c.req.param('id');
   const body = await c.req.json();
   const db = createDb(c.env.DB);
+  const user = await getAuthenticatedUser(c);
 
   const existing = await db
     .selectFrom('documents')
@@ -397,11 +434,50 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   } catch {}
 
   const isWorkingCopyUpdate = body.draft === true || c.req.query('draft') === 'true';
+  const force = body.force === true || c.req.query('force') === 'true';
   const now = Date.now();
-  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, ...newCustomData } = body;
+  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...newCustomData } = body;
 
-  const updatedSlug = body.slug || existing.slug;
-  const updatedTitle = body.title || existing.title;
+  const candidateSlug = body.slug || existing.slug;
+  const candidateTitle = body.title || existing.title;
+  const candidateStatus = isWorkingCopyUpdate ? existing.status : (body.status || existing.status);
+
+  // Hook context with existing record and pending delta
+  const hookCtx = {
+    collection,
+    id: existing.id,
+    data: {
+      id: existing.id,
+      slug: candidateSlug,
+      title: candidateTitle,
+      status: candidateStatus,
+      ...existingData,
+      ...newCustomData,
+    },
+    existing: {
+      id: existing.id,
+      slug: existing.slug,
+      title: existing.title,
+      status: existing.status,
+      ...existingData,
+    },
+    db,
+    env: c.env,
+    user: user || undefined,
+    isDraft: isWorkingCopyUpdate,
+    force,
+    changedFields: Object.keys(body),
+  };
+
+  const hookResult = await runItemHook('beforeUpdate', hookCtx);
+  if (hookResult.status === 'error') {
+    return formatHookErrorResponse(c, hookResult);
+  }
+
+  const finalData = hookResult.data || hookCtx.data;
+  const updatedSlug = finalData.slug || candidateSlug;
+  const updatedTitle = finalData.title || candidateTitle;
+  const { id: _fId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
 
   if (isWorkingCopyUpdate) {
     // Update ONLY working copy (draft_data), preserving live published data
@@ -414,7 +490,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
       currentDraft = { ...existingData };
     }
 
-    const mergedDraft = { ...currentDraft, ...newCustomData };
+    const mergedDraft = { ...currentDraft, ...finalCustomData };
     const newDraftStatus = existing.status === 'draft' ? 'new' : 'modified';
 
     await db
@@ -428,7 +504,6 @@ itemsRouter.patch('/:collection/:id', async (c) => {
       .where('id', '=', existing.id)
       .execute();
 
-    const user = await getAuthenticatedUser(c);
     await logActivity(db, {
       actor: user?.email || 'admin@localhost',
       action: 'update_draft',
@@ -437,6 +512,11 @@ itemsRouter.patch('/:collection/:id', async (c) => {
       documentTitle: updatedTitle,
       details: JSON.stringify({ draft_status: newDraftStatus }),
     });
+
+    safeWaitUntil(
+      c,
+      runItemHook('afterUpdate', { ...hookCtx, data: { ...finalData, ...mergedDraft } })
+    );
 
     return c.json({
       data: {
@@ -453,8 +533,8 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   }
 
   // Full / Live Update
-  const mergedData = { ...existingData, ...newCustomData };
-  const updatedStatus = body.status || existing.status;
+  const mergedData = { ...existingData, ...finalCustomData };
+  const updatedStatus = finalData.status || candidateStatus;
 
   await db
     .updateTable('documents')
@@ -473,7 +553,6 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   // Sync view if new keys were introduced
   await syncCollectionView(db, collection, Object.keys(mergedData));
 
-  const user = await getAuthenticatedUser(c);
   await logActivity(db, {
     actor: user?.email || 'admin@localhost',
     action: 'update',
@@ -482,6 +561,11 @@ itemsRouter.patch('/:collection/:id', async (c) => {
     documentTitle: updatedTitle,
     details: JSON.stringify({ slug: updatedSlug, status: updatedStatus }),
   });
+
+  safeWaitUntil(
+    c,
+    runItemHook('afterUpdate', { ...hookCtx, data: { ...finalData, ...mergedData } })
+  );
 
   return c.json({
     data: {
@@ -548,6 +632,8 @@ itemsRouter.delete('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
   const db = createDb(c.env.DB);
+  const user = await getAuthenticatedUser(c);
+  const force = c.req.query('force') === 'true';
 
   const existing = await db
     .selectFrom('documents')
@@ -556,6 +642,36 @@ itemsRouter.delete('/:collection/:id', async (c) => {
     .selectAll()
     .executeTakeFirst();
 
+  let existingData: Record<string, any> = {};
+  if (existing) {
+    try {
+      existingData = JSON.parse(existing.data || '{}');
+    } catch {}
+
+    const hookCtx = {
+      collection,
+      id: existing.id,
+      data: existingData,
+      existing: {
+        id: existing.id,
+        slug: existing.slug,
+        title: existing.title,
+        status: existing.status,
+        ...existingData,
+      },
+      db,
+      env: c.env,
+      user: user || undefined,
+      isDraft: false,
+      force,
+    };
+
+    const hookResult = await runItemHook('beforeDelete', hookCtx);
+    if (hookResult.status === 'error') {
+      return formatHookErrorResponse(c, hookResult);
+    }
+  }
+
   await db
     .deleteFrom('documents')
     .where('collection', '=', collection)
@@ -563,7 +679,6 @@ itemsRouter.delete('/:collection/:id', async (c) => {
     .execute();
 
   if (existing) {
-    const user = await getAuthenticatedUser(c);
     await logActivity(db, {
       actor: user?.email || 'admin@localhost',
       action: 'delete',
@@ -572,6 +687,20 @@ itemsRouter.delete('/:collection/:id', async (c) => {
       documentTitle: existing.title || existing.slug,
       details: JSON.stringify({ slug: existing.slug }),
     });
+
+    safeWaitUntil(
+      c,
+      runItemHook('afterDelete', {
+        collection,
+        id: existing.id,
+        data: existingData,
+        db,
+        env: c.env,
+        user: user || undefined,
+        isDraft: false,
+        force,
+      })
+    );
   }
 
   return c.body(null, 204);

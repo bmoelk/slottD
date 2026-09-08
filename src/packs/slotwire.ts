@@ -1,4 +1,13 @@
 import type { ModelPack } from '../types.js';
+import {
+  autoIncrementOrder,
+  verifyMediaExists,
+  validateUrlFormat,
+  validateRequiredFields,
+  validateParentExists,
+  guardReferentialIntegrity,
+  composeHooks,
+} from '../hooks/builtins.js';
 
 export const slotwirePack: ModelPack = {
   name: '@slottd/pack-slotwire',
@@ -25,6 +34,20 @@ export const slotwirePack: ModelPack = {
         { name: 'founderHandle', type: 'TEXT', widget: 'text', label: 'Founder Handle' },
         { name: 'careerHighlights', type: 'TEXT', widget: 'markdown', label: 'Career Journey / Highlights' },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          verifyMediaExists(['heroImage']),
+          validateRequiredFields(['title', 'slug'])
+        ),
+        beforeUpdate: composeHooks(
+          verifyMediaExists(['heroImage'])
+        ),
+        beforeDelete: guardReferentialIntegrity({
+          targetCollection: 'page_sections',
+          foreignKey: 'pageSlug',
+          localField: 'slug',
+        }),
+      },
     },
     page_sections: {
       name: 'page_sections',
@@ -47,6 +70,18 @@ export const slotwirePack: ModelPack = {
         { name: 'secondaryCtaText', type: 'TEXT', widget: 'text', label: 'Secondary CTA Text' },
         { name: 'secondaryCtaUrl', type: 'TEXT', widget: 'text', label: 'Secondary CTA URL' },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          autoIncrementOrder({ groupField: 'pageSlug', step: 10 }),
+          validateParentExists({ parentCollection: 'pages', parentKey: 'slug', foreignField: 'pageSlug' }),
+          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: false }),
+          validateRequiredFields(['title', 'pageSlug', 'sectionKey'])
+        ),
+        beforeUpdate: composeHooks(
+          validateParentExists({ parentCollection: 'pages', parentKey: 'slug', foreignField: 'pageSlug' }),
+          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: false })
+        ),
+      },
     },
     feature_cards: {
       name: 'feature_cards',
@@ -68,6 +103,16 @@ export const slotwirePack: ModelPack = {
         { name: 'linkUrl', type: 'TEXT', widget: 'text', label: 'Link URL' },
         { name: 'linkText', type: 'TEXT', widget: 'text', label: 'Link Text' },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          autoIncrementOrder({ groupField: ['pageSlug', 'sectionKey'], step: 10 }),
+          validateUrlFormat(['linkUrl'], { allowAbsolute: false }),
+          validateRequiredFields(['title', 'pageSlug', 'sectionKey'])
+        ),
+        beforeUpdate: composeHooks(
+          validateUrlFormat(['linkUrl'], { allowAbsolute: false })
+        ),
+      },
     },
     gallery: {
       name: 'gallery',
@@ -85,6 +130,16 @@ export const slotwirePack: ModelPack = {
         { name: 'caption', type: 'TEXT', widget: 'textarea', label: 'Caption' },
         { name: 'order', type: 'INTEGER', widget: 'number', label: 'Display Order', defaultValue: 10 },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          autoIncrementOrder({ groupField: 'galleryKey', step: 10 }),
+          verifyMediaExists(['imageUrl']),
+          validateRequiredFields(['title', 'galleryKey', 'imageUrl', 'alt'])
+        ),
+        beforeUpdate: composeHooks(
+          verifyMediaExists(['imageUrl'])
+        ),
+      },
     },
     endorsements: {
       name: 'endorsements',

@@ -22,15 +22,11 @@ export * from './sync/git-sync.js';
 export * from './auth/guard.js';
 export * from './checks/index.js';
 
-let appConfig: SlottdConfig | null = null;
+export * from './config.js';
+export * from './hooks/index.js';
+import { getSlottdConfig, setDefaultPacks } from './config.js';
 
-export function setSlottdConfig(cfg: SlottdConfig) {
-  appConfig = cfg;
-}
-
-export function getSlottdConfig(): SlottdConfig | null {
-  return appConfig;
-}
+setDefaultPacks([slotwirePack, blogPack]);
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -319,6 +315,7 @@ async function handlePublishRelease(c: any) {
 
   // 3. Execute onBeforePublish Hook
   let auditReport: any = null;
+  const appConfig = getSlottdConfig();
   if (appConfig?.hooks?.onBeforePublish) {
     const hookResult = await appConfig.hooks.onBeforePublish(hookCtx);
 
@@ -549,6 +546,7 @@ app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
     db,
   };
 
+  const appConfig = getSlottdConfig();
   if (!appConfig?.hooks?.onBeforePublish) {
     return c.json({ status: 'ok', message: 'No pre-publish checks configured', data: null });
   }

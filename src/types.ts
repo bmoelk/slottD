@@ -135,6 +135,7 @@ export interface CollectionDefinition {
   description?: string;
   schemaVersion?: number;
   fields: FieldDefinition[];
+  hooks?: CollectionHooks;
 }
 
 export interface ModelPack {
@@ -150,6 +151,31 @@ export interface HookResult<T = any> {
   status: 'ok' | 'warning' | 'error';
   message?: string;
   data?: T;
+  code?: string;
+  field?: string;
+  bypassable?: boolean;
+}
+
+export interface ItemHookContext<T = Record<string, any>> {
+  collection: string;
+  id: string;
+  data: T;
+  existing?: T;
+  db: any;
+  env: Env;
+  user?: { email: string; authMethod?: string };
+  isDraft: boolean;
+  force: boolean;
+  changedFields?: string[];
+}
+
+export interface CollectionHooks<T = Record<string, any>> {
+  beforeCreate?: (ctx: ItemHookContext<T>) => Promise<HookResult<T> | T | void>;
+  afterCreate?: (ctx: ItemHookContext<T>) => Promise<void>;
+  beforeUpdate?: (ctx: ItemHookContext<T>) => Promise<HookResult<T> | T | void>;
+  afterUpdate?: (ctx: ItemHookContext<T>) => Promise<void>;
+  beforeDelete?: (ctx: ItemHookContext<T>) => Promise<HookResult<void> | void>;
+  afterDelete?: (ctx: ItemHookContext<T>) => Promise<void>;
 }
 
 export interface PublishHookContext {
