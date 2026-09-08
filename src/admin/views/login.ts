@@ -4,7 +4,8 @@ import { adminStyles } from '../styles.js';
 export function renderLoginView(
   error?: string,
   operatorName?: string,
-  operatorEmail?: string
+  operatorEmail?: string,
+  redirect?: string
 ) {
   return html`
     <!DOCTYPE html>
@@ -153,6 +154,7 @@ export function renderLoginView(
         ` : ''}
 
         <form action="/admin/login" method="POST">
+          ${redirect ? html`<input type="hidden" name="redirect" value="${redirect}" />` : ''}
           <div class="form-group">
             <label for="password">Studio Password</label>
             <input

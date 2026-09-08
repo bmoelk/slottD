@@ -1,0 +1,36 @@
+[package]
+name = "slottd-briefcase"
+version = "0.1.0"
+edition = "2024"
+authors = ["SlotWire Team"]
+description = "High-performance native briefcase CLI & TUI for SlottD edge CMS"
+
+[lib]
+name = "slottd_briefcase"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slottd"
+path = "src/main.rs"
+
+[dependencies]
+# Terminal UI & CLI
+ratatui = "0.29"
+crossterm = "0.28"
+clap = { version = "4.5", features = ["derive"] }
+
+# SQLite & Data Persistence
+rusqlite = { version = "0.33", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# OS Secret Storage (Apple Keychain, Windows Credential Manager, Linux Secret Service)
+keyring = "3.6"
+
+# Error Handling & Utilities
+anyhow = "1.0"
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2.5"
+command-group = "5.0"
+open = "5.3"

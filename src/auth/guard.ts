@@ -456,10 +456,11 @@ export const requireStudioAuth: MiddlewareHandler<{ Bindings: Env }> = async (c,
   // If in local dev / Briefcase and unauthenticated, redirect to login
   if (!user && c.env.ENVIRONMENT !== 'production') {
     const path = c.req.path;
-    if (path === '/admin/login') {
+    if (path === '/admin/login' || path.startsWith('/admin/vendor/')) {
       return next();
     }
-    return c.redirect('/admin/login');
+    const originalUrl = c.req.path + (c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : '');
+    return c.redirect(`/admin/login?redirect=${encodeURIComponent(originalUrl)}`);
   }
 
   (c as any).set('user', user || { email: 'guest@edge', authMethod: 'local-dev' });

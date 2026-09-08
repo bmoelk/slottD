@@ -9,6 +9,7 @@ import { createDb } from './db/client.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
 import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser } from './auth/guard.js';
+import { ALPINE_VENDOR_JS } from './admin/vendor/alpine.js';
 import type { Env, SlottdConfig, PublishHookContext } from './types.js';
 
 export * from './types.js';
@@ -33,14 +34,91 @@ export function getSlottdConfig(): SlottdConfig | null {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// 1. CORS Middleware
+// Live Telemetry Tracker
+let totalTelemetryRequests = 0;
+let totalTelemetryLatencyMs = 0;
+
+interface BurstTracker {
+  count: number;
+  totalDurationMs: number;
+  startTime: number;
+  timer: any;
+  endpoints: string[];
+}
+
+let activeBurst: BurstTracker | null = null;
+let lastCompletedBurst: { count: number; durationMs: number; avgMs: number; endpoints: string[] } | null = null;
+
+function recordRequestTelemetry(path: string, durationMs: number) {
+  totalTelemetryRequests += 1;
+  totalTelemetryLatencyMs += durationMs;
+
+  const now = performance.now();
+  if (!activeBurst) {
+    activeBurst = {
+      count: 1,
+      totalDurationMs: durationMs,
+      startTime: now,
+      timer: null,
+      endpoints: [path],
+    };
+  } else {
+    activeBurst.count += 1;
+    activeBurst.totalDurationMs += durationMs;
+    if (activeBurst.endpoints.length < 10) {
+      activeBurst.endpoints.push(path);
+    }
+  }
+
+  if (activeBurst.timer) {
+    clearTimeout(activeBurst.timer);
+  }
+
+  activeBurst.timer = setTimeout(() => {
+    if (activeBurst && activeBurst.count > 1) {
+      const elapsed = Number((performance.now() - activeBurst.startTime).toFixed(1));
+      const avg = Number((activeBurst.totalDurationMs / activeBurst.count).toFixed(1));
+      lastCompletedBurst = {
+        count: activeBurst.count,
+        durationMs: elapsed,
+        avgMs: avg,
+        endpoints: [...activeBurst.endpoints],
+      };
+      console.log(`📊 [SlottD Telemetry] Page burst: ${activeBurst.count} queries in ${elapsed}ms (avg ${avg}ms/query)`);
+    }
+    activeBurst = null;
+  }, 250);
+}
+
+// 1. Telemetry & Performance Timing Middleware
+app.use('*', async (c, next) => {
+  const t0 = performance.now();
+  await next();
+  const elapsedRaw = performance.now() - t0;
+  const duration = elapsedRaw.toFixed(1);
+  const status = c.res.status;
+  const method = c.req.method;
+  const path = c.req.path;
+  
+  // Set response telemetry header
+  c.res.headers.set('Server-Timing', `slottd;dur=${duration}`);
+  c.res.headers.set('X-Response-Time', `${duration}ms`);
+
+  // Log non-asset requests to console for Briefcase / developer inspection
+  if (!path.startsWith('/assets') && path !== '/' && !path.startsWith('/favicon')) {
+    console.log(`⚡ [SlottD] ${method} ${path} -> ${status} (${duration}ms)`);
+    recordRequestTelemetry(path, elapsedRaw);
+  }
+});
+
+// 2. CORS Middleware
 app.use('*', async (c, next) => {
   const origin = c.env?.ALLOWED_ORIGINS || '*';
   return cors({
     origin,
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
-    exposeHeaders: ['Content-Length', 'X-SlottD-Version'],
+    exposeHeaders: ['Content-Length', 'X-SlottD-Version', 'Server-Timing', 'X-Response-Time'],
     maxAge: 86400,
   })(c, next);
 });
@@ -138,7 +216,17 @@ app.get('/media/:key', async (c) => {
   return new Response(object.body, { headers });
 });
 
-// 5. Micro-Studio Admin UI (SlotWire deep-linkable)
+// 5. Micro-Studio Vendor Assets (Public, Unauthenticated)
+app.get('/admin/vendor/alpine.js', (c) => {
+  return new Response(ALPINE_VENDOR_JS, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+});
+
+// 6. Micro-Studio Admin UI (SlotWire deep-linkable)
 app.use('/admin/*', requireStudioAuth);
 app.route('/admin', adminRouter);
 app.get('/docs/user', (c) => c.redirect('/admin/docs'));
@@ -360,6 +448,58 @@ app.get('/ext/briefcase/status', requireWriteAuth, async (c) => {
     dirtyDrafts,
     totalDocuments: Number((totalDocs as any)?.count || 0),
     totalVersions: Number((totalVersions as any)?.count || 0),
+    telemetry: {
+      totalRequests: totalTelemetryRequests,
+      averageLatencyMs: totalTelemetryRequests > 0 ? Number((totalTelemetryLatencyMs / totalTelemetryRequests).toFixed(2)) : 0,
+      lastBurst: lastCompletedBurst,
+    },
+  });
+});
+
+interface PageBoundaryPayload {
+  route: string;
+  slotCount: number;
+  slots: string[];
+  populatedCount: number;
+  missingCount: number;
+  renderMs: number;
+  cmsQueriesCount?: number;
+  cmsDurationMs?: number;
+}
+
+let lastPageBoundary: PageBoundaryPayload | null = null;
+
+app.post('/ext/telemetry/page-boundary', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as PageBoundaryPayload;
+  const route = body.route || '/';
+  const slotCount = body.slotCount || 0;
+  const renderMs = body.renderMs || 0;
+  const slots = body.slots || [];
+
+  const cmsCount = activeBurst ? activeBurst.count : (lastCompletedBurst?.count || 0);
+  const cmsDuration = activeBurst ? Number(activeBurst.totalDurationMs.toFixed(1)) : (lastCompletedBurst?.durationMs || 0);
+  const cmsAvg = cmsCount > 0 ? Number((cmsDuration / cmsCount).toFixed(1)) : 0;
+
+  lastPageBoundary = {
+    ...body,
+    cmsQueriesCount: cmsCount,
+    cmsDurationMs: cmsDuration,
+  };
+
+  const slotPreview = slots.length > 4 ? `${slots.slice(0, 4).join(', ')} +${slots.length - 4} more` : slots.join(', ');
+  console.log(`🏁 [SlottD Telemetry] Page '${route}' boundaries: ${slotCount} slots [${slotPreview}] | ${cmsCount} CMS queries in ${cmsDuration}ms (avg ${cmsAvg}ms/query) | Astro SSR: ${renderMs}ms`);
+
+  return c.json({ status: 'ok', acknowledged: true });
+});
+
+app.get('/ext/telemetry', (c) => {
+  const avg = totalTelemetryRequests > 0 ? Number((totalTelemetryLatencyMs / totalTelemetryRequests).toFixed(2)) : 0;
+  return c.json({
+    status: 'ok',
+    total_requests: totalTelemetryRequests,
+    average_latency_ms: avg,
+    last_burst: lastCompletedBurst,
+    last_page: lastPageBoundary,
   });
 });
 

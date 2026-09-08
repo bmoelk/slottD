@@ -17,7 +17,10 @@
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote -c wrangler.overrides.toml",
     "test": "vitest run",
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "npm run build",
+    "bridge": "npx tsx scripts/git-bridge.ts",
+    "briefcase": "cargo run --manifest-path briefcase/Cargo.toml"
   },
   "keywords": [
     "cms",
@@ -37,7 +40,9 @@
     "kysely-d1": "^0.3.0"
   },
   "devDependencies": {
+    "@alpinejs/sort": "^3.17.2",
     "@cloudflare/workers-types": "^4.20241022.0",
+    "alpinejs": "^3.17.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.3",
     "wrangler": "^3.84.0"

@@ -293,7 +293,87 @@ itemsRouter.post('/:collection', async (c) => {
   );
 });
 
-// 4. Update Item (PATCH)
+// 4. Batch Update Items (Directus AST Compatible)
+itemsRouter.patch('/:collection', async (c) => {
+  const collection = c.req.param('collection');
+  const body = await c.req.json().catch(() => null);
+  const db = createDb(c.env.DB);
+
+  if (!body) {
+    return c.json({ error: 'Invalid JSON payload' }, 400);
+  }
+
+  const itemsToUpdate: any[] = Array.isArray(body)
+    ? body
+    : (Array.isArray(body.data) ? body.data : (Array.isArray(body.keys) ? body.keys.map((k: string) => ({ id: k, ...body.data })) : []));
+
+  if (itemsToUpdate.length === 0) {
+    return c.json({ error: 'No items provided for batch update' }, 400);
+  }
+
+  const updatedResults: any[] = [];
+  const now = Date.now();
+
+  for (const item of itemsToUpdate) {
+    if (!item.id) continue;
+    const existing = await db
+      .selectFrom('documents')
+      .where('collection', '=', collection)
+      .where('id', '=', item.id)
+      .selectAll()
+      .executeTakeFirst();
+
+    if (!existing) continue;
+
+    let existingData = {};
+    try {
+      existingData = JSON.parse(existing.data || '{}');
+    } catch {}
+
+    const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, ...newCustomData } = item;
+    const updatedSlug = item.slug || existing.slug;
+    const updatedTitle = item.title || existing.title;
+    const updatedStatus = item.status || existing.status;
+    const mergedData = { ...existingData, ...newCustomData };
+
+    await db
+      .updateTable('documents')
+      .set({
+        slug: updatedSlug,
+        title: updatedTitle,
+        status: updatedStatus,
+        draft_data: null,
+        draft_status: 'none',
+        data: JSON.stringify(mergedData),
+        updated_at: now,
+      })
+      .where('id', '=', existing.id)
+      .execute();
+
+    updatedResults.push({
+      id: existing.id,
+      collection,
+      slug: updatedSlug,
+      title: updatedTitle,
+      status: updatedStatus,
+      ...mergedData,
+    });
+  }
+
+  const user = await getAuthenticatedUser(c);
+  await logActivity(db, {
+    actor: user?.email || 'admin@localhost',
+    action: 'batch_update',
+    collection,
+    documentId: 'batch',
+    documentTitle: `Batch updated ${updatedResults.length} records in ${collection}`,
+    details: JSON.stringify({ count: updatedResults.length }),
+  });
+
+  return c.json({ data: updatedResults });
+});
+
+// 5. Update Single Item (PATCH)
 itemsRouter.patch('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');

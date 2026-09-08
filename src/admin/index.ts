@@ -10,7 +10,7 @@ import {
   decryptSecret,
 } from '../auth/guard.js';
 import { renderDashboardView } from './views/dashboard.js';
-import { renderTableView } from './views/table.js';
+import { renderTableView, type TableViewScopeOptions } from './views/table.js';
 import { renderEditorView } from './views/editor.js';
 import { renderModelsView } from './views/models.js';
 import { renderMediaView } from './views/media.js';
@@ -22,6 +22,8 @@ import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
+import { logActivity } from '../db/audit.js';
+import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
 import type { Env } from '../types.js';
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
@@ -83,17 +85,26 @@ async function resolveDeploymentRepo(env?: Env): Promise<{ path: string; hasRemo
   return { path: chosenPath, hasRemote, remoteUrl };
 }
 
+// ── 0. Static Vendor Assets (/admin/vendor/*) ────────────────────────────────
+adminRouter.get('/vendor/alpine.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(ALPINE_VENDOR_JS);
+});
+
 // ── 0. Login & Session Management (/admin/login & /admin/logout) ─────────────
 adminRouter.get('/login', async (c) => {
   const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
   const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
   const error = c.req.query('error') || '';
-  return c.html(renderLoginView(error, operatorName, operatorEmail));
+  const redirect = c.req.query('redirect') || '';
+  return c.html(renderLoginView(error, operatorName, operatorEmail, redirect));
 });
 
 adminRouter.post('/login', async (c) => {
   const body = await c.req.parseBody().catch(() => ({}));
   const password = ((body as any)?.password as string) || '';
+  const redirectParam = (((body as any)?.redirect as string) || c.req.query('redirect') || '').trim();
 
   const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
   const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
@@ -125,12 +136,18 @@ adminRouter.post('/login', async (c) => {
   if (!isValid) {
     const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
     const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
-    return c.html(renderLoginView('Invalid password. Please try again.', operatorName, operatorEmail), 401);
+    return c.html(renderLoginView('Invalid password. Please try again.', operatorName, operatorEmail, redirectParam), 401);
   }
 
   const sessionCookie = await createBriefcaseSessionCookie(email, secret);
   c.header('Set-Cookie', `slottd_session=${sessionCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
-  return c.redirect('/admin/home');
+
+  // Open-redirect protection: target must be a local /admin path and not a protocol or double-slash scheme
+  let target = '/admin/home';
+  if (redirectParam && redirectParam.startsWith('/admin') && !redirectParam.startsWith('//') && !redirectParam.includes(':')) {
+    target = redirectParam;
+  }
+  return c.redirect(target);
 });
 
 adminRouter.get('/logout', (c) => {
@@ -315,7 +332,121 @@ adminRouter.get('/', async (c) => {
   return c.html(renderDashboardView(enhancedList, packs, user));
 });
 
-// ── 4. Collection Document Table (/admin/content/:collection) ────────────────
+// ── 4. Scope Discriminator Auto-Discovery & Collection Document Table ────────
+export const CANDIDATE_SCOPE_KEYS = [
+  'galleryKey',
+  'gallery_key',
+  'sectionKey',
+  'section_key',
+  'category',
+  'kind',
+  'group',
+  'pageSlug',
+  'page_slug',
+  'type',
+];
+
+export interface ScopeValueDef {
+  value: string;
+  label: string;
+  count: number;
+}
+
+export interface ScopeFilterDef {
+  key: string;
+  label: string;
+  values: ScopeValueDef[];
+}
+
+export function formatScopeLabel(key: string): string {
+  const cleaned = key
+    .replace(/_key$/i, '')
+    .replace(/Key$/, '')
+    .replace(/_slug$/i, '')
+    .replace(/Slug$/, '');
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+export function formatValueLabel(val: string): string {
+  if (!val) return '';
+  return val
+    .replace(/[-_]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      const upper = word.toUpperCase();
+      if (['AI', 'API', 'UI', 'UX', 'FAQ', 'URL', 'SEO'].includes(upper)) return upper;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
+export function discoverScopeFilter(
+  documents: any[],
+  queryParamKey?: string
+): ScopeFilterDef | null {
+  if (!documents || documents.length === 0) return null;
+
+  const parsedItems = documents.map((doc) => {
+    let data: Record<string, any> = {};
+    try {
+      data = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+    } catch {}
+    return { doc, data };
+  });
+
+  const candidateKeys = queryParamKey && CANDIDATE_SCOPE_KEYS.includes(queryParamKey)
+    ? [queryParamKey, ...CANDIDATE_SCOPE_KEYS.filter((k) => k !== queryParamKey)]
+    : CANDIDATE_SCOPE_KEYS;
+
+  for (const key of candidateKeys) {
+    const counts = new Map<string, { label: string; count: number }>();
+    let unassignedCount = 0;
+
+    for (const { doc, data } of parsedItems) {
+      const rawVal = data[key] ?? doc[key];
+      if (typeof rawVal === 'string' && rawVal.trim() !== '') {
+        const val = rawVal.trim();
+        const existing = counts.get(val);
+        if (existing) {
+          existing.count++;
+        } else {
+          counts.set(val, { label: formatValueLabel(val), count: 1 });
+        }
+      } else {
+        unassignedCount++;
+      }
+    }
+
+    const isExplicit = queryParamKey === key;
+    if ((isExplicit && counts.size >= 1) || (counts.size > 1 && counts.size <= 30)) {
+      const values: ScopeValueDef[] = Array.from(counts.entries()).map(([value, info]) => ({
+        value,
+        label: info.label,
+        count: info.count,
+      }));
+
+      values.sort((a, b) => a.label.localeCompare(b.label));
+
+      if (unassignedCount > 0 && counts.size > 1) {
+        values.push({
+          value: '__unassigned__',
+          label: 'Unassigned',
+          count: unassignedCount,
+        });
+      }
+
+      return {
+        key,
+        label: formatScopeLabel(key),
+        values,
+      };
+    }
+  }
+
+  return null;
+}
+
 adminRouter.get('/content/:collection', async (c) => {
   const collection = c.req.param('collection');
   const pageSlug = c.req.query('pageSlug');
@@ -323,14 +454,248 @@ adminRouter.get('/content/:collection', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
-  const documents = await db
+  const fields = await introspectCollectionFields(db, collection);
+  const orderFieldDef = fields.find(
+    (f) =>
+      f.name === 'order' ||
+      f.name === 'display_order' ||
+      f.name === 'sort_order' ||
+      f.name === 'sort' ||
+      (f.widget === 'number' && f.label?.toLowerCase().includes('order'))
+  );
+  let orderFieldName = orderFieldDef?.name || undefined;
+
+  const rawDocuments = await db
     .selectFrom('documents')
     .where('collection', '=', collection)
     .selectAll()
     .orderBy('updated_at', 'desc')
     .execute();
 
-  return c.html(renderTableView(collection, documents, user, { pageSlug, sectionKey }));
+  // Fallback: If orderFieldName is not in schema fields, check if documents contain order fields in data
+  if (!orderFieldName && rawDocuments.length > 0) {
+    const candidateOrderKeys = ['order', 'display_order', 'sort_order', 'sort'];
+    for (const k of candidateOrderKeys) {
+      const hasKey = rawDocuments.some((doc: any) => {
+        try {
+          const d = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+          return d[k] !== undefined || doc[k] !== undefined;
+        } catch {
+          return false;
+        }
+      });
+      if (hasKey) {
+        orderFieldName = k;
+        break;
+      }
+    }
+  }
+
+  // Detect if sectionKey directly references the collection itself (e.g. sectionKey='projects' for collection='projects')
+  const isDirectCollectionLink = Boolean(
+    sectionKey && (
+      sectionKey.toLowerCase() === collection.toLowerCase() ||
+      sectionKey.toLowerCase() === collection.toLowerCase().replace(/s$/, '') ||
+      collection.toLowerCase() === sectionKey.toLowerCase().replace(/s$/, '')
+    )
+  );
+
+  // Check if any documents in this collection actually use pageSlug or sectionKey
+  const hasPageSlugField = rawDocuments.some((doc: any) => {
+    try {
+      const d = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+      return (d.pageSlug !== undefined && d.pageSlug !== '') || (doc.pageSlug !== undefined && doc.pageSlug !== '');
+    } catch {
+      return false;
+    }
+  });
+
+  const hasSectionKeyField = rawDocuments.some((doc: any) => {
+    try {
+      const d = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+      return (d.sectionKey !== undefined && d.sectionKey !== '') || (doc.sectionKey !== undefined && doc.sectionKey !== '') ||
+             (d.galleryKey !== undefined && d.galleryKey !== '') || (doc.galleryKey !== undefined && doc.galleryKey !== '');
+    } catch {
+      return false;
+    }
+  });
+
+  // When sectionKey matches the collection directly, or if documents in this collection
+  // have no sectionKey/pageSlug attributes, suppress them as partition filters so the full collection is shown.
+  const effectiveSectionKey = (isDirectCollectionLink || !hasSectionKeyField) ? undefined : sectionKey;
+  const effectivePageSlug = (isDirectCollectionLink || !hasPageSlugField) ? undefined : pageSlug;
+
+  // 1. Detect candidate scope key from query params or auto-discovery
+  const explicitScopeKey = CANDIDATE_SCOPE_KEYS.find((k) => {
+    const val = c.req.query(k);
+    if (val === undefined) return false;
+    if (k === 'sectionKey' && !effectiveSectionKey) return false;
+    if (k === 'pageSlug' && !effectivePageSlug) return false;
+    return true;
+  });
+  const scopeFilterDef = discoverScopeFilter(rawDocuments, explicitScopeKey);
+
+  // 2. Determine active scope if selected in query
+  let activeScope: { key: string; value: string; label: string } | null = null;
+  if (scopeFilterDef && c.req.query(scopeFilterDef.key)) {
+    const isSuppressed = (scopeFilterDef.key === 'sectionKey' && !effectiveSectionKey) ||
+                         (scopeFilterDef.key === 'pageSlug' && !effectivePageSlug);
+    if (!isSuppressed) {
+      const queryVal = c.req.query(scopeFilterDef.key)!.trim();
+      const matchedValDef = scopeFilterDef.values.find((v) => v.value.toLowerCase() === queryVal.toLowerCase());
+      activeScope = {
+        key: scopeFilterDef.key,
+        value: queryVal,
+        label: matchedValDef ? matchedValDef.label : formatValueLabel(queryVal),
+      };
+    }
+  }
+
+  // 3. Filter documents if activeScope is present
+  let filteredDocuments = rawDocuments;
+  if (activeScope) {
+    filteredDocuments = rawDocuments.filter((doc: any) => {
+      let parsed: any = {};
+      try {
+        parsed = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+      } catch {}
+      const val = String(parsed[activeScope.key] ?? doc[activeScope.key] ?? '').trim();
+      if (activeScope.value === '__unassigned__') {
+        return !val;
+      }
+      return val.toLowerCase() === activeScope.value.toLowerCase();
+    });
+  }
+
+  // Also apply secondary context filter if present and distinct from activeScope (e.g. pageSlug)
+  if (effectivePageSlug && activeScope?.key !== 'pageSlug') {
+    filteredDocuments = filteredDocuments.filter((doc: any) => {
+      let parsed: any = {};
+      try {
+        parsed = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+      } catch {}
+      const p = String(parsed.pageSlug ?? doc.pageSlug ?? '').trim().toLowerCase();
+      return p === effectivePageSlug.trim().toLowerCase();
+    });
+  }
+
+  // 4. Sort filtered documents by orderField if configured
+  if (orderFieldName) {
+    filteredDocuments.sort((a: any, b: any) => {
+      let aVal: number | null = null;
+      let bVal: number | null = null;
+      try {
+        const aData = typeof a.data === 'string' ? JSON.parse(a.data) : (a.data || {});
+        if (aData[orderFieldName] !== undefined && aData[orderFieldName] !== null && aData[orderFieldName] !== '') {
+          aVal = Number(aData[orderFieldName]);
+        }
+      } catch {}
+      try {
+        const bData = typeof b.data === 'string' ? JSON.parse(b.data) : (b.data || {});
+        if (bData[orderFieldName] !== undefined && bData[orderFieldName] !== null && bData[orderFieldName] !== '') {
+          bVal = Number(bData[orderFieldName]);
+        }
+      } catch {}
+
+      if (aVal !== null && bVal !== null && !isNaN(aVal) && !isNaN(bVal)) return aVal - bVal;
+      if (aVal !== null && !isNaN(aVal)) return -1;
+      if (bVal !== null && !isNaN(bVal)) return 1;
+      return (b.updated_at || 0) - (a.updated_at || 0);
+    });
+  }
+
+  const autoReorder = c.req.query('reorder') === 'true';
+
+  return c.html(
+    renderTableView(
+      collection,
+      filteredDocuments,
+      user,
+      { pageSlug: effectivePageSlug, sectionKey: effectiveSectionKey },
+      orderFieldName,
+      {
+        scopeFilterDef,
+        activeScope,
+        totalCount: rawDocuments.length,
+        autoReorder,
+      }
+    )
+  );
+});
+
+// ── 4b. Bulk Reorder Documents (/admin/content/:collection/reorder) ──────────
+adminRouter.post('/content/:collection/reorder', async (c) => {
+  const collection = c.req.param('collection');
+  const body = (await c.req.json().catch(() => ({}))) as {
+    items?: { id: string; order?: number; [k: string]: any }[];
+    orderField?: string;
+  };
+  const db = createDb(c.env.DB);
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+
+  const items = body.items || [];
+  if (!Array.isArray(items) || items.length === 0) {
+    return c.json({ error: 'No items provided for reordering' }, 400);
+  }
+
+  const orderField = body.orderField || 'order';
+  const now = Date.now();
+  let updatedCount = 0;
+
+  for (const item of items) {
+    if (!item.id) continue;
+    const doc = await db
+      .selectFrom('documents')
+      .where('collection', '=', collection)
+      .where('id', '=', item.id)
+      .select(['id', 'title', 'data', 'draft_data'])
+      .executeTakeFirst();
+
+    if (!doc) continue;
+
+    let dataObj: Record<string, any> = {};
+    try {
+      dataObj = typeof doc.data === 'string' ? JSON.parse(doc.data || '{}') : (doc.data || {});
+    } catch {}
+
+    const newOrder = item[orderField] !== undefined ? Number(item[orderField]) : Number(item.order);
+    if (!isNaN(newOrder)) {
+      dataObj[orderField] = newOrder;
+    }
+
+    let draftDataObj: Record<string, any> | null = null;
+    if (doc.draft_data) {
+      try {
+        draftDataObj = typeof doc.draft_data === 'string' ? JSON.parse(doc.draft_data) : doc.draft_data;
+        if (draftDataObj && !isNaN(newOrder)) {
+          draftDataObj[orderField] = newOrder;
+        }
+      } catch {}
+    }
+
+    await db
+      .updateTable('documents')
+      .set({
+        data: JSON.stringify(dataObj),
+        draft_data: draftDataObj ? JSON.stringify(draftDataObj) : undefined,
+        updated_at: now,
+      })
+      .where('id', '=', doc.id)
+      .execute();
+
+    updatedCount++;
+  }
+
+  await logActivity(db, {
+    actor: user.email,
+    action: 'reorder',
+    collection,
+    documentId: 'bulk',
+    documentTitle: `Reordered ${updatedCount} records in ${collection}`,
+    details: JSON.stringify({ count: updatedCount, orderField }),
+  });
+
+  return c.json({ ok: true, count: updatedCount });
 });
 
 // ── 5. Document Editor (/admin/content/:collection/:id) ──────────────────────
@@ -1056,7 +1421,7 @@ adminRouter.get('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
 
-  if (['home', 'dashboard', 'models', 'media', 'edit', 'content', 'git', 'sync', 'logs', 'activity', 'docs', 'help', 'setup'].includes(collection)) {
+  if (['home', 'dashboard', 'models', 'media', 'edit', 'content', 'git', 'sync', 'logs', 'activity', 'docs', 'help', 'setup', 'vendor'].includes(collection)) {
     return c.notFound();
   }
 

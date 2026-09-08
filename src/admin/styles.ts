@@ -327,4 +327,99 @@ export const adminStyles = `
   .model-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
   .model-desc { font-size: 13px; color: var(--text-muted); margin-top: 4px; }
   .model-badges { display: flex; gap: 6px; }
+
+  /* Alpine & Reorder Mode Styles */
+  [x-cloak] { display: none !important; }
+  .order-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; padding: 2px 6px; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; font-size: 11px; font-weight: 700; color: #38bdf8; font-family: monospace; }
+  .reorder-banner { display: flex; align-items: center; justify-content: space-between; background: #0f172a; border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 8px; padding: 10px 16px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); flex-wrap: wrap; gap: 10px; }
+  .reorder-banner-info { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #f8fafc; }
+  .reorder-banner-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .drag-handle { cursor: grab; color: #64748b; padding: 4px 8px; user-select: none; font-size: 16px; transition: color 0.15s; }
+  .drag-handle:hover { color: #38bdf8; }
+  .drag-handle:active { cursor: grabbing; }
+  .reorder-input { width: 64px; padding: 4px 6px; background: #090d16; border: 1px solid #334155; border-radius: 4px; color: #f8fafc; font-size: 12px; font-weight: 600; text-align: center; font-family: monospace; outline: none; }
+  .reorder-input:focus { border-color: var(--primary); }
+  .btn-step { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer; transition: 0.15s; line-height: 1; }
+  .btn-step:hover:not(:disabled) { background: #334155; color: #fff; border-color: #475569; }
+  .btn-step:disabled { opacity: 0.3; cursor: not-allowed; }
+  .btn-reorder { background: #1e293b; color: #f1f5f9; border: 1px solid #475569; padding: 8px 14px; font-size: 13px; font-weight: 600; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); transition: all 0.15s ease; }
+  .btn-reorder:hover { background: #334155; border-color: #64748b; color: #ffffff; }
+  .btn-reorder.btn-reorder-active, .btn-reorder-active { background: #0284c7 !important; color: #ffffff !important; border-color: #38bdf8 !important; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35) !important; }
+  .row-dirty { background: rgba(245, 158, 11, 0.08) !important; border-left: 3px solid #f59e0b !important; }
+  .sortable-ghost { opacity: 0.3; background: #1e293b !important; }
+  .sortable-chosen { background: rgba(56, 189, 248, 0.15) !important; }
+
+  /* Scope Filter Bar & Pills */
+  .scope-filter-container {
+    background: var(--surface);
+    border: 1px solid var(--surface-border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    margin-bottom: 16px;
+  }
+  .scope-filter-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .scope-filter-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .scope-pills {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .scope-pill {
+    background: #090d16;
+    border: 1px solid var(--surface-border);
+    color: var(--text-muted);
+    padding: 4px 12px;
+    border-radius: 99px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .scope-pill:hover {
+    color: #fff;
+    border-color: #334155;
+    background: #141f36;
+  }
+  .scope-pill.active {
+    background: #1e293b;
+    color: #fff;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 1px rgba(255, 138, 0, 0.2);
+  }
+  .scope-pill.active .pill-count {
+    color: var(--primary);
+  }
+  .scope-reorder-hint {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .scope-guard-banner {
+    animation: fadeIn 0.2s ease-in-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 `;

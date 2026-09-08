@@ -22,6 +22,8 @@ export function renderLayout(
       <link rel="stylesheet" href="https://unpkg.com/trix@2.0.8/dist/trix.css" />
       <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
       <script src="https://unpkg.com/trix@2.0.8/dist/trix.umd.min.js"></script>
+      <!-- Alpine.js Core & Plugins (Vendor-served from local worker isolate for 100% offline resilience) -->
+      <script defer src="/admin/vendor/alpine.js"></script>
       <style>
         ${adminStyles}
       </style>
