@@ -111,9 +111,18 @@ export function renderTableView(
                 <input type="checkbox" class="row-checkbox" value="${item.id}" data-title="${item.title || item.slug}" onchange="updateSelection()" />
               </td>
               <td><strong><a href="/admin/content/${collection}/${item.id}">${item.title || '(Untitled)'}</a></strong></td>
-              <td><code>${item.slug}</code></td>
-              <td><span class="status-pill status-${item.status}">${item.status}</span></td>
-              <td>${new Date(item.updated_at).toLocaleString()}</td>
+              <td><code style="font-size: 12px; color: #cbd5e1;">${item.slug || '—'}</code></td>
+              <td>
+                <span class="status-pill status-${item.status}">${item.status}</span>
+                ${item.draft_status && item.draft_status !== 'none' ? html`
+                  <span class="status-pill" style="margin-left: 6px; background: #451a03; color: #fb923c; border: 1px solid #d97706; font-size: 10px; font-weight: 700; padding: 2px 6px;">
+                    📝 Draft ${item.draft_status}
+                  </span>
+                ` : ''}
+              </td>
+              <td style="color: var(--text-muted); font-size: 13px;">
+                ${item.updated_at ? new Date(typeof item.updated_at === 'number' && item.updated_at < 1e12 ? item.updated_at * 1000 : item.updated_at).toLocaleDateString() : '—'}
+              </td>
               <td style="text-align: right; white-space: nowrap;">
                 <a href="/admin/content/${collection}/${item.id}" class="btn-link">Edit</a>
                 <span class="action-divider">|</span>
@@ -339,6 +348,10 @@ export function renderTableView(
         updateSelection();
       }
 
+      function getTableAuthHeaders(extra) {
+        return Object.assign({}, extra || {});
+      }
+
       async function executeBulkStatus(col, targetStatus) {
         const checked = getSelectedCheckboxes();
         if (checked.length === 0) return;
@@ -347,9 +360,9 @@ export function renderTableView(
         try {
           await Promise.all(
             ids.map(id =>
-              fetch(\`/items/\${col}/\${id}\`, {
+              fetch('/items/' + col + '/' + id, {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
+                headers: getTableAuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ status: targetStatus })
               })
             )
@@ -364,14 +377,14 @@ export function renderTableView(
         const checked = getSelectedCheckboxes();
         if (checked.length === 0) return;
 
-        const confirmed = confirm(\`Are you sure you want to PERMANENTLY delete \${checked.length} document(s) from \${col}? This cannot be undone.\`);
+        const confirmed = confirm('Are you sure you want to PERMANENTLY delete ' + checked.length + ' document(s) from ' + col + '? This cannot be undone.');
         if (!confirmed) return;
 
         const ids = checked.map(c => c.value);
         try {
           await Promise.all(
             ids.map(id =>
-              fetch(\`/items/\${col}/\${id}\`, { method: 'DELETE' })
+              fetch('/items/' + col + '/' + id, { method: 'DELETE', headers: getTableAuthHeaders() })
             )
           );
           window.location.reload();
@@ -381,13 +394,13 @@ export function renderTableView(
       }
 
       async function deleteSingleRecord(col, id, title) {
-        const confirmed = confirm(\`Are you sure you want to PERMANENTLY delete "\${title}"? This cannot be undone.\`);
+        const confirmed = confirm('Are you sure you want to PERMANENTLY delete "' + title + '"? This cannot be undone.');
         if (!confirmed) return;
 
         try {
-          const res = await fetch(\`/items/\${col}/\${id}\`, { method: 'DELETE' });
+          const res = await fetch('/items/' + col + '/' + id, { method: 'DELETE', headers: getTableAuthHeaders() });
           if (res.ok || res.status === 204) {
-            const row = document.getElementById(\`row_\${id}\`);
+            const row = document.getElementById('row_' + id);
             if (row) row.remove();
             applyItemFilters();
           } else {

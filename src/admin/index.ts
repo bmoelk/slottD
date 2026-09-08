@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/client.js';
 import { introspectCollectionFields } from '../api/views.js';
-import { getAuthenticatedUser } from '../auth/guard.js';
+import {
+  getAuthenticatedUser,
+  verifyPassword,
+  hashPassword,
+  createBriefcaseSessionCookie,
+  encryptSecret,
+  decryptSecret,
+} from '../auth/guard.js';
 import { renderDashboardView } from './views/dashboard.js';
 import { renderTableView } from './views/table.js';
 import { renderEditorView } from './views/editor.js';
@@ -12,6 +19,8 @@ import { renderGitView } from './views/git.js';
 import { renderLogsView } from './views/logs.js';
 import { renderHomeView } from './views/home.js';
 import { renderDocsView } from './views/docs.js';
+import { renderSetupView } from './views/setup.js';
+import { renderLoginView } from './views/login.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
 import type { Env } from '../types.js';
 
@@ -26,29 +35,47 @@ const dynamicImport = (modName: string): Promise<any> => {
   }
 };
 
-async function resolveDeploymentRepo(): Promise<{ path: string; hasRemote: boolean; remoteUrl: string }> {
+async function resolveDeploymentRepo(env?: Env): Promise<{ path: string; hasRemote: boolean; remoteUrl: string }> {
   const fs = await dynamicImport('fs');
   const cp = await dynamicImport('child_process');
-  const dedicatedPath = '/Users/bmo/code/websites-deployed/brainendeavor.com';
 
-  let chosenPath = typeof (globalThis as any).process !== 'undefined' && (globalThis as any).process.cwd
+  let chosenPath = (env as any)?.REPO_PATH || (typeof (globalThis as any).process !== 'undefined' && (globalThis as any).process.cwd
     ? (globalThis as any).process.cwd()
-    : '/workspace';
-
-  if (fs && fs.existsSync && fs.existsSync(dedicatedPath)) {
-    chosenPath = dedicatedPath;
-  }
+    : '');
 
   let hasRemote = false;
-  let remoteUrl = '';
+  let remoteUrl = (env as any)?.GIT_REMOTE_URL || '';
 
-  if (cp && (cp as any).execSync) {
+  // Check system_settings in D1 if available
+  if (env?.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?)')
+        .bind('git_remote_url', 'repo_path')
+        .all<{ key: string; value: string }>();
+      for (const r of rows.results || []) {
+        if (r.key === 'git_remote_url' && r.value) remoteUrl = r.value;
+        if (r.key === 'repo_path' && r.value) chosenPath = r.value;
+      }
+    } catch {}
+  }
+
+  if (!chosenPath || chosenPath === '/') {
+    chosenPath = (env as any)?.REPO_PATH || './';
+  }
+
+  if (remoteUrl) {
+    hasRemote = true;
+  }
+
+  if (cp && (cp as any).execSync && chosenPath && chosenPath !== '/' && chosenPath !== './') {
     try {
       const remotes = (cp as any).execSync(`git -C "${chosenPath}" remote -v`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
       if (remotes && remotes.trim()) {
         hasRemote = true;
         const match = remotes.match(/origin\s+([^\s]+)/);
-        remoteUrl = match ? match[1] : remotes.split('\n')[0];
+        if (!remoteUrl) {
+          remoteUrl = match ? match[1] : remotes.split('\n')[0];
+        }
       }
     } catch {}
   }
@@ -56,11 +83,66 @@ async function resolveDeploymentRepo(): Promise<{ path: string; hasRemote: boole
   return { path: chosenPath, hasRemote, remoteUrl };
 }
 
+// ── 0. Login & Session Management (/admin/login & /admin/logout) ─────────────
+adminRouter.get('/login', async (c) => {
+  const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
+  const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+  const error = c.req.query('error') || '';
+  return c.html(renderLoginView(error, operatorName, operatorEmail));
+});
+
+adminRouter.post('/login', async (c) => {
+  const body = await c.req.parseBody().catch(() => ({}));
+  const password = ((body as any)?.password as string) || '';
+
+  const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
+  const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+  const email = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+
+  let configuredHash = (c.env as any).ADMIN_PASSWORD_HASH;
+  const legacyPlain = (c.env as any).ADMIN_PASSWORD;
+
+  if (!configuredHash && c.env.DB) {
+    try {
+      const row = await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
+        .bind('admin_password_hash')
+        .first<{ value: string }>();
+      if (row?.value) {
+        configuredHash = row.value;
+      }
+    } catch {}
+  }
+
+  let isValid = false;
+  if (configuredHash) {
+    isValid = await verifyPassword(password, configuredHash, apiKey);
+  } else if (legacyPlain) {
+    isValid = password === legacyPlain;
+  } else {
+    isValid = true; // No password set
+  }
+
+  if (!isValid) {
+    const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
+    const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+    return c.html(renderLoginView('Invalid password. Please try again.', operatorName, operatorEmail), 401);
+  }
+
+  const sessionCookie = await createBriefcaseSessionCookie(email, secret);
+  c.header('Set-Cookie', `slottd_session=${sessionCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return c.redirect('/admin/home');
+});
+
+adminRouter.get('/logout', (c) => {
+  c.header('Set-Cookie', 'slottd_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  return c.redirect('/admin/login');
+});
+
 // ── 1. Studio Home & Metrics Overview (/admin/home & /admin/dashboard) ────────
 adminRouter.get('/home', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const repoInfo = await resolveDeploymentRepo();
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   let docCount = 0;
   let publishedCount = 0;
@@ -138,7 +220,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   const queryCol = c.req.query('collection');
   const isNew = idOrSlug === '+' || idOrSlug === 'new';
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   let targetCollection = queryCol || '';
   let doc: any = null;
@@ -171,7 +253,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
       collection: targetCollection,
       slug: isNew ? '' : idOrSlug,
       title: isNew ? '' : idOrSlug,
-      status: 'draft',
+      status: 'published',
       data: '{}',
     };
   }
@@ -197,7 +279,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
 // ── 3. Collections Dashboard (/admin) ─────────────────────────────────────────
 adminRouter.get('/', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   // 1. Fetch registered collections with metadata
   let collectionsList: any[] = [];
@@ -239,7 +321,7 @@ adminRouter.get('/content/:collection', async (c) => {
   const pageSlug = c.req.query('pageSlug');
   const sectionKey = c.req.query('sectionKey') || c.req.query('galleryKey');
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   const documents = await db
     .selectFrom('documents')
@@ -257,14 +339,14 @@ adminRouter.get('/content/:collection/:id', async (c) => {
   const idOrSlug = c.req.param('id');
   const isNew = idOrSlug === '+' || idOrSlug === 'new';
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   let doc: any = {
     id: isNew ? crypto.randomUUID() : idOrSlug,
     collection,
     slug: isNew ? '' : idOrSlug,
     title: '',
-    status: 'draft',
+    status: 'published',
     data: '{}',
   };
 
@@ -302,7 +384,7 @@ adminRouter.get('/content/:collection/:id', async (c) => {
 // ── 6. Models & Schema Overview (/admin/models) ──────────────────────────────
 adminRouter.get('/models', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   const collections = await db.selectFrom('collections').selectAll().orderBy('name', 'asc').execute();
   const modelsWithFields = await Promise.all(
@@ -321,7 +403,7 @@ adminRouter.get('/models', async (c) => {
 // ── 7. Media Library & Cloudflare R2 Browser (/admin/media) ───────────────────
 adminRouter.get('/media', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   let mediaFiles: any[] = [];
   try {
@@ -340,7 +422,7 @@ adminRouter.get('/activity', (c) => c.redirect('/admin/logs'));
 
 adminRouter.get('/logs', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   let logs: any[] = [];
   try {
@@ -360,8 +442,8 @@ adminRouter.get('/sync', (c) => c.redirect('/admin/git'));
 
 adminRouter.get('/git', async (c) => {
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const repoInfo = await resolveDeploymentRepo();
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   let docCount = 0;
   let mediaCount = 0;
@@ -385,6 +467,17 @@ adminRouter.get('/git', async (c) => {
     if (cp && (cp as any).execSync) {
       const rawTags = (cp as any).execSync(`git -C "${repoInfo.path}" tag -l --sort=-creatordate`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
       tags = rawTags.split('\n').map((t: string) => t.trim()).filter(Boolean);
+    } else if (c.env.ENVIRONMENT !== 'production') {
+      const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoPath: repoInfo.path }),
+        signal: AbortSignal.timeout(600),
+      }).catch(() => null);
+      if (bridgeRes && bridgeRes.ok) {
+        const json: any = await bridgeRes.json().catch(() => ({}));
+        if (json.tags && Array.isArray(json.tags)) tags = json.tags;
+      }
     }
   } catch {}
 
@@ -408,9 +501,25 @@ adminRouter.get('/git', async (c) => {
 
 // ── 10. Fetch Remote Tags (/admin/git/fetch) ──────────────────────────────────
 adminRouter.post('/git/fetch', async (c) => {
-  const repoInfo = await resolveDeploymentRepo();
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   try {
+    // 1. Check local Git execution bridge
+    if (c.env.ENVIRONMENT !== 'production') {
+      try {
+        const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoPath: repoInfo.path }),
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => null);
+        if (bridgeRes && bridgeRes.ok) {
+          const json: any = await bridgeRes.json().catch(() => ({}));
+          return c.json(json);
+        }
+      } catch {}
+    }
+
     const cp = await dynamicImport('child_process');
     if (cp && (cp as any).execSync) {
       if (!repoInfo.hasRemote) {
@@ -423,7 +532,7 @@ adminRouter.post('/git/fetch', async (c) => {
         );
       }
 
-      const output = (cp as any).execSync(`git -C "${repoInfo.path}" fetch --all --tags origin`, { encoding: 'utf8' });
+      const output = (cp as any).execSync(`git -C "${repoInfo.path}" fetch --tags origin`, { encoding: 'utf8' });
       const rawTags = (cp as any).execSync(`git -C "${repoInfo.path}" tag -l --sort=-creatordate`, { encoding: 'utf8' });
       const tags = rawTags.split('\n').map((t: string) => t.trim()).filter(Boolean);
       return c.json({ success: true, message: `Fetched remote tags successfully (${tags.length} total).`, output, tags });
@@ -441,9 +550,39 @@ adminRouter.post('/git/release', async (c) => {
   const tag = (body.tag as string) || `release-${Date.now()}`;
   const message = (body.message as string) || `chore(content): release snapshot ${tag}`;
   const push = body.push === true;
-  const repoInfo = await resolveDeploymentRepo();
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   try {
+    // 1. Check local Git execution bridge
+    if (c.env.ENVIRONMENT !== 'production') {
+      try {
+        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
+        if (bridgeCheck && bridgeCheck.ok) {
+          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag, message, push, repoPath: repoInfo.path }),
+          });
+          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
+          if (bridgeRes.ok && bridgeJson.success) {
+            return c.json({
+              success: true,
+              message: bridgeJson.message,
+              output: bridgeJson.output,
+            });
+          } else {
+            return c.json(
+              {
+                error: bridgeJson.error || 'Bridge git release failed',
+                output: bridgeJson.output || bridgeJson.error,
+              },
+              500
+            );
+          }
+        }
+      } catch {}
+    }
+
     const items = await exportToGitFormat(db);
     const files = serializeToFiles(items, 'content');
 
@@ -505,9 +644,12 @@ adminRouter.post('/git/release', async (c) => {
       });
     }
 
+    const releaseCmd = `npm run sync:git -- --export --tag=${tag}${push ? ' --push' : ''}`;
     return c.json({
       success: true,
-      message: `Exported ${items.length} records into ${files.length} release files.`,
+      message: `Database snapshot exported: ${items.length} records in ${files.length} content files.`,
+      output: `[Briefcase Mode] Cloudflare Worker isolates cannot run host shell binaries.\nTo commit, tag, and push from your workstation, run:\n\n${releaseCmd}\n`,
+      command: releaseCmd,
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -519,13 +661,29 @@ adminRouter.post('/git/diff', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
-  const repoInfo = await resolveDeploymentRepo();
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   if (!tag) {
     return c.json({ error: 'Tag is required for diff preview.' }, 400);
   }
 
   try {
+    // 1. Check local Git execution bridge
+    if (c.env.ENVIRONMENT !== 'production') {
+      try {
+        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
+        if (bridgeCheck && bridgeCheck.ok) {
+          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/diff', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repoPath: repoInfo.path, tag }),
+          });
+          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
+          return c.json(bridgeJson, bridgeRes.status as any);
+        }
+      } catch {}
+    }
+
     const items = await exportToGitFormat(db);
     const files = serializeToFiles(items, 'content');
 
@@ -571,7 +729,7 @@ adminRouter.post('/git/load', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
-  const repoInfo = await resolveDeploymentRepo();
+  const repoInfo = await resolveDeploymentRepo(c.env);
 
   if (!tag) {
     return c.json({ error: 'Tag is required to load content.' }, 400);
@@ -695,25 +853,216 @@ adminRouter.get('/git/backup', async (c) => {
 });
 
 // ── 15. User Documentation & Guides (/admin/docs & /admin/help) ───────────────
-adminRouter.get('/docs', (c) => {
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+adminRouter.get('/docs', async (c) => {
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
   return c.html(renderDocsView(user));
 });
 
 adminRouter.get('/help', (c) => c.redirect('/admin/docs'));
+
+// ── 15b. Setup & Briefcase Operations (/admin/setup) ─────────────────────────
+adminRouter.get('/setup', async (c) => {
+  const db = createDb(c.env.DB);
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', name: 'Local Operator', authMethod: 'local-briefcase' };
+
+  let docCount = 0;
+  let draftCount = 0;
+  let mediaCount = 0;
+
+  try {
+    const docs = await db.selectFrom('documents').select((eb) => eb.fn.count('id').as('count')).executeTakeFirst();
+    docCount = Number(docs?.count || 0);
+
+    const drafts = await db.selectFrom('documents').where('draft_status', '!=', 'none').select((eb) => eb.fn.count('id').as('count')).executeTakeFirst();
+    draftCount = Number(drafts?.count || 0);
+
+    const media = await db.selectFrom('media').select((eb) => eb.fn.count('id').as('count')).executeTakeFirst();
+    mediaCount = Number(media?.count || 0);
+  } catch {}
+
+  const isDev = c.env.ENVIRONMENT !== 'production';
+  const operatorName = user.name || (c.env as any).OPERATOR_NAME || 'Local Operator';
+  const operatorEmail = user.email || (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+
+  let isPasswordProtected = !!((c.env as any).ADMIN_PASSWORD_HASH || (c.env as any).ADMIN_PASSWORD);
+  let gitRemoteUrl = (c.env as any).GIT_REMOTE_URL || '';
+  let gitBranch = 'main';
+  let gitProvider = 'generic-https';
+  let hasToken = false;
+
+  if (c.env.DB) {
+    try {
+      const rows = await c.env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)')
+        .bind('admin_password_hash', 'git_remote_url', 'git_branch', 'git_provider', 'git_token_enc')
+        .all<{ key: string; value: string }>();
+
+      for (const row of rows.results || []) {
+        if (row.key === 'admin_password_hash' && row.value) isPasswordProtected = true;
+        if (row.key === 'git_remote_url' && row.value) gitRemoteUrl = row.value;
+        if (row.key === 'git_branch' && row.value) gitBranch = row.value;
+        if (row.key === 'git_provider' && row.value) gitProvider = row.value;
+        if (row.key === 'git_token_enc' && row.value) hasToken = true;
+      }
+    } catch {}
+  }
+
+  return c.html(renderSetupView({
+    environment: c.env.ENVIRONMENT || 'development',
+    operatorName,
+    operatorEmail,
+    docCount,
+    draftCount,
+    mediaCount,
+    isDev,
+    isPasswordProtected,
+    gitRemoteUrl,
+    gitBranch,
+    gitProvider,
+    hasToken,
+  }, user));
+});
+
+// ── Password Management (/admin/setup/password) ──────────────────────────────
+adminRouter.post('/setup/password', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const currentPassword = (body.currentPassword as string) || '';
+  const newPassword = (body.newPassword as string) || '';
+  const remove = body.remove === true;
+
+  const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
+  const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+  const email = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+
+  let currentHash = (c.env as any).ADMIN_PASSWORD_HASH;
+  const legacyPlain = (c.env as any).ADMIN_PASSWORD;
+
+  if (c.env.DB) {
+    try {
+      const row = await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
+        .bind('admin_password_hash')
+        .first<{ value: string }>();
+      if (row?.value) currentHash = row.value;
+    } catch {}
+  }
+
+  const isProtected = !!(currentHash || legacyPlain);
+  if (isProtected) {
+    let validCurrent = false;
+    if (currentHash) {
+      validCurrent = await verifyPassword(currentPassword, currentHash, apiKey);
+    } else if (legacyPlain) {
+      validCurrent = currentPassword === legacyPlain;
+    }
+    if (!validCurrent) {
+      return c.json({ error: 'Current password is incorrect.' }, 400);
+    }
+  }
+
+  if (remove) {
+    if (c.env.DB) {
+      try {
+        await c.env.DB.prepare('DELETE FROM system_settings WHERE key = ?')
+          .bind('admin_password_hash')
+          .run();
+      } catch {}
+    }
+    c.header('Set-Cookie', 'slottd_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+    return c.json({ success: true, message: 'Password protection removed. Switched to Zero-Barrier mode.' });
+  }
+
+  if (!newPassword || newPassword.length < 4) {
+    return c.json({ error: 'New password must be at least 4 characters long.' }, 400);
+  }
+
+  const newHash = await hashPassword(newPassword, apiKey);
+
+  if (c.env.DB) {
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      )
+        .bind('admin_password_hash', newHash, Date.now())
+        .run();
+    } catch (err: any) {
+      console.warn('Could not save password hash in D1 system_settings:', err.message);
+    }
+  }
+
+  // Issue new session cookie
+  const sessionCookie = await createBriefcaseSessionCookie(email, secret);
+  c.header('Set-Cookie', `slottd_session=${sessionCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+
+  return c.json({ success: true, message: 'Studio password updated and encrypted successfully!' });
+});
+
+// ── Git Remote Settings (/admin/setup/remote) ────────────────────────────────
+adminRouter.post('/setup/remote', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const remoteUrl = (body.remoteUrl as string) || '';
+  const branch = (body.branch as string) || 'main';
+  const provider = (body.provider as string) || 'generic-https';
+  const token = (body.token as string) || '';
+
+  const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+
+  if (c.env.DB) {
+    const now = Date.now();
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('git_remote_url', remoteUrl, now).run();
+
+      await c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('git_branch', branch, now).run();
+
+      await c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('git_provider', provider, now).run();
+
+      if (token) {
+        const encToken = await encryptSecret(token, secret);
+        await c.env.DB.prepare(
+          'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        ).bind('git_token_enc', encToken, now).run();
+      }
+    } catch (err: any) {
+      return c.json({ error: 'Failed to update remote settings: ' + err.message }, 500);
+    }
+  }
+
+  return c.json({ success: true, message: 'Git remote settings saved.' });
+});
+
+adminRouter.post('/setup/reset-db', async (c) => {
+  if (c.env.ENVIRONMENT === 'production') {
+    return c.json({ error: 'Database reset is strictly prohibited in production mode' }, 403);
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    await db.deleteFrom('documents').execute();
+    try { await db.deleteFrom('media').execute(); } catch {}
+    try { await db.deleteFrom('directus_versions').execute(); } catch {}
+
+    return c.json({ ok: true, message: 'Local database tables wiped successfully.' });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
 
 // ── 16. Shorthand Route Fallbacks (/admin/:collection/:id) ───────────────────
 adminRouter.get('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
 
-  if (['home', 'dashboard', 'models', 'media', 'edit', 'content', 'git', 'sync', 'logs', 'activity', 'docs', 'help'].includes(collection)) {
+  if (['home', 'dashboard', 'models', 'media', 'edit', 'content', 'git', 'sync', 'logs', 'activity', 'docs', 'help', 'setup'].includes(collection)) {
     return c.notFound();
   }
 
   const isNew = idOrSlug === '+' || idOrSlug === 'new';
   const db = createDb(c.env.DB);
-  const user = getAuthenticatedUser(c) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
 
   let doc: any = {
     id: isNew ? crypto.randomUUID() : idOrSlug,

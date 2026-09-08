@@ -5,8 +5,16 @@ export interface Env {
   ALLOWED_ORIGINS?: string;
   ADMIN_API_KEY?: string;
   ADMIN_TOKEN?: string;
+  ADMIN_PASSWORD_HASH?: string;
+  ADMIN_PASSWORD?: string;
+  JWT_SECRET?: string;
   PREVIEW_SECRET?: string;
   GITHUB_TOKEN?: string;
+  GIT_REMOTE_URL?: string;
+  REPO_PATH?: string;
+  CONTENT_DIR?: string;
+  OPERATOR_NAME?: string;
+  OPERATOR_EMAIL?: string;
   PRODUCTION_DEPLOY_HOOK_URL?: string;
   STAGING_DEPLOY_HOOK_URL?: string;
   DEPLOY_HOOK_URL?: string;
@@ -38,6 +46,33 @@ export interface DocumentRow {
   schema_version: number;
   publish_at?: number | null;
   data: string; // JSON string
+  draft_data?: string | null; // JSON string of working copy / uncommitted draft
+  draft_updated_at?: number | null;
+  draft_status?: 'none' | 'modified' | 'new';
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DirectusVersionRow {
+  id: string;
+  key: string;
+  name: string;
+  collection: string;
+  item: string;
+  delta: string; // JSON string of field diffs
+  date_created: number;
+  date_updated: number;
+  user_created?: string | null;
+  user_updated?: string | null;
+}
+
+export interface BundleRow {
+  id: string;
+  name: string;
+  slug: string;
+  status: 'draft' | 'in_review' | 'approved' | 'published';
+  git_branch?: string | null;
+  publish_at?: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -64,6 +99,12 @@ export interface ActivityLogRow {
   details?: string | null;
 }
 
+export interface SystemSettingRow {
+  key: string;
+  value: string;
+  updated_at: number;
+}
+
 export interface DirectusQueryParams {
   filter?: Record<string, any>;
   sort?: string;
@@ -72,6 +113,7 @@ export interface DirectusQueryParams {
   fields?: string;
   search?: string;
   status?: string;
+  version?: string;
 }
 
 export interface FieldDefinition {
@@ -102,6 +144,53 @@ export interface ModelPack {
   collections: Record<string, CollectionDefinition>;
 }
 
+// ── Standardized Lifecycle Hooks Contract ───────────────────────────────────
+
+export interface HookResult<T = any> {
+  status: 'ok' | 'warning' | 'error';
+  message?: string;
+  data?: T;
+}
+
+export interface PublishHookContext {
+  bundle?: { id: string; slug: string; name: string };
+  items?: any[];
+  changedItems?: {
+    collection: string;
+    slug: string;
+    status: 'new' | 'modified' | 'deleted';
+    modifiedFields: string[];
+    delta: Record<string, any>;
+  }[];
+  actor?: { email: string; authMethod: string };
+  forcePublish?: boolean;
+  timestamp?: number;
+  commitSha?: string;
+}
+
+export interface PublishCheckResult {
+  name: string; // Identifier, e.g. 'slotwire-contracts', 'spell-check', 'terminology'
+  displayName: string; // User-facing, e.g. 'SlotWire Schema Contracts'
+  passed: boolean;
+  errors: string[];
+  warnings: string[];
+  metadata?: Record<string, any>;
+}
+
+export type PublishCheck = (ctx: PublishHookContext) => Promise<PublishCheckResult>;
+
+export interface PublishReportData {
+  summary: {
+    totalChecks: number;
+    passed: number;
+    failed: number;
+    warningCount: number;
+  };
+  checks: PublishCheckResult[];
+  errors: string[]; // Explicitly attributed with [CheckName] prefix
+  warnings: string[]; // Explicitly attributed with [CheckName] prefix
+}
+
 export interface SlottdConfig {
   packs?: ModelPack[];
   collections?: Record<string, CollectionDefinition>;
@@ -110,5 +199,10 @@ export interface SlottdConfig {
     repo: string;
     branch?: string;
     path?: string;
+    includeDrafts?: boolean;
+  };
+  hooks?: {
+    onBeforePublish?: (ctx: PublishHookContext) => Promise<HookResult<PublishReportData>>;
+    onAfterPublish?: (ctx: PublishHookContext) => Promise<HookResult<any>>;
   };
 }

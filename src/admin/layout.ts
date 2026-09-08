@@ -1,12 +1,12 @@
 import { html } from 'hono/html';
 import { adminStyles } from './styles.js';
 
-export type AdminTab = 'home' | 'content' | 'media' | 'models' | 'logs' | 'activity' | 'sync' | 'git' | 'docs' | 'help';
+export type AdminTab = 'home' | 'content' | 'media' | 'models' | 'logs' | 'activity' | 'sync' | 'git' | 'setup' | 'docs' | 'help';
 
 export function renderLayout(
   title: string,
   activeTab: AdminTab,
-  user: { email: string; authMethod?: string },
+  user: { email: string; name?: string; authMethod?: string },
   content: any
 ) {
   return html`
@@ -45,11 +45,18 @@ export function renderLayout(
           <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
           <a href="/admin/logs" class="nav-tab ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs</a>
           <a href="/admin/git" class="nav-tab ${activeTab === 'git' ? 'active' : ''}">Git</a>
+          <a href="/admin/setup" class="nav-tab ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
           <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
-        <div class="user-badge">
-          <span>●</span>
-          <span>${user?.email || 'dev@localhost'}</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
+            <span style="color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
+            <span>${user?.name || user?.email || 'dev@localhost'}</span>
+            ${user?.authMethod === 'local-briefcase' ? html`<span style="font-size: 10px; color: #38bdf8; margin-left: 4px; font-weight: 700;">[Briefcase]</span>` : ''}
+          </div>
+          <a href="/admin/logout" class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; text-decoration: none; color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(255,255,255,0.12);" title="Lock Studio Session & Sign Out">
+            <span>🔒</span> Lock
+          </a>
         </div>
       </div>
       ${content}

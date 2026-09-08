@@ -152,7 +152,7 @@ export async function introspectCollectionFields(
     if (!result.rows || result.rows.length === 0) {
       return [
         { name: 'title', type: 'TEXT', widget: 'text', label: 'Title', required: true },
-        { name: 'slug', type: 'TEXT', widget: 'text', label: 'Slug', required: true },
+        { name: 'slug', type: 'TEXT', widget: 'slug', label: 'Slug', required: true },
         { name: 'status', type: 'TEXT', widget: 'text', label: 'Status', required: true },
         { name: 'content', type: 'TEXT', widget: 'markdown', label: 'Body Content' },
       ];

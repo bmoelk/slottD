@@ -94,7 +94,9 @@ export function renderGitView(
         if (res.ok) {
           appendLog('✅ ' + json.message, 'success');
           if (json.output) appendLog(json.output, 'info');
-          setTimeout(() => window.location.reload(), 2000);
+          if (json.command) {
+            appendLog('👉 To execute via terminal, run:\\n' + json.command, 'command');
+          }
         } else {
           appendLog('❌ Release failed: ' + (json.error || res.statusText), 'error');
           if (json.output) appendLog(json.output, 'error');
@@ -120,7 +122,7 @@ export function renderGitView(
         });
         const json = await res.json();
         if (res.ok) {
-          appendLog('✅ Diff generated against tag \\'' + tag + '\\':', 'success');
+          appendLog('✅ Diff generated against tag "' + tag + '":', 'success');
           if (json.output) appendLog(json.output, 'info');
 
           const diffCard = document.getElementById('diffSummaryCard');
@@ -144,7 +146,7 @@ export function renderGitView(
       const tag = document.getElementById('tagSelect')?.value;
       if (!tag) return;
 
-      const confirmed = confirm('Are you sure you want to load and restore D1 database content from Git tag \\'' + tag + '\\'?');
+      const confirmed = confirm('Are you sure you want to load and restore D1 database content from Git tag "' + tag + '"?');
       if (!confirmed) return;
 
       appendLog('$ git checkout ' + tag + ' -- content/ (Restoring D1 records...)', 'command');

@@ -2,21 +2,34 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { itemsRouter } from './api/items.js';
 import { filesRouter } from './api/files.js';
+import { versionsRouter } from './api/versions.js';
 import { adminRouter } from './admin/ui.js';
 import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGitHub } from './sync/git-sync.js';
 import { createDb } from './db/client.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
-import { requireWriteAuth, requireStudioAuth } from './auth/guard.js';
-import type { Env } from './types.js';
+import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser } from './auth/guard.js';
+import type { Env, SlottdConfig, PublishHookContext } from './types.js';
 
 export * from './types.js';
 export * from './packs/slotwire.js';
 export * from './packs/blog.js';
 export * from './api/views.js';
+export * from './api/versions.js';
 export * from './db/client.js';
 export * from './sync/git-sync.js';
 export * from './auth/guard.js';
+export * from './checks/index.js';
+
+let appConfig: SlottdConfig | null = null;
+
+export function setSlottdConfig(cfg: SlottdConfig) {
+  appConfig = cfg;
+}
+
+export function getSlottdConfig(): SlottdConfig | null {
+  return appConfig;
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -26,7 +39,7 @@ app.use('*', async (c, next) => {
   return cors({
     origin,
     allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
     exposeHeaders: ['Content-Length', 'X-SlottD-Version'],
     maxAge: 86400,
   })(c, next);
@@ -36,7 +49,7 @@ app.use('*', async (c, next) => {
 app.get('/', (c) => {
   return c.json({
     name: 'SlottD',
-    version: '0.1.0',
+    version: '0.2.0',
     engine: 'cloudflare-d1',
     storage: 'cloudflare-r2',
     provider: 'directus-compatible',
@@ -45,20 +58,52 @@ app.get('/', (c) => {
   });
 });
 
-// 3. Directus Items REST API
+// 3. Directus AST REST Routes
 app.route('/items', itemsRouter);
-
-// 4. Cloudflare R2 Media API
 app.route('/files', filesRouter);
+app.route('/versions', versionsRouter);
 
-// Public /media/:key handler for direct R2 asset serving
+// Directus-Compliant Audit & Activity Log
+app.get('/activity', requireWriteAuth, async (c) => {
+  const db = createDb(c.env.DB);
+  const limit = Number(c.req.query('limit')) || 50;
+  const logs = await db
+    .selectFrom('activity_log')
+    .selectAll()
+    .orderBy('timestamp', 'desc')
+    .limit(limit)
+    .execute();
+
+  return c.json({
+    data: logs,
+    meta: { filter_count: logs.length },
+  });
+});
+
+app.get('/revisions', requireWriteAuth, async (c) => {
+  const db = createDb(c.env.DB);
+  const limit = Number(c.req.query('limit')) || 50;
+  const revisions = await db
+    .selectFrom('activity_log')
+    .where('action', 'in', ['create', 'update', 'update_draft', 'delete', 'version_promote'])
+    .selectAll()
+    .orderBy('timestamp', 'desc')
+    .limit(limit)
+    .execute();
+
+  return c.json({
+    data: revisions,
+    meta: { filter_count: revisions.length },
+  });
+});
+
+// 4. Public /media/:key handler for direct R2 asset serving
 app.get('/media/:key', async (c) => {
   const key = c.req.param('key');
   const bucket = c.env.MEDIA;
   let object = bucket ? await bucket.get(key) : null;
 
   if (!object) {
-    // Graceful fallback to remote Cloudflare R2 bucket for local development
     const remoteUrl = c.env.REMOTE_MEDIA_URL || 'https://cms.brainendeavor.com/media';
     try {
       const res = await fetch(`${remoteUrl}/${encodeURIComponent(key)}`);
@@ -108,57 +153,147 @@ app.get('/favicon.ico', (c) => {
   });
 });
 
-// 6. Bi-Directional Git Sync API
-app.post('/api/sync/hydrate', requireWriteAuth, async (c) => {
-  const body = await c.req.json();
-  const db = createDb(c.env.DB);
-  const items = Array.isArray(body) ? body : body.items || [];
-  const result = await hydrateFromGit(db, items);
-  return c.json({ success: true, result });
-});
+// ── SlottD Extended Engine (/ext/*) ──────────────────────────────────────────
 
-app.get('/api/sync/export', async (c) => {
-  const collection = c.req.query('collection');
-  const db = createDb(c.env.DB);
-  const items = await exportToGitFormat(db, collection);
-  return c.json({ items });
-});
-
-// 7. Git Release & Promotion Trigger
-app.post('/api/release/publish', requireWriteAuth, async (c) => {
+/**
+ * Release Publisher Handler with Standardized Lifecycle Hooks.
+ */
+async function handlePublishRelease(c: any) {
   const env = c.env;
-  if (!env.GITHUB_TOKEN) {
-    return c.json({ error: 'GITHUB_TOKEN secret not configured in Cloudflare Worker' }, 400);
-  }
-
   const db = createDb(env.DB);
   const body = await c.req.json().catch(() => ({}));
+  const user = await getAuthenticatedUser(c);
+
   const repoOwner = body.repoOwner || 'bmoelk';
   const repoName = body.repoName || 'brainendeavor.com';
   const branch = body.branch || 'main';
+  const bundleSlug = body.bundleSlug || body.bundle;
+  const forcePublish = Boolean(body.forcePublish);
+  const now = Date.now();
 
-  // 1. Export all current published documents
-  const items = await exportToGitFormat(db);
-  const files = serializeToFiles(items, 'content');
+  // 1. Gather all working drafts / changed items
+  let changedQuery = db
+    .selectFrom('documents')
+    .where('draft_status', 'in', ['modified', 'new'])
+    .selectAll();
 
-  // 2. Generate timestamp tag
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '.');
-  const timeStr = now.toTimeString().slice(0, 5).replace(/:/g, '');
-  const tagName = body.tag || `release-${dateStr}-${timeStr}`;
+  const changedDocs = await changedQuery.execute();
 
-  // 3. Commit & Tag on GitHub
-  const gitResult = await publishReleaseToGitHub({
-    githubToken: env.GITHUB_TOKEN,
-    repoOwner,
-    repoName,
-    branch,
-    files,
-    tagName,
-    commitMessage: body.message || `Production Content Release: ${tagName}`,
+  const changedItems = changedDocs.map((doc: any) => {
+    let baseData = {};
+    let draftData = {};
+    try { baseData = JSON.parse(doc.data || '{}'); } catch {}
+    try { draftData = JSON.parse(doc.draft_data || '{}'); } catch {}
+
+    const delta: Record<string, any> = {};
+    const modifiedFields: string[] = [];
+
+    for (const [k, v] of Object.entries(draftData)) {
+      if (JSON.stringify(v) !== JSON.stringify((baseData as any)[k])) {
+        delta[k] = v;
+        modifiedFields.push(k);
+      }
+    }
+
+    return {
+      collection: doc.collection,
+      slug: doc.slug,
+      status: doc.draft_status as 'new' | 'modified',
+      modifiedFields,
+      delta: Object.keys(delta).length > 0 ? delta : draftData,
+    };
   });
 
-  // 4. Trigger Pages Deploy Hook if configured
+  const allItems = await exportToGitFormat(db);
+
+  // 2. Build PublishHookContext
+  const hookCtx: PublishHookContext = {
+    bundle: bundleSlug ? { id: `bundle-${bundleSlug}`, slug: bundleSlug, name: bundleSlug } : undefined,
+    items: allItems,
+    changedItems,
+    actor: { email: user?.email || 'admin@edge', authMethod: user?.authMethod || 'unknown' },
+    forcePublish,
+    timestamp: now,
+  };
+
+  // 3. Execute onBeforePublish Hook
+  let auditReport: any = null;
+  if (appConfig?.hooks?.onBeforePublish) {
+    const hookResult = await appConfig.hooks.onBeforePublish(hookCtx);
+
+    if (hookResult.status === 'error' && !forcePublish) {
+      return c.json(
+        {
+          error: 'Pre-publish verification failed',
+          message: hookResult.message,
+          report: hookResult.data,
+        },
+        422
+      );
+    }
+
+    auditReport = {
+      timestamp: new Date(now).toISOString(),
+      actor: hookCtx.actor,
+      bundle: hookCtx.bundle,
+      status: hookResult.status,
+      message: hookResult.message,
+      data: hookResult.data,
+    };
+  }
+
+  // 4. Promote working copies in D1
+  for (const doc of changedDocs) {
+    let baseData = {};
+    let draftData = {};
+    try { baseData = JSON.parse(doc.data || '{}'); } catch {}
+    try { draftData = JSON.parse(doc.draft_data || '{}'); } catch {}
+    const promotedData = { ...baseData, ...draftData };
+
+    await db
+      .updateTable('documents')
+      .set({
+        data: JSON.stringify(promotedData),
+        draft_data: null,
+        draft_status: 'none',
+        status: 'published',
+        updated_at: now,
+      })
+      .where('id', '=', doc.id)
+      .execute();
+  }
+
+  // 5. Serialize documents for Git release
+  const updatedItems = await exportToGitFormat(db);
+  const files = serializeToFiles(updatedItems, 'content');
+
+  // Embed verification report in content/.audit/
+  if (auditReport) {
+    files.push({
+      path: 'content/.audit/verification-report.json',
+      content: JSON.stringify(auditReport, null, 2),
+    });
+  }
+
+  // 6. Generate Release Tag & Commit to GitHub (if token configured)
+  const dateStr = new Date(now).toISOString().slice(0, 10).replace(/-/g, '.');
+  const timeStr = new Date(now).toTimeString().slice(0, 5).replace(/:/g, '');
+  const tagName = body.tag || `release-${dateStr}-${timeStr}`;
+
+  let gitResult: any = { commitSha: 'local', tagCreated: false };
+  if (env.GITHUB_TOKEN) {
+    gitResult = await publishReleaseToGitHub({
+      githubToken: env.GITHUB_TOKEN,
+      repoOwner,
+      repoName,
+      branch,
+      files,
+      tagName,
+      commitMessage: body.message || `Production Content Release: ${tagName}`,
+    });
+  }
+
+  // 7. Trigger Production Deploy Hook if configured
   let deployHookResult: any = null;
   if (env.PRODUCTION_DEPLOY_HOOK_URL) {
     try {
@@ -169,13 +304,130 @@ app.post('/api/release/publish', requireWriteAuth, async (c) => {
     }
   }
 
+  // 8. Execute onAfterPublish Hook
+  hookCtx.commitSha = gitResult.commitSha;
+  if (appConfig?.hooks?.onAfterPublish) {
+    try {
+      await appConfig.hooks.onAfterPublish(hookCtx);
+    } catch (afterErr: any) {
+      console.warn('[SlottD] onAfterPublish hook error:', afterErr.message);
+    }
+  }
+
   return c.json({
     success: true,
     tag: tagName,
     commitSha: gitResult.commitSha,
     tagCreated: gitResult.tagCreated,
+    promotedCount: changedDocs.length,
     deployHook: deployHookResult,
+    auditReport,
   });
+}
+
+// SlottD Extension Endpoints (/ext/*)
+app.post('/ext/release/publish', requireWriteAuth, handlePublishRelease);
+
+app.post('/ext/sync/hydrate', requireWriteAuth, async (c) => {
+  const body = await c.req.json();
+  const db = createDb(c.env.DB);
+  const items = Array.isArray(body) ? body : body.items || [];
+  const result = await hydrateFromGit(db, items);
+  return c.json({ success: true, result });
+});
+
+app.get('/ext/sync/export', async (c) => {
+  const collection = c.req.query('collection');
+  const db = createDb(c.env.DB);
+  const items = await exportToGitFormat(db, collection);
+  return c.json({ items });
+});
+
+app.get('/ext/briefcase/status', requireWriteAuth, async (c) => {
+  const db = createDb(c.env.DB);
+  const dirtyDrafts = await db
+    .selectFrom('documents')
+    .where('draft_status', 'in', ['modified', 'new'])
+    .select(['id', 'collection', 'slug', 'title', 'draft_status'])
+    .execute();
+
+  const totalDocs = await db.selectFrom('documents').select(db.fn.count('id').as('count')).executeTakeFirst();
+  const totalVersions = await db.selectFrom('directus_versions').select(db.fn.count('id').as('count')).executeTakeFirst();
+
+  return c.json({
+    offline: false,
+    dirtyDraftCount: dirtyDrafts.length,
+    dirtyDrafts,
+    totalDocuments: Number((totalDocs as any)?.count || 0),
+    totalVersions: Number((totalVersions as any)?.count || 0),
+  });
+});
+
+app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const db = createDb(c.env.DB);
+  const user = await getAuthenticatedUser(c);
+
+  const changedDocs = await db
+    .selectFrom('documents')
+    .where('draft_status', 'in', ['modified', 'new'])
+    .selectAll()
+    .execute();
+
+  const changedItems = changedDocs.map((doc: any) => {
+    let draftData = {};
+    try { draftData = JSON.parse(doc.draft_data || '{}'); } catch {}
+    return {
+      collection: doc.collection,
+      slug: doc.slug,
+      status: doc.draft_status as 'new' | 'modified',
+      modifiedFields: Object.keys(draftData),
+      delta: draftData,
+    };
+  });
+
+  const ctx: PublishHookContext = {
+    bundle: body.bundleSlug ? { id: `bundle-${body.bundleSlug}`, slug: body.bundleSlug, name: body.bundleSlug } : undefined,
+    items: await exportToGitFormat(db),
+    changedItems,
+    actor: { email: user?.email || 'admin@edge', authMethod: user?.authMethod || 'unknown' },
+    timestamp: Date.now(),
+  };
+
+  if (!appConfig?.hooks?.onBeforePublish) {
+    return c.json({ status: 'ok', message: 'No pre-publish checks configured', data: null });
+  }
+
+  const report = await appConfig.hooks.onBeforePublish(ctx);
+  return c.json(report);
+});
+
+app.post('/ext/deploy/trigger', requireWriteAuth, async (c) => {
+  if (!c.env.PRODUCTION_DEPLOY_HOOK_URL) {
+    return c.json({ error: 'PRODUCTION_DEPLOY_HOOK_URL not configured' }, 400);
+  }
+  try {
+    const res = await fetch(c.env.PRODUCTION_DEPLOY_HOOK_URL, { method: 'POST' });
+    return c.json({ success: true, status: res.status, ok: res.ok });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── Backward-Compatibility Aliases for /api/* ──────────────────────────────
+app.post('/api/release/publish', requireWriteAuth, handlePublishRelease);
+app.post('/api/sync/hydrate', requireWriteAuth, async (c) => {
+  const body = await c.req.json();
+  const db = createDb(c.env.DB);
+  const items = Array.isArray(body) ? body : body.items || [];
+  const result = await hydrateFromGit(db, items);
+  return c.json({ success: true, result });
+});
+app.get('/api/sync/export', async (c) => {
+  const collection = c.req.query('collection');
+  const db = createDb(c.env.DB);
+  const items = await exportToGitFormat(db, collection);
+  return c.json({ items });
 });
 
 export default {
@@ -185,7 +437,6 @@ export default {
     const db = createDb(env.DB);
     const now = Date.now();
 
-    // Find any scheduled documents due for publishing
     const scheduledDocs = await db
       .selectFrom('documents')
       .where('status', '=', 'scheduled')
@@ -194,7 +445,6 @@ export default {
       .execute();
 
     if (scheduledDocs.length > 0) {
-      // Transition to published
       await db
         .updateTable('documents')
         .set({ status: 'published', updated_at: now })
@@ -202,7 +452,6 @@ export default {
         .where('publish_at', '<=', now)
         .execute();
 
-      // Trigger automatic Git snapshot & Pages deployment
       if (env.GITHUB_TOKEN && env.PRODUCTION_DEPLOY_HOOK_URL) {
         const items = await exportToGitFormat(db);
         const files = serializeToFiles(items, 'content');
@@ -225,4 +474,3 @@ export default {
     }
   },
 };
-

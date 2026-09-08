@@ -193,8 +193,12 @@ export function renderMediaView(
       const confirmed = confirm('Are you sure you want to permanently delete ' + filename + ' from R2 storage?');
       if (!confirmed) return;
 
+      const authHeaders = {};
+      const key = localStorage.getItem('slottd_api_key');
+      if (key) authHeaders['Authorization'] = 'Bearer ' + key;
+
       try {
-        const res = await fetch('/files/' + encodeURIComponent(idOrKey), { method: 'DELETE' });
+        const res = await fetch('/files/' + encodeURIComponent(idOrKey), { method: 'DELETE', headers: authHeaders });
         if (res.ok || res.status === 204) {
           window.location.reload();
         } else {
@@ -211,8 +215,12 @@ export function renderMediaView(
       const formData = new FormData();
       formData.append('file', file);
 
+      const authHeaders = {};
+      const key = localStorage.getItem('slottd_api_key');
+      if (key) authHeaders['Authorization'] = 'Bearer ' + key;
+
       try {
-        const res = await fetch('/files', { method: 'POST', body: formData });
+        const res = await fetch('/files', { method: 'POST', headers: authHeaders, body: formData });
         if (res.ok) {
           window.location.reload();
         } else {
@@ -327,7 +335,7 @@ export function renderMediaView(
             <div class="media-card">
               <div class="media-thumb-container">
                 ${isImage ? html`
-                  <img src="/media/${m.key}" alt="${m.filename}" loading="lazy" onerror="this.src='/admin/placeholder.svg'" />
+                  <img src="/media/${m.key}" alt="${m.filename}" loading="lazy" onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'80\' height=\'80\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%2364748b\' stroke-width=\'1.5\'%3E%3Crect x=\'3\' y=\'3\' width=\'18\' height=\'18\' rx=\'2\'/%3E%3Ccircle cx=\'8.5\' cy=\'8.5\' r=\'1.5\'/%3E%3Cpath d=\'m21 15-5-5L5 21\'/%3E%3C/svg%3E';" />
                 ` : html`
                   <div class="media-file-icon">📄</div>
                 `}

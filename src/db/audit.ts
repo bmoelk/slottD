@@ -29,7 +29,7 @@ export async function ensureActivityLogTable(db: Kysely<Database>): Promise<void
 
 export interface LogActivityParams {
   actor?: string;
-  action: 'create' | 'update' | 'delete' | 'release_tag' | 'hydrate';
+  action: 'create' | 'update' | 'update_draft' | 'delete' | 'release_tag' | 'hydrate' | 'version_create' | 'version_promote' | string;
   collection: string;
   documentId: string;
   documentTitle?: string | null;

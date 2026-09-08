@@ -210,7 +210,7 @@ filesRouter.delete('/:idOrKey', async (c) => {
       await c.env.MEDIA.delete(mediaRecord.key).catch(() => {});
     }
 
-    const user = getAuthenticatedUser(c);
+    const user = await getAuthenticatedUser(c);
     await logActivity(db, {
       actor: user?.email || 'admin@localhost',
       action: 'delete',

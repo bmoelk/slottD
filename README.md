@@ -157,7 +157,65 @@ SlottD bridges the gap between fast edge databases and Git-backed workflows:
 
 ---
 
-## 🚀 Quick Start (Coming Soon)
+---
+
+## 📊 Git-Backed vs. Pure Edge Feature Matrix
+
+| SlottD Feature | Pure Edge D1 (Zero Git Required) | Git-Enhanced (`GITHUB_TOKEN` / Remote Configured) |
+| :--- | :--- | :--- |
+| **Content Authoring & Editing** | ✅ Full SlottD Studio & View Editor | ✅ Full SlottD Studio & View Editor |
+| **Dual-State Working Copies** | ✅ Instant `draft_data` storage in D1 | ✅ Instant `draft_data` storage in D1 |
+| **SlotWire Assist Overlays** | ✅ Live in-situ badges on staging | ✅ Live in-situ badges on staging |
+| **Concurrent Draft Bundles** | ✅ Stored in SQLite `bundles` table | ✅ Staged to dedicated Git branch: `bundle/<slug>` |
+| **Pre-Publish Verification Pipeline** | ✅ Runs explicit check pipeline in D1 | ✅ Runs check pipeline + stores attributed audit report in Git |
+| **Immediate Publishing** | ✅ Promotes `draft_data` -> `data` in D1 | ✅ Promotes in D1 + creates Git release tag + commits `content/` |
+| **Scheduled Publishing** | ✅ Cloudflare Cron Trigger | ✅ Cloudflare Cron Trigger + automated Git release tag |
+| **Version History & Auditing** | SQLite `activity_log` table (fast UI queries) | **Dual History**: SQLite `activity_log` + immutable Git commit history |
+
+---
+
+## 🛡 Standardized Lifecycle Hooks & Attributed Check Pipeline
+
+SlottD standardizes the return type of all pre/post-publish hooks around a clean uniform contract:
+
+```typescript
+export interface HookResult<T = any> {
+  status: 'ok' | 'warning' | 'error';
+  message?: string;
+  data?: T;
+}
+```
+
+### Pre-Publish Verification Pipeline (`slottd.config.ts`):
+
+```typescript
+import { slotwireContractCheck, terminologyCheck } from 'slottd/checks';
+import type { SlottdConfig } from 'slottd';
+
+export const config: SlottdConfig = {
+  hooks: {
+    onBeforePublish: async (ctx) => {
+      return runCheckPipeline([
+        // Check A: SlotWire Schema Contracts
+        slotwireContractCheck({
+          endpoint: 'https://edit.brainendeavor.com/api/slotwire/validate',
+        }),
+        // Check B: Prohibited / Deprecated Terminology Linter
+        terminologyCheck({
+          flaggedTerms: ['badword', 'legacy-tool'],
+          severity: 'error',
+        }),
+      ], ctx);
+    },
+  },
+};
+```
+
+Aggregated errors and warnings preserve their originating check name prefix (e.g. `[SlotWire Schema Contracts] Slot 'hero' missing`). When published, full audit reports are recorded to `content/.audit/verification-report.json`.
+
+---
+
+## 🚀 Quick Start
 
 ```bash
 # Clone and install

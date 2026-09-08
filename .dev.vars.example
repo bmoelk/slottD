@@ -1,9 +1,17 @@
-# .dev.vars (Git-Ignored Local Development Secrets)
-# Copy this file to .dev.vars and fill in values for local testing:
+# .dev.vars (Git-Ignored Local Development Variables)
+# Copy this file to .dev.vars for local testing:
 # cp .dev.vars.example .dev.vars
 
-# Optional JWT secret for admin auth
+ENVIRONMENT="development"
+
+# Briefcase Operator Identity (attributed in audit revisions & git commits)
+OPERATOR_NAME="Local Operator"
+OPERATOR_EMAIL="dev@localhost"
+
+# Local-only random API key for local test suites / scripts.
+# IMPORTANT: This is purely local. NEVER reuse or match staging/production keys!
+ADMIN_API_KEY="local-briefcase-key-8f4b10ec"
 JWT_SECRET="local-dev-jwt-secret-slottd-2026"
 
 # Optional SlotWire preview secret
-PREVIEW_SECRET="brainendeavor-preview-secret-2026"
+PREVIEW_SECRET="local-dev-preview-secret-2026"

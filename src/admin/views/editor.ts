@@ -8,21 +8,51 @@ export function renderEditorView(
   doc: any,
   fields: any[],
   isNew: boolean,
-  user: { email: string; authMethod?: string },
+  user: { email: string; authMethod?: string; apiKey?: string },
   modelIcon: string = '⚙️'
 ) {
-  let customData: Record<string, any> = {};
+  let publishedData: Record<string, any> = {};
+  let draftData: Record<string, any> = {};
   try {
-    customData = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
+    publishedData = typeof doc.data === 'string' ? JSON.parse(doc.data) : (doc.data || {});
   } catch {}
+  try {
+    draftData = typeof doc.draft_data === 'string' ? JSON.parse(doc.draft_data) : (doc.draft_data || {});
+  } catch {}
+
+  const hasDraft = Boolean(!isNew && doc.draft_status && doc.draft_status !== 'none' && Object.keys(draftData).length > 0);
+  const activeData = hasDraft ? { ...publishedData, ...draftData } : publishedData;
+
+  const modifiedFieldNames: string[] = [];
+  if (hasDraft) {
+    for (const key of Object.keys(draftData)) {
+      if (JSON.stringify(draftData[key]) !== JSON.stringify(publishedData[key])) {
+        modifiedFieldNames.push(key);
+      }
+    }
+  }
+
+  const titleField = fields.find((f) => f.name === 'title');
+  const titleLabel = titleField?.label || 'Title';
+  const titlePlaceholder = `${titleLabel}...`;
 
   const clientScript = `
     const isNew = ${JSON.stringify(Boolean(isNew))};
     const collection = ${JSON.stringify(String(collection))};
     const docId = ${JSON.stringify(String(doc.id))};
+    const publishedData = ${JSON.stringify(publishedData)};
+    const draftData = ${JSON.stringify(draftData)};
+    const activeData = ${JSON.stringify(activeData)};
+    const hasDraft = ${JSON.stringify(hasDraft)};
+    let isDraftSave = false;
+    let showingLive = false;
     const toastEditors = {};
     let activeMediaTargetField = null;
     let cachedMedia = [];
+
+    function getStudioHeaders(extra) {
+      return Object.assign({}, extra || {});
+    }
 
     // 1. Slug Generator & Shortcut Sync
     function slugify(text) {
@@ -91,7 +121,7 @@ export function renderEditorView(
       }
     });
 
-    // 2. Initialize Toast-UI Markdown Editors
+    // 2. Initialize Toast-UI Markdown Editors with Resilient Retry & Graceful Fallback
     function initMarkdownEditors() {
       document.querySelectorAll('.toastui-editor-target').forEach(function(el) {
         const fieldName = el.getAttribute('data-field-name');
@@ -112,20 +142,40 @@ export function renderEditorView(
             editor.on('change', function() {
               const hidden = document.getElementById(fieldName + '_hidden');
               if (hidden) hidden.value = editor.getMarkdown();
+              if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();
             });
 
             toastEditors[fieldName] = editor;
           }
         } catch (e) {
-          console.warn('Toast-UI init fallback to textarea:', e);
+          console.warn('Toast-UI init fallback to textarea for field:', fieldName, e);
+          window.switchEditorMode(fieldName, 'code');
         }
       });
     }
 
+    function scheduleInitMarkdownEditors(attempts) {
+      attempts = attempts || 0;
+      if (window.toastui && window.toastui.Editor) {
+        initMarkdownEditors();
+      } else if (attempts < 8) {
+        setTimeout(function() { scheduleInitMarkdownEditors(attempts + 1); }, 150);
+      } else {
+        console.warn('Toast-UI CDN unavailable, gracefully falling back to native textarea.');
+        document.querySelectorAll('.editor-container-wrapper').forEach(function(container) {
+          const fieldName = container.getAttribute('data-field');
+          const toastEl = document.getElementById(fieldName + '_toast_target');
+          if (toastEl && toastEl.style.display !== 'none') {
+            window.switchEditorMode(fieldName, 'code');
+          }
+        });
+      }
+    }
+
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initMarkdownEditors);
+      document.addEventListener('DOMContentLoaded', function() { scheduleInitMarkdownEditors(0); });
     } else {
-      setTimeout(initMarkdownEditors, 50);
+      scheduleInitMarkdownEditors(0);
     }
 
     // 3. Editor Mode Switcher (Toast Markdown <-> Trix Rich Text <-> Raw Code)
@@ -138,13 +188,21 @@ export function renderEditorView(
       const trixEl = document.getElementById(fieldName + '_trix_target');
       const codeEl = document.getElementById(fieldName + '_code_target');
       const trixEditor = trixEl ? trixEl.querySelector('trix-editor') : null;
-      const codeTextarea = codeEl ? codeEl.querySelector('textarea') : null;
+      const codeTextarea = codeEl ? (codeEl.querySelector('textarea') || document.getElementById(fieldName + '_raw_textarea')) : null;
 
-      let currentVal = hiddenInput.value || '';
-      if (toastEditors[fieldName]) {
-        try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
-      } else if (codeTextarea && codeEl && codeEl.style.display !== 'none') {
+      // Extract current content from whichever mode was currently active:
+      let currentVal = '';
+      if (codeEl && codeEl.style.display !== 'none' && codeTextarea) {
         currentVal = codeTextarea.value;
+      } else if (trixEl && trixEl.style.display !== 'none') {
+        const trixInput = document.getElementById(fieldName + '_trix_input');
+        currentVal = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
+      } else if (toastEl && toastEl.style.display !== 'none' && toastEditors[fieldName]) {
+        try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
+      }
+
+      if (!currentVal && hiddenInput.value) {
+        currentVal = hiddenInput.value;
       }
 
       hiddenInput.value = currentVal;
@@ -196,43 +254,75 @@ export function renderEditorView(
           saveBtn.disabled = true;
         }
 
+        const customPayload = {};
+
+        // 4a. Explicitly flush all rich editor containers from active DOM
+        document.querySelectorAll('.editor-container-wrapper').forEach(function(container) {
+          const fieldName = container.getAttribute('data-field');
+          if (!fieldName) return;
+          const hidden = document.getElementById(fieldName + '_hidden');
+          const rawTextarea = container.querySelector('textarea.raw-code-textarea') || document.getElementById(fieldName + '_raw_textarea');
+          const trixInput = document.getElementById(fieldName + '_trix_input');
+          const trixEditor = container.querySelector('trix-editor');
+          
+          let val = '';
+          const activeBtn = container.querySelector('.mode-btn.active');
+          const mode = activeBtn ? activeBtn.getAttribute('data-mode') : null;
+
+          if (mode === 'code' && rawTextarea) {
+            val = rawTextarea.value;
+          } else if (mode === 'richtext') {
+            val = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
+          } else if (mode === 'markdown' && toastEditors[fieldName]) {
+            try {
+              val = toastEditors[fieldName].getMarkdown();
+            } catch (err) {}
+          }
+
+          // Fallback: If empty, inspect all components
+          if (!val) {
+            if (rawTextarea && rawTextarea.value) {
+              val = rawTextarea.value;
+            } else if (trixInput && trixInput.value) {
+              val = trixInput.value;
+            } else if (toastEditors[fieldName]) {
+              try { val = toastEditors[fieldName].getMarkdown(); } catch (err) {}
+            } else if (hidden && hidden.value) {
+              val = hidden.value;
+            }
+          }
+
+          if (hidden) hidden.value = val;
+          customPayload[fieldName] = val;
+        });
+
+        // 4b. Parse standard form fields
         const formData = new FormData(editorForm);
         const title = formData.get('title');
         const slug = formData.get('slug');
         const status = formData.get('status');
 
-        const customPayload = {};
         for (const pair of formData.entries()) {
           const key = pair[0];
           const val = pair[1];
           if (key === 'title' || key === 'slug' || key === 'status') continue;
-          if (key.endsWith('_editor_mode') || key.endsWith('_trix_input')) continue;
+          if (key.endsWith('_editor_mode') || key.endsWith('_trix_input') || key.endsWith('_raw_textarea')) continue;
 
-          if (toastEditors[key]) {
+          // If already captured from rich editor container, do not overwrite
+          if (key in customPayload) continue;
+
+          const repeaterEl = document.querySelector('textarea[name="' + key + '"].repeater-input');
+          if (repeaterEl) {
             try {
-              customPayload[key] = toastEditors[key].getMarkdown();
-            } catch (err) {
-              customPayload[key] = val;
+              customPayload[key] = JSON.parse(repeaterEl.value);
+            } catch (jsonErr) {
+              customPayload[key] = repeaterEl.value;
             }
           } else {
-            const rawEl = document.querySelector('textarea[name="' + key + '"].raw-code-textarea');
-            if (rawEl) {
-              customPayload[key] = rawEl.value;
+            if (typeof val === 'string' && val.trim() !== '' && !isNaN(val) && !isNaN(parseFloat(val))) {
+              customPayload[key] = Number(val);
             } else {
-              const repeaterEl = document.querySelector('textarea[name="' + key + '"].repeater-input');
-              if (repeaterEl) {
-                try {
-                  customPayload[key] = JSON.parse(repeaterEl.value);
-                } catch (jsonErr) {
-                  customPayload[key] = repeaterEl.value;
-                }
-              } else {
-                if (typeof val === 'string' && val.trim() !== '' && !isNaN(val) && !isNaN(parseFloat(val))) {
-                  customPayload[key] = Number(val);
-                } else {
-                  customPayload[key] = val;
-                }
-              }
+              customPayload[key] = val;
             }
           }
         }
@@ -242,7 +332,8 @@ export function renderEditorView(
           collection: collection,
           title: title,
           slug: slug,
-          status: status
+          status: status,
+          draft: isDraftSave
         }, customPayload);
 
         try {
@@ -251,35 +342,227 @@ export function renderEditorView(
 
           const res = await fetch(endpoint, {
             method: method,
-            headers: { 'Content-Type': 'application/json' },
+            headers: getStudioHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(payload)
           });
 
           if (res.ok) {
-            window.location.href = '/admin/content/' + collection;
+            if (isDraftSave) {
+              window.location.reload();
+            } else {
+              window.location.href = '/admin/content/' + collection;
+            }
           } else {
             const err = await res.text();
             alert('Save failed: ' + err);
-            if (saveBtn) {
-              saveBtn.innerText = 'Save & Publish';
-              saveBtn.disabled = false;
-            }
+            if (publishBtn) { publishBtn.innerText = '💾 Save'; publishBtn.disabled = false; }
+            if (saveDraftBtn) { saveDraftBtn.innerText = '💾 Save as Draft'; window.updateDraftButtonState(); }
           }
         } catch (err) {
           alert('Network error: ' + err.message);
-          if (saveBtn) {
-            saveBtn.innerText = 'Save & Publish';
-            saveBtn.disabled = false;
-          }
+          if (publishBtn) { publishBtn.innerText = '💾 Save'; publishBtn.disabled = false; }
+          if (saveDraftBtn) { saveDraftBtn.innerText = '💾 Save as Draft'; window.updateDraftButtonState(); }
         }
       });
     }
 
-    if (saveBtn && editorForm) {
-      saveBtn.addEventListener('click', function() {
+    const saveDraftBtn = document.getElementById('saveDraftBtn');
+    const publishBtn = document.getElementById('publishBtn');
+
+    if (saveDraftBtn && editorForm) {
+      saveDraftBtn.addEventListener('click', function() {
+        if (!isFormDirty()) {
+          alert('No fields have been modified yet.');
+          return;
+        }
+        isDraftSave = true;
+        saveDraftBtn.innerText = '💾 Saving Draft...';
+        saveDraftBtn.disabled = true;
         editorForm.dispatchEvent(new Event('submit', { cancelable: true }));
       });
     }
+
+    if (publishBtn && editorForm) {
+      publishBtn.addEventListener('click', function() {
+        isDraftSave = false;
+        publishBtn.innerText = '💾 Saving...';
+        publishBtn.disabled = true;
+        editorForm.dispatchEvent(new Event('submit', { cancelable: true }));
+      });
+    }
+
+    // 4c. Form Dirty State Tracking (Save as Draft active only when modifications exist)
+    function captureFormValues() {
+      const vals = {};
+      if (!editorForm) return vals;
+      const fd = new FormData(editorForm);
+      for (const [k, v] of fd.entries()) {
+        if (k.endsWith('_editor_mode') || k.endsWith('_trix_input') || k.endsWith('_raw_textarea')) continue;
+        vals[k] = String(v ?? '');
+      }
+      document.querySelectorAll('.editor-container-wrapper').forEach(function(c) {
+        const f = c.getAttribute('data-field');
+        if (!f) return;
+        const hidden = document.getElementById(f + '_hidden');
+        if (hidden) vals[f] = String(hidden.value ?? '');
+      });
+      for (const fieldName in toastEditors) {
+        if (toastEditors[fieldName]) {
+          try { vals[fieldName] = toastEditors[fieldName].getMarkdown(); } catch (e) {}
+        }
+      }
+      return vals;
+    }
+
+    let initialFormValues = null;
+
+    function isFormDirty() {
+      if (!initialFormValues) return false;
+      const current = captureFormValues();
+      const allKeys = new Set([...Object.keys(initialFormValues), ...Object.keys(current)]);
+      for (const k of allKeys) {
+        if ((current[k] ?? '') !== (initialFormValues[k] ?? '')) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    window.updateDraftButtonState = function() {
+      if (!saveDraftBtn) return;
+      if (showingLive) {
+        saveDraftBtn.disabled = true;
+        saveDraftBtn.style.opacity = '0.35';
+        saveDraftBtn.style.cursor = 'not-allowed';
+        saveDraftBtn.title = 'Switch back to Working Draft view to edit and save draft changes';
+        return;
+      }
+
+      const dirty = isFormDirty();
+      if (dirty) {
+        saveDraftBtn.disabled = false;
+        saveDraftBtn.style.opacity = '1';
+        saveDraftBtn.style.cursor = 'pointer';
+        saveDraftBtn.title = 'Save modified changes as working draft';
+      } else {
+        saveDraftBtn.disabled = true;
+        saveDraftBtn.style.opacity = '0.35';
+        saveDraftBtn.style.cursor = 'not-allowed';
+        saveDraftBtn.title = 'No fields have been modified yet';
+      }
+    };
+
+    if (editorForm) {
+      editorForm.addEventListener('input', window.updateDraftButtonState);
+      editorForm.addEventListener('change', window.updateDraftButtonState);
+      editorForm.addEventListener('trix-change', window.updateDraftButtonState);
+    }
+
+    setTimeout(function() {
+      initialFormValues = captureFormValues();
+      window.updateDraftButtonState();
+    }, 150);
+
+    // Discard Working Draft
+    window.discardWorkingDraft = async function() {
+      const confirmed = confirm('Are you sure you want to discard all working draft changes for this document? This will revert the document to its published live state.');
+      if (!confirmed) return;
+
+      try {
+        const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId) + '/discard-draft', {
+          method: 'POST',
+          headers: getStudioHeaders({ 'Content-Type': 'application/json' })
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          alert('Failed to discard draft: ' + await res.text());
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      }
+    };
+
+    // Set Editor View Mode: 'draft' or 'live'
+    window.setEditorViewMode = function(mode) {
+      const isDraftMode = mode === 'draft';
+      showingLive = !isDraftMode;
+      const targetData = isDraftMode ? activeData : publishedData;
+
+      const btnDraft = document.getElementById('btnSelectDraft');
+      const btnLive = document.getElementById('btnSelectLive');
+      const saveDraftBtn = document.getElementById('saveDraftBtn');
+      const discardDraftBtn = document.getElementById('discardDraftBtn');
+
+      if (btnDraft && btnLive) {
+        if (isDraftMode) {
+          btnDraft.style.background = '#451a03';
+          btnDraft.style.borderColor = '#d97706';
+          btnDraft.style.color = '#fb923c';
+          btnDraft.style.fontWeight = '700';
+
+          btnLive.style.background = 'transparent';
+          btnLive.style.borderColor = 'transparent';
+          btnLive.style.color = '#94a3b8';
+          btnLive.style.fontWeight = '500';
+
+          if (discardDraftBtn) {
+            discardDraftBtn.disabled = false;
+            discardDraftBtn.style.opacity = '1';
+            discardDraftBtn.style.cursor = 'pointer';
+            discardDraftBtn.title = 'Discard all working draft changes';
+          }
+        } else {
+          btnLive.style.background = '#064e3b';
+          btnLive.style.borderColor = '#059669';
+          btnLive.style.color = '#34d399';
+          btnLive.style.fontWeight = '700';
+
+          btnDraft.style.background = 'transparent';
+          btnDraft.style.borderColor = 'transparent';
+          btnDraft.style.color = '#94a3b8';
+          btnDraft.style.fontWeight = '500';
+
+          // Disable draft operations while in live published mode
+          if (saveDraftBtn) {
+            saveDraftBtn.disabled = true;
+            saveDraftBtn.style.opacity = '0.35';
+            saveDraftBtn.style.cursor = 'not-allowed';
+            saveDraftBtn.title = 'Switch back to Working Draft view to edit and save draft changes';
+          }
+          if (discardDraftBtn) {
+            discardDraftBtn.disabled = true;
+            discardDraftBtn.style.opacity = '0.35';
+            discardDraftBtn.style.cursor = 'not-allowed';
+            discardDraftBtn.title = 'Switch back to Working Draft view to discard draft';
+          }
+        }
+      }
+
+      for (const fieldName of Object.keys(targetData)) {
+        const val = targetData[fieldName] !== undefined ? targetData[fieldName] : '';
+        if (toastEditors[fieldName]) {
+          try { toastEditors[fieldName].setMarkdown(val); } catch (e) {}
+        }
+        const trix = document.querySelector('trix-editor[input="' + fieldName + '_trix_input"]');
+        if (trix && trix.editor) {
+          try { trix.editor.loadHTML(val); } catch (e) {}
+        }
+        const input = document.getElementById(fieldName) || document.querySelector('[name="' + fieldName + '"]');
+        if (input) {
+          input.value = typeof val === 'object' ? JSON.stringify(val, null, 2) : val;
+        }
+        const hidden = document.getElementById(fieldName + '_hidden');
+        if (hidden) hidden.value = val;
+        const raw = document.getElementById(fieldName + '_raw_textarea');
+        if (raw) raw.value = val;
+      }
+
+      initialFormValues = captureFormValues();
+      if (typeof window.updateDraftButtonState === 'function') {
+        window.updateDraftButtonState();
+      }
+    };
 
     // 5. Delete Document
     window.deleteCurrentDocument = async function() {
@@ -288,7 +571,8 @@ export function renderEditorView(
 
       try {
         const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId), {
-          method: 'DELETE'
+          method: 'DELETE',
+          headers: getStudioHeaders()
         });
         if (res.ok || res.status === 204) {
           window.location.href = '/admin/content/' + collection;
@@ -308,7 +592,7 @@ export function renderEditorView(
 
       if (cachedMedia.length === 0) {
         try {
-          const res = await fetch('/files');
+          const res = await fetch('/files', { headers: getStudioHeaders() });
           const json = await res.json();
           cachedMedia = json.data || [];
         } catch (e) {
@@ -417,7 +701,7 @@ export function renderEditorView(
       formData.append('file', file);
 
       try {
-        const res = await fetch('/files', { method: 'POST', body: formData });
+        const res = await fetch('/files', { method: 'POST', headers: getStudioHeaders(), body: formData });
         if (res.ok) {
           const json = await res.json();
           const fileUrl = json.data && json.data.url ? json.data.url : ('/media/' + json.data.key);
@@ -437,7 +721,7 @@ export function renderEditorView(
       formData.append('file', file);
 
       try {
-        const res = await fetch('/files', { method: 'POST', body: formData });
+        const res = await fetch('/files', { method: 'POST', headers: getStudioHeaders(), body: formData });
         if (res.ok) {
           const json = await res.json();
           const fileUrl = json.data && json.data.url ? json.data.url : ('/media/' + json.data.key);
@@ -464,17 +748,106 @@ export function renderEditorView(
           <span>${modelIcon}</span> Model: <a href="/admin/models#model-${collection}" style="color: inherit; text-decoration: underline; font-weight: 600;">${collection}</a>
         </span>
       </div>
-      <div class="actions">
+      <div class="actions" style="display: flex; align-items: center; gap: 8px;">
         <a href="/admin/content/${collection}" class="btn btn-secondary">Cancel</a>
-        <button id="saveBtn" class="btn btn-primary">Save & Publish</button>
+        <button type="button" id="publishBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 4px;">
+          💾 Save
+        </button>
       </div>
     </div>
+
+    ${hasDraft ? html`
+      <div class="card draft-banner-card" style="background: #1c1308; border: 1px solid #d97706; border-radius: 8px; padding: 12px 18px; margin-bottom: 20px; box-shadow: 0 4px 16px rgba(217, 119, 6, 0.15);">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <span style="font-size: 20px; line-height: 1;">📝</span>
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="color: #fb923c; font-size: 14px;">Working Draft Active (${doc.draft_status.toUpperCase()})</strong>
+                <span style="background: #451a03; border: 1px solid #d97706; color: #fb923c; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px;">
+                  ${modifiedFieldNames.length} modified
+                </span>
+                <span title="Uncommitted working draft changes are visible in Staging / In-Situ assist mode, but not live on production. The fields below reflect your active working copy." style="cursor: help; color: #a1a1aa; font-size: 14px; display: inline-flex; align-items: center; background: rgba(255,255,255,0.08); width: 18px; height: 18px; border-radius: 50%; justify-content: center;" aria-label="Draft info">ⓘ</span>
+              </div>
+              ${doc.draft_updated_at ? html`
+                <div style="font-size: 11px; color: #a1a1aa; margin-top: 2px;">
+                  Draft saved: <strong>${new Date(doc.draft_updated_at).toLocaleString()}</strong>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <!-- Segmented View Switch (Fixed captions, zero guesswork) -->
+            <div class="sw-segmented-switch" style="display: inline-flex; background: #090d16; border: 1px solid #334155; border-radius: 6px; padding: 2px; gap: 2px;">
+              <button
+                type="button"
+                id="btnSelectDraft"
+                class="sw-segment-opt active"
+                style="padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 4px; border: 1px solid #d97706; background: #451a03; color: #fb923c; cursor: pointer; transition: all 0.15s ease;"
+                onclick="window.setEditorViewMode('draft')"
+              >
+                ✏️ Working Draft
+              </button>
+              <button
+                type="button"
+                id="btnSelectLive"
+                class="sw-segment-opt"
+                style="padding: 4px 10px; font-size: 12px; font-weight: 500; border-radius: 4px; border: 1px solid transparent; background: transparent; color: #94a3b8; cursor: pointer; transition: all 0.15s ease;"
+                onclick="window.setEditorViewMode('live')"
+              >
+                🌐 Live Published
+              </button>
+            </div>
+            <!-- All draft operations co-located here -->
+            <button
+              type="button"
+              id="saveDraftBtn"
+              class="btn"
+              disabled
+              title="No fields have been modified yet"
+              style="background: #451a03; border: 1px solid #d97706; color: #fb923c; font-weight: 700; font-size: 12px; padding: 5px 12px; display: inline-flex; align-items: center; gap: 4px; transition: all 0.15s ease; opacity: 0.35; cursor: not-allowed;"
+            >
+              💾 Save as Draft
+            </button>
+            <button
+              type="button"
+              id="discardDraftBtn"
+              class="btn btn-danger-outline"
+              style="font-size: 12px; padding: 5px 10px; transition: all 0.15s ease;"
+              onclick="window.discardWorkingDraft()"
+            >
+              ✕ Discard Draft
+            </button>
+          </div>
+        </div>
+      </div>
+    ` : (!isNew ? html`
+      <div class="card" style="background: rgba(24, 24, 27, 0.4); border: 1px solid #27272a; border-radius: 8px; padding: 10px 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted);">
+          <span style="color: #10b981;">✓</span>
+          <span>In sync with live published copy.</span>
+          <span title="You can save a working draft to preview changes in Staging without touching live production." style="cursor: help; color: #a1a1aa; font-size: 14px; display: inline-flex; align-items: center; background: rgba(255,255,255,0.08); width: 18px; height: 18px; border-radius: 50%; justify-content: center;" aria-label="Info">ⓘ</span>
+        </div>
+        <div>
+          <button
+            type="button"
+            id="saveDraftBtn"
+            class="btn"
+            disabled
+            title="No fields have been modified yet"
+            style="background: #451a03; border: 1px solid #d97706; color: #fb923c; font-weight: 700; font-size: 12px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 4px; opacity: 0.35; cursor: not-allowed;"
+          >
+            💾 Save as Draft
+          </button>
+        </div>
+      </div>
+    ` : '')}
 
     <form id="editorForm" class="editor-grid">
       <div class="main-column card">
         <div class="form-group">
-          <label for="title">Title *</label>
-          <input type="text" id="title" name="title" value="${doc.title || ''}" class="input-text" required placeholder="Document Title..." />
+          <label for="title">${titleLabel} *</label>
+          <input type="text" id="title" name="title" value="${activeData.title || doc.title || ''}" class="input-text" required placeholder="${titlePlaceholder}" />
         </div>
 
         <div class="form-group">
@@ -489,13 +862,20 @@ export function renderEditorView(
               </button>
             </div>
           </div>
-          <input type="text" id="slug" name="slug" value="${doc.slug || ''}" class="input-text" required placeholder="url-friendly-slug" style="font-family: monospace;" />
+          <input type="text" id="slug" name="slug" value="${activeData.slug || doc.slug || ''}" class="input-text" required placeholder="url-friendly-slug" style="font-family: monospace;" />
         </div>
 
-        <!-- Dynamic / Schema-Driven Custom Fields -->
+        <!-- Dynamic / Schema-Driven Custom Fields with Draft Intelligence -->
         ${fields
           .filter((f) => !['id', 'collection', 'slug', 'title', 'status', 'created_at', 'updated_at'].includes(f.name))
-          .map((f) => renderFieldWidget(f, customData[f.name]))}
+          .map((f) => {
+            const isMod = modifiedFieldNames.includes(f.name);
+            return renderFieldWidget(f, activeData[f.name], {
+              isModified: isMod,
+              publishedValue: publishedData[f.name],
+              draftValue: draftData[f.name],
+            });
+          })}
       </div>
 
       <div class="sidebar-column">
@@ -504,9 +884,9 @@ export function renderEditorView(
           <div class="form-group" style="margin-top: 12px;">
             <label for="status">Document Status</label>
             <select id="status" name="status" class="input-select">
-              <option value="draft" ${doc.status === 'draft' ? 'selected' : ''}>Draft</option>
-              <option value="published" ${doc.status === 'published' ? 'selected' : ''}>Published</option>
-              <option value="archived" ${doc.status === 'archived' ? 'selected' : ''}>Archived</option>
+              <option value="draft" ${!isNew && doc.status === 'draft' ? 'selected' : ''}>Draft</option>
+              <option value="published" ${isNew || doc.status === 'published' ? 'selected' : ''}>Published</option>
+              <option value="archived" ${!isNew && doc.status === 'archived' ? 'selected' : ''}>Archived</option>
             </select>
           </div>
 
@@ -514,7 +894,19 @@ export function renderEditorView(
           <div class="meta-info">
             <p><strong>Model:</strong> <code>${modelIcon} ${collection}</code></p>
             <p><strong>Document ID:</strong> <code>${doc.id}</code></p>
-            ${doc.updated_at ? html`<p><strong>Last Updated:</strong> ${new Date(doc.updated_at).toLocaleString()}</p>` : ''}
+            <p><strong>Draft State:</strong> 
+              ${hasDraft ? html`
+                <span class="badge" style="background: #451a03; border: 1px solid #d97706; color: #fb923c; font-weight: 700;">
+                  ✏️ ${doc.draft_status.toUpperCase()}
+                </span>
+              ` : html`
+                <span class="badge" style="color: #10b981; border-color: #059669; background: rgba(16, 185, 129, 0.1);">
+                  ✓ Clean (In Sync)
+                </span>
+              `}
+            </p>
+            ${hasDraft && doc.draft_updated_at ? html`<p><strong>Draft Saved:</strong> ${new Date(doc.draft_updated_at).toLocaleString()}</p>` : ''}
+            ${doc.updated_at ? html`<p><strong>Live Updated:</strong> ${new Date(doc.updated_at).toLocaleString()}</p>` : ''}
           </div>
         </div>
 
@@ -533,7 +925,7 @@ export function renderEditorView(
         <div class="card" style="margin-top: 16px;">
           <h3>SlotWire In-Situ Bridge</h3>
           <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">
-            Changes saved here are instantly accessible by Astro SSR preview cookies and Static Content Loaders.
+            Changes saved as draft are instantly accessible in Astro Staging and In-Situ preview mode.
           </p>
         </div>
       </div>
