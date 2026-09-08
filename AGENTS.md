@@ -63,3 +63,22 @@ This file defines coding standards, repository policies, and architectural guard
    - All lifecycle checks return uniform `HookResult<T>` (`status: 'ok' | 'warning' | 'error'`, `message?: string`, `data?: T`).
    - Aggregated check errors and warnings must preserve their origin attribution prefix: `[CheckName] Message`.
 
+---
+
+## 🔄 Git Synchronization & Universal Driver Directives
+
+1. **Pure Smart HTTP Protocol (`isomorphic-git`)**:
+   - In Cloudflare Workers edge isolates, all remote Git operations MUST use the pure Git Smart HTTP wire protocol over HTTPS via `isomorphic-git` and in-memory `memfs`.
+   - **Zero Vendor Platform APIs**: NEVER introduce proprietary vendor APIs (e.g. GitHub REST/GraphQL) for core Git operations. The engine must remain universally compatible with GitHub, GitLab, Bitbucket, Gitea, and self-hosted Git repositories.
+2. **Dual-Engine Architectural Parity**:
+   - Workstation / Briefcase environments support native Git CLI (`NativeShellGitDriver`) and local `~/.ssh` agent keys when SSH URLs (`git@...`) are used.
+   - Cloudflare Workers isolates automatically normalize SSH URLs to HTTPS (`normalizeGitUrl`) and authenticate using the configured personal access token.
+3. **Zero Working Tree Contamination**:
+   - In workstation mode, inspecting or loading tags MUST extract files into an isolated temporary scratch folder (`git archive "${tag}" | tar -x -C "${tempDir}"`) and clean it up in a `finally` block.
+   - NEVER execute checkout commands (`git checkout <tag> -- ...`) that could mutate or discard uncommitted developer working tree files.
+4. **Multi-Layout Repository Ingestion**:
+   - Tag loaders MUST dynamically detect whether collections reside inside a `/content/` subfolder or directly at repository root (`authors/`, `blog_posts/`, etc.).
+   - Code and build artifacts (`.git`, `node_modules`, `dist`, `src`, `public`, `scripts`, `tests`, `docs`, `packages`) must be strictly ignored.
+5. **D1 Hydration Integrity (`hydrateFromGit`)**:
+   - When restoring records from Git, always reconcile against D1 by `(collection, slug)` before insert/update. This guarantees SQLite `UNIQUE(collection, slug)` integrity and preserves existing record UUIDs.
+

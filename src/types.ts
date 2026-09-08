@@ -166,6 +166,8 @@ export interface PublishHookContext {
   forcePublish?: boolean;
   timestamp?: number;
   commitSha?: string;
+  env?: any;
+  db?: any;
 }
 
 export interface PublishCheckResult {

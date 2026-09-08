@@ -9,6 +9,7 @@ import type {
 export * from './slotwire.js';
 export * from './terminology.js';
 export * from './spellcheck.js';
+export * from './media.js';
 
 /**
  * Executes a pipeline of checks concurrently, aggregating results with explicit

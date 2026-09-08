@@ -12,7 +12,7 @@ export interface SetupViewData {
   isPasswordProtected: boolean;
   gitRemoteUrl: string;
   gitBranch: string;
-  gitProvider: string;
+  gitProvider?: string;
   hasToken: boolean;
 }
 
@@ -66,7 +66,6 @@ export function renderSetupView(
     async function saveRemoteSettings() {
       const remoteUrl = document.getElementById('remoteUrl')?.value || '';
       const branch = document.getElementById('remoteBranch')?.value || 'main';
-      const provider = document.getElementById('remoteProvider')?.value || 'generic-https';
       const token = document.getElementById('remoteToken')?.value || '';
 
       const btn = document.getElementById('btnSaveRemote');
@@ -79,7 +78,7 @@ export function renderSetupView(
         const res = await fetch('/admin/setup/remote', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ remoteUrl, branch, provider, token })
+          body: JSON.stringify({ remoteUrl, branch, token })
         });
         const json = await res.json();
         if (res.ok) {
@@ -267,18 +266,8 @@ export function renderSetupView(
         </div>
 
         <div>
-          <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600;">Git Provider</label>
-          <select id="remoteProvider" class="select-control" style="width: 100%; height: 38px;">
-            <option value="generic-https" ${data.gitProvider === 'generic-https' ? 'selected' : ''}>Generic Git HTTPS (isomorphic-git standard)</option>
-            <option value="github" ${data.gitProvider === 'github' ? 'selected' : ''}>GitHub REST API</option>
-            <option value="gitlab" ${data.gitProvider === 'gitlab' ? 'selected' : ''}>GitLab API</option>
-            <option value="gitea" ${data.gitProvider === 'gitea' ? 'selected' : ''}>Gitea / Forgejo</option>
-          </select>
-        </div>
-
-        <div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Access Token (Write-Only)</label>
+            <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Access Token (Required for Private Repos)</label>
             ${data.hasToken ? html`
               <span style="font-size: 10px; color: #34d399; font-weight: 600;">● Token Configured (Encrypted)</span>
             ` : html`

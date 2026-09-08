@@ -30,7 +30,8 @@ export async function hydrateFromGit(
   items: GitContentItem[],
   supportedVersion: number = 1
 ): Promise<{ inserted: number; updated: number }> {
-  let count = 0;
+  let inserted = 0;
+  let updated = 0;
   const now = Date.now();
 
   for (const item of items) {
@@ -38,30 +39,21 @@ export async function hydrateFromGit(
     // Rule 5: Fail fast if incoming git content has higher schema version than supported
     assertSchemaVersion(`${item.collection}/${item.slug}`, docVersion, supportedVersion);
 
-    const id = item.id || crypto.randomUUID();
+    const existing = await db
+      .selectFrom('documents')
+      .select(['id'])
+      .where('collection', '=', item.collection)
+      .where('slug', '=', item.slug)
+      .executeTakeFirst();
+
     const status = item.status || 'published';
     const createdAt = item.createdAt || now;
     const updatedAt = item.updatedAt || now;
 
-    // Direct SQLite INSERT OR REPLACE INTO documents
-    await db
-      .insertInto('documents')
-      .values({
-        id,
-        collection: item.collection,
-        slug: item.slug,
-        title: item.title,
-        status,
-        schema_version: docVersion,
-        publish_at: item.publishAt || null,
-        data: JSON.stringify(item.data),
-        created_at: createdAt,
-        updated_at: updatedAt,
-      })
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          collection: item.collection,
-          slug: item.slug,
+    if (existing) {
+      await db
+        .updateTable('documents')
+        .set({
           title: item.title,
           status,
           schema_version: docVersion,
@@ -69,13 +61,44 @@ export async function hydrateFromGit(
           data: JSON.stringify(item.data),
           updated_at: updatedAt,
         })
-      )
-      .execute();
+        .where('id', '=', existing.id)
+        .execute();
+      updated++;
+    } else {
+      let targetId = item.id;
+      if (targetId) {
+        const idTaken = await db
+          .selectFrom('documents')
+          .select(['id'])
+          .where('id', '=', targetId)
+          .executeTakeFirst();
+        if (idTaken) {
+          targetId = crypto.randomUUID();
+        }
+      } else {
+        targetId = crypto.randomUUID();
+      }
 
-    count++;
+      await db
+        .insertInto('documents')
+        .values({
+          id: targetId,
+          collection: item.collection,
+          slug: item.slug,
+          title: item.title,
+          status,
+          schema_version: docVersion,
+          publish_at: item.publishAt || null,
+          data: JSON.stringify(item.data),
+          created_at: createdAt,
+          updated_at: updatedAt,
+        })
+        .execute();
+      inserted++;
+    }
   }
 
-  return { inserted: count, updated: count };
+  return { inserted, updated };
 }
 
 /**

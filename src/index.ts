@@ -90,6 +90,17 @@ function recordRequestTelemetry(path: string, durationMs: number) {
   }, 250);
 }
 
+// Canonical Host Redirect: slottd-cms.brainendeavor.com -> cms.brainendeavor.com
+app.use('*', async (c, next) => {
+  const host = c.req.header('host') || '';
+  if (host === 'slottd-cms.brainendeavor.com') {
+    const url = new URL(c.req.url);
+    url.hostname = 'cms.brainendeavor.com';
+    return c.redirect(url.toString(), 301);
+  }
+  await next();
+});
+
 // 1. Telemetry & Performance Timing Middleware
 app.use('*', async (c, next) => {
   const t0 = performance.now();
@@ -302,6 +313,8 @@ async function handlePublishRelease(c: any) {
     actor: { email: user?.email || 'admin@edge', authMethod: user?.authMethod || 'unknown' },
     forcePublish,
     timestamp: now,
+    env: c.env,
+    db,
   };
 
   // 3. Execute onBeforePublish Hook
@@ -532,6 +545,8 @@ app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
     changedItems,
     actor: { email: user?.email || 'admin@edge', authMethod: user?.authMethod || 'unknown' },
     timestamp: Date.now(),
+    env: c.env,
+    db,
   };
 
   if (!appConfig?.hooks?.onBeforePublish) {

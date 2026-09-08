@@ -22,9 +22,12 @@ import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
+import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
+import { computeContentDiff } from '../sync/diff.js';
 import { logActivity } from '../db/audit.js';
 import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
 import type { Env } from '../types.js';
+import { getSlottdConfig } from '../index.js';
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
@@ -37,7 +40,13 @@ const dynamicImport = (modName: string): Promise<any> => {
   }
 };
 
-async function resolveDeploymentRepo(env?: Env): Promise<{ path: string; hasRemote: boolean; remoteUrl: string }> {
+async function resolveDeploymentRepo(env?: Env): Promise<{
+  path: string;
+  hasRemote: boolean;
+  remoteUrl: string;
+  branch: string;
+  token?: string;
+}> {
   const fs = await dynamicImport('fs');
   const cp = await dynamicImport('child_process');
 
@@ -47,16 +56,26 @@ async function resolveDeploymentRepo(env?: Env): Promise<{ path: string; hasRemo
 
   let hasRemote = false;
   let remoteUrl = (env as any)?.GIT_REMOTE_URL || '';
+  let branch = (env as any)?.GIT_BRANCH || 'main';
+  let token = (env as any)?.GIT_TOKEN || (env as any)?.GITHUB_TOKEN || '';
 
   // Check system_settings in D1 if available
   if (env?.DB) {
     try {
-      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?)')
-        .bind('git_remote_url', 'repo_path')
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
+        .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
         .all<{ key: string; value: string }>();
+      let encToken = '';
       for (const r of rows.results || []) {
         if (r.key === 'git_remote_url' && r.value) remoteUrl = r.value;
         if (r.key === 'repo_path' && r.value) chosenPath = r.value;
+        if (r.key === 'git_branch' && r.value) branch = r.value;
+        if (r.key === 'git_token_enc' && r.value) encToken = r.value;
+      }
+      if (encToken) {
+        const secret = env.JWT_SECRET || 'briefcase-local-secret';
+        const dec = await decryptSecret(encToken, secret);
+        if (dec) token = dec;
       }
     } catch {}
   }
@@ -82,7 +101,7 @@ async function resolveDeploymentRepo(env?: Env): Promise<{ path: string; hasRemo
     } catch {}
   }
 
-  return { path: chosenPath, hasRemote, remoteUrl };
+  return { path: chosenPath, hasRemote, remoteUrl, branch, token };
 }
 
 // ── 0. Static Vendor Assets (/admin/vendor/*) ────────────────────────────────
@@ -826,34 +845,56 @@ adminRouter.get('/git', async (c) => {
     mediaCount = Number(mediaRows?.count) || 0;
   } catch {}
 
-  // List tags from deployment repository
-  try {
-    const cp = await dynamicImport('child_process');
-    if (cp && (cp as any).execSync) {
-      const rawTags = (cp as any).execSync(`git -C "${repoInfo.path}" tag -l --sort=-creatordate`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-      tags = rawTags.split('\n').map((t: string) => t.trim()).filter(Boolean);
-    } else if (c.env.ENVIRONMENT !== 'production') {
-      const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoPath: repoInfo.path }),
-        signal: AbortSignal.timeout(600),
-      }).catch(() => null);
-      if (bridgeRes && bridgeRes.ok) {
-        const json: any = await bridgeRes.json().catch(() => ({}));
-        if (json.tags && Array.isArray(json.tags)) tags = json.tags;
+  let engineName = 'isomorphic-git';
+
+  // List tags using universal driver or local Git bridge
+  if (repoInfo.hasRemote) {
+    let bridgeLoaded = false;
+    if (c.env.ENVIRONMENT !== 'production') {
+      try {
+        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
+        if (bridgeCheck && bridgeCheck.ok) {
+          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repoPath: repoInfo.path }),
+          });
+          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
+          if (bridgeRes.ok && Array.isArray(bridgeJson.tags)) {
+            tags = bridgeJson.tags;
+            engineName = 'Native Git CLI (SSH Agent)';
+            bridgeLoaded = true;
+          }
+        }
+      } catch {}
+    }
+
+    if (!bridgeLoaded) {
+      try {
+        const driver = await getGitDriver({
+          url: repoInfo.remoteUrl,
+          branch: repoInfo.branch,
+          token: repoInfo.token,
+          repoPath: repoInfo.path,
+          isProduction: c.env.ENVIRONMENT === 'production',
+        });
+        engineName = driver.engineName;
+        tags = await driver.listTags();
+      } catch (err: any) {
+        console.warn('Failed to list git tags:', err.message);
       }
     }
-  } catch {}
+  }
 
   return c.html(
     renderGitView(
       {
         environment: c.env.ENVIRONMENT || 'development',
-        d1DatabaseId: 'local-slottd-db-id',
+        d1DatabaseId: (c.env as any).DB ? 'Connected' : 'local-slottd-db',
         repoPath: repoInfo.path,
         hasRemote: repoInfo.hasRemote,
         remoteUrl: repoInfo.remoteUrl,
+        engineName,
         docCount,
         collectionCount,
         mediaCount,
@@ -868,43 +909,58 @@ adminRouter.get('/git', async (c) => {
 adminRouter.post('/git/fetch', async (c) => {
   const repoInfo = await resolveDeploymentRepo(c.env);
 
+  if (!repoInfo.hasRemote) {
+    return c.json(
+      {
+        error: 'No Git remote configured. Configure a remote URL in Setup first.',
+        output: 'Fatal: No remote repository configured.',
+      },
+      400
+    );
+  }
+
   try {
-    // 1. Check local Git execution bridge
+    // 1. Check local Git execution bridge if running in development mode
     if (c.env.ENVIRONMENT !== 'production') {
       try {
-        const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repoPath: repoInfo.path }),
-          signal: AbortSignal.timeout(4000),
-        }).catch(() => null);
-        if (bridgeRes && bridgeRes.ok) {
-          const json: any = await bridgeRes.json().catch(() => ({}));
-          return c.json(json);
+        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
+        if (bridgeCheck && bridgeCheck.ok) {
+          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repoPath: repoInfo.path }),
+          });
+          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
+          if (bridgeRes.ok) {
+            const tags = bridgeJson.tags || [];
+            return c.json({
+              success: true,
+              message: `Fetched ${tags.length} remote tags successfully (Git Bridge / SSH Agent).`,
+              output: tags.length > 0 ? `Tags found:\n${tags.slice(0, 10).join('\n')}${tags.length > 10 ? `\n...and ${tags.length - 10} more` : ''}` : 'No tags found in remote repository.',
+              tags,
+            });
+          }
         }
       } catch {}
     }
 
-    const cp = await dynamicImport('child_process');
-    if (cp && (cp as any).execSync) {
-      if (!repoInfo.hasRemote) {
-        return c.json(
-          {
-            error: 'No git remote configured in repository. Add a remote with "git remote add origin <url>" first.',
-            output: `Fatal: No remote repository configured in ${repoInfo.path}`
-          },
-          400
-        );
-      }
+    const driver = await getGitDriver({
+      url: repoInfo.remoteUrl,
+      branch: repoInfo.branch,
+      token: repoInfo.token,
+      repoPath: repoInfo.path,
+      isProduction: c.env.ENVIRONMENT === 'production',
+    });
 
-      const output = (cp as any).execSync(`git -C "${repoInfo.path}" fetch --tags origin`, { encoding: 'utf8' });
-      const rawTags = (cp as any).execSync(`git -C "${repoInfo.path}" tag -l --sort=-creatordate`, { encoding: 'utf8' });
-      const tags = rawTags.split('\n').map((t: string) => t.trim()).filter(Boolean);
-      return c.json({ success: true, message: `Fetched remote tags successfully (${tags.length} total).`, output, tags });
-    }
-    return c.json({ success: true, message: 'Edge isolate: remote tags fetched via API.', tags: [] });
+    const tags = await driver.listTags();
+    return c.json({
+      success: true,
+      message: `Fetched ${tags.length} remote tags successfully (${driver.engineName}).`,
+      output: tags.length > 0 ? `Tags found:\n${tags.slice(0, 10).join('\n')}${tags.length > 10 ? `\n...and ${tags.length - 10} more` : ''}` : 'No tags found in remote repository.',
+      tags,
+    });
   } catch (err: any) {
-    return c.json({ error: err.message, output: err.stdout || err.stderr || err.message }, 500);
+    return c.json({ error: err.message, output: err.message }, 500);
   }
 });
 
@@ -918,94 +974,66 @@ adminRouter.post('/git/release', async (c) => {
   const repoInfo = await resolveDeploymentRepo(c.env);
 
   try {
-    // 1. Check local Git execution bridge
-    if (c.env.ENVIRONMENT !== 'production') {
-      try {
-        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
-        if (bridgeCheck && bridgeCheck.ok) {
-          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/release', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tag, message, push, repoPath: repoInfo.path }),
-          });
-          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
-          if (bridgeRes.ok && bridgeJson.success) {
-            return c.json({
-              success: true,
-              message: bridgeJson.message,
-              output: bridgeJson.output,
-            });
-          } else {
-            return c.json(
-              {
-                error: bridgeJson.error || 'Bridge git release failed',
-                output: bridgeJson.output || bridgeJson.error,
-              },
-              500
-            );
-          }
-        }
-      } catch {}
-    }
-
     const items = await exportToGitFormat(db);
     const files = serializeToFiles(items, 'content');
+    const forcePublish = body.forcePublish === true;
 
-    const cp = await dynamicImport('child_process');
-    const fs = await dynamicImport('fs');
-    const path = await dynamicImport('path');
+    // Execute onBeforePublish pre-release verification if configured
+    const appConfig = getSlottdConfig();
+    if (appConfig?.hooks?.onBeforePublish) {
+      const user = await getAuthenticatedUser(c);
+      const hookCtx = {
+        bundle: { id: `release-${tag}`, slug: tag, name: tag },
+        items,
+        actor: { email: user?.email || (c.env as any).OPERATOR_EMAIL || 'operator@slottd.dev', authMethod: 'admin-ui' },
+        forcePublish,
+        timestamp: Date.now(),
+        env: c.env,
+        db,
+      };
 
-    if (cp && fs && path && typeof (globalThis as any).process !== 'undefined') {
-      const contentDir = (path as any).resolve(repoInfo.path, 'content');
-      if ((fs as any).existsSync(contentDir)) {
-        (fs as any).rmSync(contentDir, { recursive: true, force: true });
+      const hookResult = await appConfig.hooks.onBeforePublish(hookCtx);
+      if (hookResult.status === 'error' && !forcePublish) {
+        return c.json(
+          {
+            requiresConfirmation: true,
+            status: 'error',
+            error: hookResult.message || 'Pre-release verification identified issues.',
+            message: hookResult.message,
+            report: hookResult.data,
+          },
+          422
+        );
       }
-      (fs as any).mkdirSync(contentDir, { recursive: true });
-
-      for (const f of files) {
-        const fullPath = (path as any).resolve(repoInfo.path, f.path);
-        (fs as any).mkdirSync((path as any).dirname(fullPath), { recursive: true });
-        (fs as any).writeFileSync(fullPath, f.content, 'utf8');
-      }
-
-      (cp as any).execSync(`git -C "${repoInfo.path}" add -A content/`, { encoding: 'utf8' });
-      (cp as any).execSync(`git -C "${repoInfo.path}" commit -m "${message.replace(/"/g, '\\"')}" || true`, { encoding: 'utf8' });
-      (cp as any).execSync(`git -C "${repoInfo.path}" tag -a "${tag.replace(/"/g, '\\"')}" -m "${message.replace(/"/g, '\\"')}" || true`, { encoding: 'utf8' });
-
-      let pushOutput = '';
-      if (push) {
-        if (!repoInfo.hasRemote) {
-          pushOutput = `Notice: Remote push skipped because no remote is configured in ${repoInfo.path}.`;
-        } else {
-          try {
-            pushOutput = (cp as any).execSync(`git -C "${repoInfo.path}" push origin HEAD && git -C "${repoInfo.path}" push origin "${tag}"`, { encoding: 'utf8' });
-          } catch (pushErr: any) {
-            pushOutput = `Notice: Remote push notice: ${pushErr.message}`;
-          }
-        }
-      }
-
-      return c.json({
-        success: true,
-        message: `Exported ${items.length} records and tagged release '${tag}' in Git repository (${repoInfo.path})!`,
-        output: pushOutput || `Tagged release '${tag}'.`,
-      });
     }
 
-    if (c.env.GITHUB_TOKEN) {
-      const gitResult = await publishReleaseToGitHub({
-        githubToken: c.env.GITHUB_TOKEN,
-        repoOwner: 'bmoelk',
-        repoName: 'brainendeavor.com',
-        branch: 'main',
+    if (repoInfo.hasRemote) {
+      const driver = await getGitDriver({
+        url: repoInfo.remoteUrl,
+        branch: repoInfo.branch,
+        token: repoInfo.token,
+        repoPath: repoInfo.path,
+        isProduction: c.env.ENVIRONMENT === 'production',
+      });
+
+      const user = await getAuthenticatedUser(c);
+      const author = {
+        name: user?.name || (c.env as any).OPERATOR_NAME || 'SlottD Operator',
+        email: user?.email || (c.env as any).OPERATOR_EMAIL || 'operator@slottd.dev',
+      };
+
+      const result = await driver.createRelease({
+        tag,
+        message,
         files,
-        tagName: tag,
-        commitMessage: message,
+        push,
+        author,
       });
 
       return c.json({
         success: true,
-        message: `Created release tag '${tag}' on GitHub (Commit: ${gitResult.commitSha.slice(0, 7)})`,
+        message: `Exported ${items.length} records and tagged release '${tag}' (${driver.engineName})!`,
+        output: result.message,
       });
     }
 
@@ -1013,7 +1041,7 @@ adminRouter.post('/git/release', async (c) => {
     return c.json({
       success: true,
       message: `Database snapshot exported: ${items.length} records in ${files.length} content files.`,
-      output: `[Briefcase Mode] Cloudflare Worker isolates cannot run host shell binaries.\nTo commit, tag, and push from your workstation, run:\n\n${releaseCmd}\n`,
+      output: `To commit, tag, and push from your workstation, configure a remote URL in Setup or run:\n\n${releaseCmd}\n`,
       command: releaseCmd,
     });
   } catch (err: any) {
@@ -1049,40 +1077,27 @@ adminRouter.post('/git/diff', async (c) => {
       } catch {}
     }
 
-    const items = await exportToGitFormat(db);
-    const files = serializeToFiles(items, 'content');
-
-    const cp = await dynamicImport('child_process');
-    const fs = await dynamicImport('fs');
-    const path = await dynamicImport('path');
-
-    if (cp && fs && path && typeof (globalThis as any).process !== 'undefined') {
-      const contentDir = (path as any).resolve(repoInfo.path, 'content');
-      if ((fs as any).existsSync(contentDir)) {
-        (fs as any).rmSync(contentDir, { recursive: true, force: true });
-      }
-      (fs as any).mkdirSync(contentDir, { recursive: true });
-
-      for (const f of files) {
-        const fullPath = (path as any).resolve(repoInfo.path, f.path);
-        (fs as any).mkdirSync((path as any).dirname(fullPath), { recursive: true });
-        (fs as any).writeFileSync(fullPath, f.content, 'utf8');
-      }
-
-      const statOutput = (cp as any).execSync(`git -C "${repoInfo.path}" diff --stat "${tag}" -- content/ || true`, { encoding: 'utf8' });
-      const summaryOutput = (cp as any).execSync(`git -C "${repoInfo.path}" diff --summary "${tag}" -- content/ || true`, { encoding: 'utf8' });
-
-      return c.json({
-        success: true,
-        summary: statOutput.trim() || 'Working content matches tag exactly (0 changes).',
-        output: `${statOutput}\n${summaryOutput}`.trim(),
-      });
+    if (!repoInfo.hasRemote && !repoInfo.path) {
+      return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Setup first.' }, 400);
     }
+
+    const driver = await getGitDriver({
+      url: repoInfo.remoteUrl,
+      branch: repoInfo.branch,
+      token: repoInfo.token,
+      repoPath: repoInfo.path,
+      isProduction: c.env.ENVIRONMENT === 'production',
+    });
+
+    const activeItems = await exportToGitFormat(db);
+    const tagItems = await driver.loadTagContent(tag);
+    const diffReport = computeContentDiff(activeItems, tagItems, tag);
 
     return c.json({
       success: true,
-      summary: 'Diff preview generated.',
-      output: `Previewing ${files.length} active documents against tag '${tag}'.`,
+      summary: diffReport.summary,
+      output: diffReport.formattedOutput,
+      diffs: diffReport.diffs,
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -1101,83 +1116,25 @@ adminRouter.post('/git/load', async (c) => {
   }
 
   try {
-    const cp = await dynamicImport('child_process');
-    const fs = await dynamicImport('fs');
-    const path = await dynamicImport('path');
-
-    if (cp && fs && path && typeof (globalThis as any).process !== 'undefined') {
-      (cp as any).execSync(`git -C "${repoInfo.path}" checkout "${tag}" -- content/`, { encoding: 'utf8' });
-
-      const contentDir = (path as any).resolve(repoInfo.path, 'content');
-      if (!(fs as any).existsSync(contentDir)) {
-        throw new Error(`Content directory not found for tag '${tag}' in ${repoInfo.path}`);
-      }
-
-      const collections = (fs as any).readdirSync(contentDir).filter((f: string) => (fs as any).statSync((path as any).join(contentDir, f)).isDirectory());
-      let loadedCount = 0;
-
-      for (const col of collections) {
-        const colDir = (path as any).join(contentDir, col);
-        const jsonFiles = (fs as any).readdirSync(colDir).filter((f: string) => f.endsWith('.json'));
-
-        for (const jsonFile of jsonFiles) {
-          const fullJsonPath = (path as any).join(colDir, jsonFile);
-          const rawJson = (fs as any).readFileSync(fullJsonPath, 'utf8');
-          const doc = JSON.parse(rawJson);
-          const slug = doc.slug || jsonFile.replace('.json', '');
-          const companionMdPath = (path as any).join(colDir, `${slug}.md`);
-          const customData = doc.data || {};
-
-          if ((fs as any).existsSync(companionMdPath)) {
-            customData.content = (fs as any).readFileSync(companionMdPath, 'utf8');
-          }
-
-          const docId = doc.id || `doc-${col}-${slug}`;
-          const safeData = JSON.stringify(customData);
-          const createdAt = doc.created_at || doc.createdAt || Date.now();
-          const updatedAt = doc.updated_at || doc.updatedAt || Date.now();
-
-          await db
-            .insertInto('documents')
-            .values({
-              id: docId,
-              collection: col,
-              slug,
-              title: doc.title || slug,
-              status: doc.status || 'published',
-              schema_version: doc.schema_version || 1,
-              publish_at: doc.publish_at || null,
-              data: safeData,
-              created_at: createdAt,
-              updated_at: updatedAt,
-            })
-            .onConflict((oc) =>
-              oc.column('id').doUpdateSet({
-                collection: col,
-                slug,
-                title: doc.title || slug,
-                status: doc.status || 'published',
-                schema_version: doc.schema_version || 1,
-                publish_at: doc.publish_at || null,
-                data: safeData,
-                updated_at: updatedAt,
-              })
-            )
-            .execute();
-
-          loadedCount++;
-        }
-      }
-
-      return c.json({
-        success: true,
-        message: `Successfully loaded and restored ${loadedCount} documents from Git tag '${tag}' into D1!`,
-      });
+    if (!repoInfo.hasRemote) {
+      return c.json({ error: 'No Git remote configured. Configure a remote URL in Setup first.' }, 400);
     }
+
+    const driver = await getGitDriver({
+      url: repoInfo.remoteUrl,
+      branch: repoInfo.branch,
+      token: repoInfo.token,
+      repoPath: repoInfo.path,
+      isProduction: c.env.ENVIRONMENT === 'production',
+    });
+
+    const items = await driver.loadTagContent(tag);
+    const { inserted, updated } = await hydrateFromGit(db, items);
 
     return c.json({
       success: true,
-      message: `Restored records from tag '${tag}' into D1.`,
+      message: `Successfully loaded and restored ${items.length} documents from Git tag '${tag}' into D1 (${driver.engineName})!`,
+      data: { count: items.length, inserted, updated },
     });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
@@ -1252,20 +1209,18 @@ adminRouter.get('/setup', async (c) => {
   let isPasswordProtected = !!((c.env as any).ADMIN_PASSWORD_HASH || (c.env as any).ADMIN_PASSWORD);
   let gitRemoteUrl = (c.env as any).GIT_REMOTE_URL || '';
   let gitBranch = 'main';
-  let gitProvider = 'generic-https';
   let hasToken = false;
 
   if (c.env.DB) {
     try {
-      const rows = await c.env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)')
-        .bind('admin_password_hash', 'git_remote_url', 'git_branch', 'git_provider', 'git_token_enc')
+      const rows = await c.env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
+        .bind('admin_password_hash', 'git_remote_url', 'git_branch', 'git_token_enc')
         .all<{ key: string; value: string }>();
 
       for (const row of rows.results || []) {
         if (row.key === 'admin_password_hash' && row.value) isPasswordProtected = true;
         if (row.key === 'git_remote_url' && row.value) gitRemoteUrl = row.value;
         if (row.key === 'git_branch' && row.value) gitBranch = row.value;
-        if (row.key === 'git_provider' && row.value) gitProvider = row.value;
         if (row.key === 'git_token_enc' && row.value) hasToken = true;
       }
     } catch {}
@@ -1282,7 +1237,6 @@ adminRouter.get('/setup', async (c) => {
     isPasswordProtected,
     gitRemoteUrl,
     gitBranch,
-    gitProvider,
     hasToken,
   }, user));
 });
@@ -1365,7 +1319,6 @@ adminRouter.post('/setup/remote', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const remoteUrl = (body.remoteUrl as string) || '';
   const branch = (body.branch as string) || 'main';
-  const provider = (body.provider as string) || 'generic-https';
   const token = (body.token as string) || '';
 
   const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
@@ -1380,10 +1333,6 @@ adminRouter.post('/setup/remote', async (c) => {
       await c.env.DB.prepare(
         'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
       ).bind('git_branch', branch, now).run();
-
-      await c.env.DB.prepare(
-        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-      ).bind('git_provider', provider, now).run();
 
       if (token) {
         const encToken = await encryptSecret(token, secret);
