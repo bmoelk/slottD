@@ -46,11 +46,17 @@ export function renderRichEditorWidget(
             </span>
           ` : ''}
         </div>
-        <div class="mode-switcher">
-          ${!isCodeOnly ? html`
-            <button type="button" class="mode-btn active" data-mode="primary" onclick="window.switchEditorMode('${field.name}', 'primary')">${primaryLabel}</button>
-          ` : ''}
-          <button type="button" class="mode-btn ${isCodeOnly ? 'active' : ''}" data-mode="code" onclick="window.switchEditorMode('${field.name}', 'code')">${rawLabel}</button>
+        <div class="editor-header-actions">
+          <div class="mode-switcher" id="${field.name}_edit_modes">
+            ${!isCodeOnly ? html`
+              <button type="button" class="mode-btn active" data-mode="primary" onclick="window.switchEditorMode('${field.name}', 'primary')">${primaryLabel}</button>
+            ` : ''}
+            <button type="button" class="mode-btn ${isCodeOnly ? 'active' : ''}" data-mode="code" onclick="window.switchEditorMode('${field.name}', 'code')">${rawLabel}</button>
+          </div>
+          <span class="editor-header-divider"></span>
+          <button type="button" class="preview-toggle-btn" id="${field.name}_preview_btn" onclick="window.togglePreview('${field.name}')" title="Preview rendered output">
+            <span>👁</span> Preview
+          </button>
         </div>
       </div>
 
@@ -69,6 +75,7 @@ export function renderRichEditorWidget(
               <button type="button" data-md-action="header" data-level="3" title="Heading 3">H3</button>
               <span class="md-toolbar-divider"></span>
               <button type="button" data-md-action="link" title="Link (Cmd+K)">🔗</button>
+              <button type="button" data-md-action="image" title="Insert Media from R2 (or Upload)">🖼️</button>
               <button type="button" data-md-action="quote" title="Quote">“</button>
               <button type="button" data-md-action="code" title="Code Block">&lt;/&gt;</button>
               <span class="md-toolbar-divider"></span>
@@ -114,6 +121,11 @@ export function renderRichEditorWidget(
           style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; line-height: 1.6;"
           oninput="const h = document.getElementById('${field.name}_hidden'); if (h) h.value = this.value; if (typeof window.syncFromRawTextarea === 'function') window.syncFromRawTextarea('${field.name}', this.value); if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();"
         >${val}</textarea>
+      </div>
+
+      <!-- Live Rendered Preview Container (Toggled via Preview button) -->
+      <div class="preview-wrapper" id="${field.name}_preview_target" style="display: none;">
+        <div class="preview-content" id="${field.name}_preview_content"></div>
       </div>
 
       ${isDraftModified ? html`

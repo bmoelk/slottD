@@ -51,6 +51,7 @@ export function renderEditorView(
     const toastEditors = {};
     const pellEditors = {};
     let activeMediaTargetField = null;
+    let activeEditorMediaTarget = null;
     let cachedMedia = [];
 
     function getStudioHeaders(extra) {
@@ -136,6 +137,7 @@ export function renderEditorView(
         try {
           const editor = window.pell.init({
             element: el,
+            fieldName: fieldName,
             onChange: function(html) {
               if (hidden) hidden.value = html;
               const raw = document.getElementById(fieldName + '_raw_textarea');
@@ -283,6 +285,12 @@ export function renderEditorView(
         if (activeBtn) activeBtn.classList.add('active');
       }
 
+      // Always dismiss preview when switching edit modes
+      const previewTarget = document.getElementById(fieldName + '_preview_target');
+      const previewBtn = document.getElementById(fieldName + '_preview_btn');
+      if (previewTarget) previewTarget.style.display = 'none';
+      if (previewBtn) previewBtn.classList.remove('active');
+
       if (mode === 'primary' || mode === 'markdown' || mode === 'richtext') {
         if (codeEl) codeEl.style.display = 'none';
         if (primaryEl) primaryEl.style.display = 'block';
@@ -313,6 +321,86 @@ export function renderEditorView(
           }
         }
       }
+    };
+
+    // 3b. Rendered Preview Toggle (Separated from Edit Mode Switcher)
+    window.togglePreview = function(fieldName) {
+      const container = document.getElementById(fieldName + '_editor_container');
+      const hiddenInput = document.getElementById(fieldName + '_hidden');
+      const previewBtn = document.getElementById(fieldName + '_preview_btn');
+      const previewTarget = document.getElementById(fieldName + '_preview_target');
+      const previewContent = document.getElementById(fieldName + '_preview_content');
+      if (!container || !previewTarget || !previewContent) return;
+
+      const isPreviewing = previewTarget.style.display !== 'none';
+      if (isPreviewing) {
+        // Exit preview mode -> restore active editing view
+        previewTarget.style.display = 'none';
+        if (previewBtn) previewBtn.classList.remove('active');
+        const switcher = container.querySelector('.mode-switcher');
+        const activeModeBtn = switcher ? switcher.querySelector('.mode-btn.active') : null;
+        const mode = activeModeBtn ? activeModeBtn.getAttribute('data-mode') : 'primary';
+        window.switchEditorMode(fieldName, mode);
+        return;
+      }
+
+      // Enter preview mode: extract latest content from currently visible editor
+      const primaryEl = document.getElementById(fieldName + '_primary_target');
+      const toastEl = document.getElementById(fieldName + '_toast_target');
+      const trixEl = document.getElementById(fieldName + '_trix_target');
+      const codeEl = document.getElementById(fieldName + '_code_target');
+      const codeTextarea = document.getElementById(fieldName + '_raw_textarea');
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
+
+      let currentVal = '';
+      if (codeEl && codeEl.style.display !== 'none' && codeTextarea) {
+        currentVal = codeTextarea.value;
+      } else if (mdTextarea && primaryEl && primaryEl.style.display !== 'none') {
+        currentVal = mdTextarea.value;
+      } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+        currentVal = pellEditors[fieldName].content.innerHTML;
+      } else if (trixEl && trixEl.style.display !== 'none') {
+        const trixInput = document.getElementById(fieldName + '_trix_input');
+        const trixEditor = trixEl.querySelector('trix-editor');
+        currentVal = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
+      } else if (toastEl && toastEl.style.display !== 'none' && toastEditors[fieldName]) {
+        try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
+      }
+
+      if (!currentVal && hiddenInput && hiddenInput.value) {
+        currentVal = hiddenInput.value;
+      }
+
+      if (hiddenInput) hiddenInput.value = currentVal;
+
+      // Hide all editor input panes
+      if (primaryEl) primaryEl.style.display = 'none';
+      if (codeEl) codeEl.style.display = 'none';
+      if (toastEl) toastEl.style.display = 'none';
+
+      // Render preview
+      const format = container.getAttribute('data-format') || 'markdown';
+      let htmlOutput = '';
+      if (!currentVal || !currentVal.trim()) {
+        htmlOutput = '<p style="color:var(--text-muted);font-style:italic;margin:0;">No content to preview.</p>';
+      } else if (format === 'richtext') {
+        htmlOutput = currentVal;
+      } else {
+        // Markdown rendering via isolate-served marked.js
+        if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+          try {
+            htmlOutput = window.marked.parse(currentVal);
+          } catch (err) {
+            htmlOutput = '<p style="color:#ef4444;">Preview error: ' + err.message + '</p><pre>' + currentVal + '</pre>';
+          }
+        } else {
+          htmlOutput = currentVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br/>');
+        }
+      }
+
+      previewContent.innerHTML = htmlOutput;
+      previewTarget.style.display = 'block';
+      if (previewBtn) previewBtn.classList.add('active');
     };
 
     // 4. Form Submission
@@ -658,8 +746,16 @@ export function renderEditorView(
     };
 
     // 6. Media Picker & Thumbnail Logic
+    window.openEditorMediaModal = function(fieldName, format) {
+      activeEditorMediaTarget = { fieldName: fieldName, format: format || 'markdown' };
+      activeMediaTargetField = null;
+      window.openMediaModal(fieldName);
+    };
+
     window.openMediaModal = async function(fieldName) {
-      activeMediaTargetField = fieldName;
+      if (!activeEditorMediaTarget) {
+        activeMediaTargetField = fieldName;
+      }
       const modal = document.getElementById('mediaModal');
       if (modal) modal.style.display = 'flex';
 
@@ -679,6 +775,7 @@ export function renderEditorView(
       const modal = document.getElementById('mediaModal');
       if (modal) modal.style.display = 'none';
       activeMediaTargetField = null;
+      activeEditorMediaTarget = null;
     };
 
     function renderModalMedia(items) {
@@ -698,17 +795,14 @@ export function renderEditorView(
         itemEl.className = 'modal-media-item';
         itemEl.title = m.filename || m.key;
 
-        const isImg = (m.type || m.mime_type || '').indexOf('image/') === 0 || /\\.(jpg|jpeg|png|webp|svg|gif)$/i.test(m.key || '');
+        const isImg = (m.type || m.mime_type || '').indexOf('image/') === 0 || /\.(jpg|jpeg|png|webp|svg|gif)$/i.test(m.key || '');
         const assetUrl = m.url || ('/media/' + m.key);
-
-        itemEl.addEventListener('click', function() {
-          window.selectMediaAsset(assetUrl);
-        });
+        const displayName = m.filename || m.key;
 
         if (isImg) {
           const imgEl = document.createElement('img');
           imgEl.src = '/media/' + m.key;
-          imgEl.alt = m.filename || '';
+          imgEl.alt = displayName;
           imgEl.loading = 'lazy';
           itemEl.appendChild(imgEl);
         } else {
@@ -720,8 +814,61 @@ export function renderEditorView(
 
         const nameEl = document.createElement('span');
         nameEl.className = 'modal-media-name';
-        nameEl.innerText = m.filename || m.key;
+        nameEl.innerText = displayName;
         itemEl.appendChild(nameEl);
+
+        if (activeEditorMediaTarget) {
+          const actionsEl = document.createElement('div');
+          actionsEl.className = 'modal-media-actions';
+
+          const btnInsert = document.createElement('button');
+          btnInsert.type = 'button';
+          btnInsert.className = 'btn-modal-action';
+          btnInsert.title = 'Insert image into content';
+          btnInsert.innerText = isImg ? '🖼️ Image' : '📄 Insert';
+          btnInsert.onclick = function(e) {
+            e.stopPropagation();
+            window.insertEditorMedia(assetUrl, displayName, false);
+          };
+          actionsEl.appendChild(btnInsert);
+
+          const btnLink = document.createElement('button');
+          btnLink.type = 'button';
+          btnLink.className = 'btn-modal-action';
+          btnLink.title = 'Insert link to asset';
+          btnLink.innerText = '🔗 Link';
+          btnLink.onclick = function(e) {
+            e.stopPropagation();
+            window.insertEditorMedia(assetUrl, displayName, true);
+          };
+          actionsEl.appendChild(btnLink);
+
+          const btnCopy = document.createElement('button');
+          btnCopy.type = 'button';
+          btnCopy.className = 'btn-modal-action';
+          btnCopy.title = 'Copy URL to clipboard';
+          btnCopy.innerText = '📋';
+          btnCopy.onclick = function(e) {
+            e.stopPropagation();
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(assetUrl).then(function() {
+                btnCopy.innerText = '✓';
+                setTimeout(function() { btnCopy.innerText = '📋'; }, 1500);
+              });
+            }
+          };
+          actionsEl.appendChild(btnCopy);
+
+          itemEl.appendChild(actionsEl);
+
+          itemEl.addEventListener('click', function() {
+            window.insertEditorMedia(assetUrl, displayName, false);
+          });
+        } else {
+          itemEl.addEventListener('click', function() {
+            window.selectMediaAsset(assetUrl);
+          });
+        }
 
         grid.appendChild(itemEl);
       });
@@ -736,12 +883,64 @@ export function renderEditorView(
     };
 
     window.selectMediaAsset = function(url) {
+      if (activeEditorMediaTarget) {
+        window.insertEditorMedia(url, '', false);
+        return;
+      }
       if (!activeMediaTargetField) return;
       const input = document.getElementById(activeMediaTargetField + '_input');
       if (input) {
         input.value = url;
         window.updateThumbnailPreview(activeMediaTargetField, url);
       }
+      window.closeMediaModal();
+    };
+
+    window.insertEditorMedia = function(url, filename, asLink) {
+      if (!activeEditorMediaTarget) return;
+      const targetField = activeEditorMediaTarget.fieldName;
+      const format = activeEditorMediaTarget.format;
+
+      const mdTextarea = document.getElementById(targetField + '_md_textarea');
+      const rawTextarea = document.getElementById(targetField + '_raw_textarea');
+
+      const activeTa = (mdTextarea && mdTextarea.offsetParent !== null) ? mdTextarea : rawTextarea;
+
+      if (format === 'markdown' || (activeTa && activeTa.offsetParent !== null)) {
+        if (activeTa) {
+          activeTa.focus();
+          const start = activeTa.selectionStart || 0;
+          const end = activeTa.selectionEnd || 0;
+          const selected = activeTa.value.slice(start, end) || filename || 'image';
+          const snippet = asLink
+            ? ('[' + selected + '](' + url + ')')
+            : ('![' + selected + '](' + url + ')');
+
+          let success = false;
+          try {
+            success = document.execCommand('insertText', false, snippet);
+          } catch (e) { success = false; }
+          if (!success) {
+            activeTa.setRangeText(snippet, start, end, 'select');
+          }
+          activeTa.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      } else if (format === 'html' || pellEditors[targetField]) {
+        if (pellEditors[targetField] && pellEditors[targetField].content) {
+          pellEditors[targetField].content.focus();
+          if (asLink) {
+            document.execCommand('createLink', false, url);
+          } else {
+            document.execCommand('insertImage', false, url);
+          }
+          pellEditors[targetField].content.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+
+      if (typeof window.updateDraftButtonState === 'function') {
+        window.updateDraftButtonState();
+      }
+
       window.closeMediaModal();
     };
 
@@ -799,7 +998,11 @@ export function renderEditorView(
           const json = await res.json();
           const fileUrl = json.data && json.data.url ? json.data.url : ('/media/' + json.data.key);
           cachedMedia = [];
-          window.selectMediaAsset(fileUrl);
+          if (activeEditorMediaTarget) {
+            window.insertEditorMedia(fileUrl, file.name, false);
+          } else {
+            window.selectMediaAsset(fileUrl);
+          }
         } else {
           alert('Upload failed: ' + await res.text());
         }

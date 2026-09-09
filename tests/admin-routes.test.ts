@@ -620,9 +620,33 @@ describe('SlottD Admin Router Deep Links', () => {
       // Verifies vendor scripts are loaded from local isolate:
       expect(html).toContain('/admin/vendor/markdown-toolbar.js');
       expect(html).toContain('/admin/vendor/pell.js');
+      expect(html).toContain('/admin/vendor/marked.js');
       // Verifies heavy CDNs are NOT loaded in light tier:
       expect(html).not.toContain('uicdn.toast.com');
       expect(html).not.toContain('unpkg.com/trix');
+
+      // Verifies separated Preview button and Preview target:
+      expect(html).toContain('preview-toggle-btn');
+      expect(html).toContain('Preview');
+      expect(html).toContain('preview-wrapper');
+      expect(html).toContain('preview-content');
+
+      // Verifies Media button in toolbar:
+      expect(html).toContain('data-md-action="image"');
+      expect(html).toContain('🖼️');
+    });
+
+    it('serves /admin/vendor/marked.js with correct headers', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/vendor/marked.js', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('javascript');
+      const body = await res.text();
+      expect(body).toContain('marked');
     });
   });
 });

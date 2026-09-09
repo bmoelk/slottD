@@ -98,6 +98,19 @@ export const PELL_VENDOR_JS = `
         var url = window.prompt('Enter link URL (https://...):');
         if (url) exec('createLink', url);
       }
+    },
+    image: {
+      icon: '&#128444;&#65039;',
+      title: 'Insert Media from R2 (or Upload)',
+      result: function(settings) {
+        var fieldName = (settings && settings.fieldName) || (settings && settings.element && settings.element.getAttribute('data-field-name'));
+        if (typeof window.openEditorMediaModal === 'function' && fieldName) {
+          window.openEditorMediaModal(fieldName, 'html');
+        } else {
+          var url = window.prompt('Enter image URL:');
+          if (url) exec('insertImage', url);
+        }
+      }
     }
   };
 
@@ -149,7 +162,7 @@ export const PELL_VENDOR_JS = `
       button.innerHTML = action.icon;
       button.title = action.title;
       button.onclick = function() {
-        action.result() && content.focus();
+        action.result(settings) && content.focus();
       };
       if (action.state) {
         var handler = function() {

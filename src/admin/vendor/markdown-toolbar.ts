@@ -157,6 +157,16 @@ export const MARKDOWN_TOOLBAR_VENDOR_JS = `
         case 'link':
           insertLink(textarea);
           break;
+        case 'image': {
+          var fieldName = textarea.getAttribute('data-field') || (textarea.id ? textarea.id.replace('_md_textarea', '').replace('_raw_textarea', '') : '');
+          if (typeof window.openEditorMediaModal === 'function' && fieldName) {
+            window.openEditorMediaModal(fieldName, 'markdown');
+          } else {
+            var selected = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd) || 'alt text';
+            insertText(textarea, '![' + selected + '](', ')');
+          }
+          break;
+        }
         case 'unordered-list':
         case 'list':
           insertText(textarea, '- ', '', true);

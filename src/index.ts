@@ -12,6 +12,7 @@ import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser } from './aut
 import { ALPINE_VENDOR_JS } from './admin/vendor/alpine.js';
 import { MARKDOWN_TOOLBAR_VENDOR_JS } from './admin/vendor/markdown-toolbar.js';
 import { PELL_VENDOR_JS } from './admin/vendor/pell.js';
+import { MARKED_VENDOR_JS } from './admin/vendor/marked.js';
 import type { Env, SlottdConfig, PublishHookContext } from './types.js';
 
 export * from './types.js';
@@ -246,6 +247,15 @@ app.get('/admin/vendor/markdown-toolbar.js', (c) => {
 
 app.get('/admin/vendor/pell.js', (c) => {
   return new Response(PELL_VENDOR_JS, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+});
+
+app.get('/admin/vendor/marked.js', (c) => {
+  return new Response(MARKED_VENDOR_JS, {
     headers: {
       'Content-Type': 'application/javascript; charset=utf-8',
       'Cache-Control': 'public, max-age=31536000, immutable',

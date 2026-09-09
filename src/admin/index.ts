@@ -28,6 +28,7 @@ import { logActivity } from '../db/audit.js';
 import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
 import { MARKDOWN_TOOLBAR_VENDOR_JS } from './vendor/markdown-toolbar.js';
 import { PELL_VENDOR_JS } from './vendor/pell.js';
+import { MARKED_VENDOR_JS } from './vendor/marked.js';
 import type { Env } from '../types.js';
 import { getSlottdConfig } from '../index.js';
 
@@ -146,6 +147,12 @@ adminRouter.get('/vendor/pell.js', (c) => {
   c.header('Content-Type', 'application/javascript; charset=utf-8');
   c.header('Cache-Control', 'public, max-age=31536000, immutable');
   return c.body(PELL_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/marked.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(MARKED_VENDOR_JS);
 });
 
 // ── 0. Login & Session Management (/admin/login & /admin/logout) ─────────────

@@ -35,7 +35,8 @@ export function renderLayout(
         <script defer src="/admin/vendor/markdown-toolbar.js"></script>
         <script defer src="/admin/vendor/pell.js"></script>
       `}
-      <!-- Alpine.js Core & Plugins (Vendor-served from local worker isolate for 100% offline resilience) -->
+      <!-- Markdown & UI Micro-Libraries (Vendor-served from local worker isolate for 100% offline resilience) -->
+      <script defer src="/admin/vendor/marked.js"></script>
       <script defer src="/admin/vendor/alpine.js"></script>
       <style>
         ${adminStyles}
