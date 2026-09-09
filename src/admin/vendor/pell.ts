@@ -92,7 +92,7 @@ export const PELL_VENDOR_JS = `
       result: function() { return exec('insertHorizontalRule'); }
     },
     link: {
-      icon: '&#128279;',
+      icon: '<svg height="14" viewBox="0 0 16 16" width="14" fill="currentColor" style="display:inline-block;vertical-align:middle;"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018 1.998 1.998 0 0 0 2.83 0l2.5-2.5a2.002 2.002 0 0 0-2.83-2.83l-1.25 1.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042Zm-1.2 8.72a1.995 1.995 0 0 0 1.425.582 2.003 2.003 0 0 0 1.425-.582.75.75 0 0 1 1.06 1.06 3.5 3.5 0 0 1-4.95 0l-2.5-2.5a3.5 3.5 0 0 1 4.95-4.95l1.25 1.25a.75.75 0 0 1-1.06 1.06l-1.25-1.25a2 2 0 0 0-2.83 2.83l2.5 2.5Z"></path></svg>',
       title: 'Link',
       result: function() {
         var url = window.prompt('Enter link URL (https://...):');
@@ -100,7 +100,7 @@ export const PELL_VENDOR_JS = `
       }
     },
     image: {
-      icon: '&#128444;&#65039;',
+      icon: '<svg height="14" viewBox="0 0 16 16" width="14" fill="currentColor" style="display:inline-block;vertical-align:middle;"><path d="M1.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25V2.75a.25.25 0 0 0-.25-.25H1.75ZM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0 1 13.25 15H2.75A1.75 1.75 0 0 1 1 13.25V2.75Zm10.5 4.75a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm-7.25 5a.75.75 0 0 1-.53-1.28l2.5-2.5a.75.75 0 0 1 1.06 0l1.22 1.22 2.72-2.72a.75.75 0 0 1 1.06 0l2.5 2.5a.75.75 0 0 1-1.06 1.06L11.5 8.81l-2.72 2.72a.75.75 0 0 1-1.06 0L6.5 10.31l-1.72 1.72a.75.75 0 0 1-.53.22Z"></path></svg>',
       title: 'Insert Media from R2 (or Upload)',
       result: function(settings) {
         var fieldName = (settings && settings.fieldName) || (settings && settings.element && settings.element.getAttribute('data-field-name'));

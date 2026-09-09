@@ -32,11 +32,11 @@ export function renderLayout(
         `}
       ` : html`
         <!-- Zero-CDN Offline-Native Vendor Assets -->
-        <script defer src="/admin/vendor/markdown-toolbar.js"></script>
-        <script defer src="/admin/vendor/pell.js"></script>
+        <script defer src="/admin/vendor/markdown-toolbar.js?v=2"></script>
+        <script defer src="/admin/vendor/pell.js?v=2"></script>
       `}
       <!-- Markdown & UI Micro-Libraries (Vendor-served from local worker isolate for 100% offline resilience) -->
-      <script defer src="/admin/vendor/marked.js"></script>
+      <script defer src="/admin/vendor/marked.js?v=2"></script>
       <script defer src="/admin/vendor/alpine.js"></script>
       <style>
         ${adminStyles}

@@ -330,13 +330,23 @@ export const adminStyles = `
     border: 1px solid transparent;
     color: #cbd5e1;
     border-radius: 4px;
-    padding: 3px 8px;
+    padding: 3px 6px;
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
-    line-height: 1.4;
+    line-height: 1;
     user-select: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    box-sizing: border-box;
+  }
+  markdown-toolbar button svg {
+    display: block;
+    fill: currentColor;
   }
   markdown-toolbar button:hover {
     background: #1e293b;
@@ -386,13 +396,23 @@ export const adminStyles = `
     border: 1px solid transparent;
     color: #cbd5e1;
     border-radius: 4px;
-    padding: 3px 8px;
+    padding: 3px 6px;
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
-    line-height: 1.4;
+    line-height: 1;
     user-select: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    box-sizing: border-box;
+  }
+  .pell-button svg {
+    display: block;
+    fill: currentColor;
   }
   .pell-button:hover {
     background: #1e293b;

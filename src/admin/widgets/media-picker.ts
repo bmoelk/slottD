@@ -46,7 +46,7 @@ export function renderMediaPickerWidget(field: { name: string; label: string }, 
 
 export function renderMediaModal() {
   return html`
-    <div id="mediaModal" class="modal-backdrop" style="display: none;">
+    <div id="mediaModal" class="modal-backdrop" style="display: none;" onclick="if (event.target === this) window.closeMediaModal()">
       <div class="modal-dialog">
         <div class="modal-header">
           <h3>Select Asset from Cloudflare R2</h3>
