@@ -106,9 +106,9 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   return { path: chosenPath, hasRemote, remoteUrl, branch, token };
 }
 
-export async function getEditorConfig(env?: any): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
-  let format: 'markdown' | 'richtext' = env?.EDITOR_FORMAT === 'richtext' ? 'richtext' : 'markdown';
-  let tier: 'light' | 'heavy' = env?.EDITOR_TIER === 'heavy' ? 'heavy' : 'light';
+export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
+  let format: 'markdown' | 'richtext' = (env as any)?.EDITOR_FORMAT === 'richtext' ? 'richtext' : 'markdown';
+  let tier: 'light' | 'heavy' = (env as any)?.EDITOR_TIER === 'heavy' ? 'heavy' : 'light';
 
   if (env?.DB) {
     try {
