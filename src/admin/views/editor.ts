@@ -10,7 +10,8 @@ export function renderEditorView(
   fields: any[],
   isNew: boolean,
   user: { email: string; authMethod?: string; apiKey?: string },
-  modelIcon: string = '⚙️'
+  modelIcon: string = '⚙️',
+  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' }
 ) {
   let publishedData: Record<string, any> = {};
   let draftData: Record<string, any> = {};
@@ -48,6 +49,7 @@ export function renderEditorView(
     let isDraftSave = false;
     let showingLive = false;
     const toastEditors = {};
+    const pellEditors = {};
     let activeMediaTargetField = null;
     let cachedMedia = [];
 
@@ -122,12 +124,43 @@ export function renderEditorView(
       }
     });
 
-    // 2. Initialize Toast-UI Markdown Editors with Resilient Retry & Graceful Fallback
+    // 2. Initialize Editors (Toast-UI, Pell, Markdown Toolbar) with Resilient Retry & Fallback
+    function initPellEditors() {
+      if (typeof window.pell === 'undefined') return;
+      document.querySelectorAll('.pell-editor-target').forEach(function(el) {
+        const fieldName = el.getAttribute('data-field-name');
+        if (!fieldName || pellEditors[fieldName]) return;
+        const hidden = document.getElementById(fieldName + '_hidden');
+        const initialVal = (hidden ? hidden.value : '') || '';
+
+        try {
+          const editor = window.pell.init({
+            element: el,
+            onChange: function(html) {
+              if (hidden) hidden.value = html;
+              const raw = document.getElementById(fieldName + '_raw_textarea');
+              if (raw && document.activeElement !== raw) raw.value = html;
+              if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();
+            },
+            defaultParagraphSeparator: 'p'
+          });
+
+          if (editor && editor.content) {
+            editor.content.innerHTML = initialVal;
+          }
+          pellEditors[fieldName] = editor;
+        } catch (e) {
+          console.warn('Pell init fallback for field:', fieldName, e);
+          window.switchEditorMode(fieldName, 'code');
+        }
+      });
+    }
+
     function initMarkdownEditors() {
       document.querySelectorAll('.toastui-editor-target').forEach(function(el) {
         const fieldName = el.getAttribute('data-field-name');
         const initialVal = el.getAttribute('data-initial-value') || '';
-        if (toastEditors[fieldName]) return;
+        if (!fieldName || toastEditors[fieldName]) return;
 
         try {
           if (window.toastui && window.toastui.Editor) {
@@ -143,6 +176,8 @@ export function renderEditorView(
             editor.on('change', function() {
               const hidden = document.getElementById(fieldName + '_hidden');
               if (hidden) hidden.value = editor.getMarkdown();
+              const raw = document.getElementById(fieldName + '_raw_textarea');
+              if (raw && document.activeElement !== raw) raw.value = editor.getMarkdown();
               if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();
             });
 
@@ -155,18 +190,19 @@ export function renderEditorView(
       });
     }
 
-    function scheduleInitMarkdownEditors(attempts) {
+    function scheduleInitEditors(attempts) {
       attempts = attempts || 0;
+      initPellEditors();
       if (window.toastui && window.toastui.Editor) {
         initMarkdownEditors();
       } else if (attempts < 8) {
-        setTimeout(function() { scheduleInitMarkdownEditors(attempts + 1); }, 150);
+        setTimeout(function() { scheduleInitEditors(attempts + 1); }, 150);
       } else {
-        console.warn('Toast-UI CDN unavailable, gracefully falling back to native textarea.');
-        document.querySelectorAll('.editor-container-wrapper').forEach(function(container) {
-          const fieldName = container.getAttribute('data-field');
-          const toastEl = document.getElementById(fieldName + '_toast_target');
-          if (toastEl && toastEl.style.display !== 'none') {
+        // If Toast UI CDN unavailable after retries, fallback those fields to raw textarea
+        document.querySelectorAll('.toastui-editor-target').forEach(function(el) {
+          const fieldName = el.getAttribute('data-field-name');
+          if (fieldName && !toastEditors[fieldName]) {
+            console.warn('Toast-UI CDN unavailable for ' + fieldName + ', falling back to native textarea.');
             window.switchEditorMode(fieldName, 'code');
           }
         });
@@ -174,29 +210,61 @@ export function renderEditorView(
     }
 
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() { scheduleInitMarkdownEditors(0); });
+      document.addEventListener('DOMContentLoaded', function() { scheduleInitEditors(0); });
     } else {
-      scheduleInitMarkdownEditors(0);
+      scheduleInitEditors(0);
     }
 
-    // 3. Editor Mode Switcher (Toast Markdown <-> Trix Rich Text <-> Raw Code)
+    // Two-way synchronization when editing in Raw Textarea tab
+    window.syncFromRawTextarea = function(fieldName, val) {
+      const hidden = document.getElementById(fieldName + '_hidden');
+      if (hidden) hidden.value = val;
+
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
+      if (mdTextarea && mdTextarea !== document.activeElement) {
+        mdTextarea.value = val;
+      }
+
+      if (pellEditors[fieldName] && pellEditors[fieldName].content && pellEditors[fieldName].content !== document.activeElement) {
+        pellEditors[fieldName].content.innerHTML = val;
+      }
+
+      if (toastEditors[fieldName]) {
+        try { toastEditors[fieldName].setMarkdown(val); } catch (e) {}
+      }
+
+      const trixEl = document.getElementById(fieldName + '_trix_target');
+      const trixEditor = trixEl ? trixEl.querySelector('trix-editor') : null;
+      if (trixEditor && trixEditor.editor) {
+        try { trixEditor.editor.loadHTML(val); } catch (e) {}
+      }
+    };
+
+    // 3. Clean 2-Tab Mode Switcher: 'primary' (Active Configured Engine) <-> 'code' (Raw Textarea)
     window.switchEditorMode = function(fieldName, mode) {
       const container = document.getElementById(fieldName + '_editor_container');
       const hiddenInput = document.getElementById(fieldName + '_hidden');
       if (!container || !hiddenInput) return;
 
+      const primaryEl = document.getElementById(fieldName + '_primary_target');
       const toastEl = document.getElementById(fieldName + '_toast_target');
       const trixEl = document.getElementById(fieldName + '_trix_target');
+      const pellEl = document.getElementById(fieldName + '_pell_target');
       const codeEl = document.getElementById(fieldName + '_code_target');
-      const trixEditor = trixEl ? trixEl.querySelector('trix-editor') : null;
-      const codeTextarea = codeEl ? (codeEl.querySelector('textarea') || document.getElementById(fieldName + '_raw_textarea')) : null;
+      const codeTextarea = document.getElementById(fieldName + '_raw_textarea');
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
 
-      // Extract current content from whichever mode was currently active:
+      // Extract current content from whichever view is currently active:
       let currentVal = '';
       if (codeEl && codeEl.style.display !== 'none' && codeTextarea) {
         currentVal = codeTextarea.value;
+      } else if (mdTextarea && primaryEl && primaryEl.style.display !== 'none') {
+        currentVal = mdTextarea.value;
+      } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+        currentVal = pellEditors[fieldName].content.innerHTML;
       } else if (trixEl && trixEl.style.display !== 'none') {
         const trixInput = document.getElementById(fieldName + '_trix_input');
+        const trixEditor = trixEl.querySelector('trix-editor');
         currentVal = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
       } else if (toastEl && toastEl.style.display !== 'none' && toastEditors[fieldName]) {
         try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
@@ -208,37 +276,41 @@ export function renderEditorView(
 
       hiddenInput.value = currentVal;
 
-      if (toastEl) toastEl.style.display = 'none';
-      if (trixEl) trixEl.style.display = 'none';
-      if (codeEl) codeEl.style.display = 'none';
-
       const switcher = container.querySelector('.mode-switcher');
       if (switcher) {
         switcher.querySelectorAll('.mode-btn').forEach(function(b) { b.classList.remove('active'); });
-        const activeBtn = switcher.querySelector('[data-mode="' + mode + '"]');
+        const activeBtn = switcher.querySelector('[data-mode="' + mode + '"]') || (mode !== 'code' ? switcher.querySelector('[data-mode="primary"]') : null);
         if (activeBtn) activeBtn.classList.add('active');
       }
 
-      if (mode === 'markdown') {
-        if (toastEl) {
-          toastEl.style.display = 'block';
-          if (toastEditors[fieldName]) {
-            toastEditors[fieldName].setMarkdown(currentVal);
-          } else {
-            initMarkdownEditors();
-          }
-        }
-      } else if (mode === 'richtext') {
-        if (trixEl) {
-          trixEl.style.display = 'block';
+      if (mode === 'primary' || mode === 'markdown' || mode === 'richtext') {
+        if (codeEl) codeEl.style.display = 'none';
+        if (primaryEl) primaryEl.style.display = 'block';
+        if (toastEl) toastEl.style.display = 'block';
+
+        if (mdTextarea) {
+          mdTextarea.value = currentVal;
+          mdTextarea.focus();
+        } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+          pellEditors[fieldName].content.innerHTML = currentVal;
+          pellEditors[fieldName].content.focus();
+        } else if (toastEditors[fieldName]) {
+          toastEditors[fieldName].setMarkdown(currentVal);
+        } else if (trixEl) {
+          const trixEditor = trixEl.querySelector('trix-editor');
           if (trixEditor && trixEditor.editor) {
             trixEditor.editor.loadHTML(currentVal);
           }
         }
       } else if (mode === 'code') {
+        if (primaryEl) primaryEl.style.display = 'none';
+        if (toastEl) toastEl.style.display = 'none';
         if (codeEl) {
           codeEl.style.display = 'block';
-          if (codeTextarea) codeTextarea.value = currentVal;
+          if (codeTextarea) {
+            codeTextarea.value = currentVal;
+            codeTextarea.focus();
+          }
         }
       }
     };
@@ -875,7 +947,7 @@ export function renderEditorView(
               isModified: isMod,
               publishedValue: publishedData[f.name],
               draftValue: draftData[f.name],
-            });
+            }, editorConfig);
           })}
       </div>
 
@@ -944,5 +1016,5 @@ export function renderEditorView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, editorConfig);
 }

@@ -285,7 +285,121 @@ export const adminStyles = `
   .meta-info p { font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
   .divider { border: 0; height: 1px; background: var(--surface-border); margin: 16px 0; }
   
-  /* Toast-UI & Trix Styles */
+  /* Editor Styles: GitHub Toolbar, Pell, Toast-UI & Trix */
+  markdown-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    background: #0f172a;
+    border: 1px solid var(--surface-border);
+    border-bottom: 0;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 10px;
+  }
+  markdown-toolbar button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #cbd5e1;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+  }
+  markdown-toolbar button:hover {
+    background: #1e293b;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+  markdown-toolbar button:active {
+    background: #334155;
+  }
+  .md-toolbar-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--surface-border);
+    margin: 0 4px;
+  }
+  .md-toolbar-textarea {
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-color: var(--surface-border) !important;
+    background: #090d16 !important;
+    color: #f8fafc !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    line-height: 1.6 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .md-toolbar-textarea:focus {
+    border-color: var(--primary) !important;
+  }
+  .pell-wrapper {
+    background: #090d16;
+    border: 1px solid var(--surface-border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .pell-actionbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    background: #0f172a;
+    border-bottom: 1px solid var(--surface-border);
+    padding: 6px 10px;
+  }
+  .pell-button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #cbd5e1;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    line-height: 1.4;
+    user-select: none;
+  }
+  .pell-button:hover {
+    background: #1e293b;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+  .pell-button-selected {
+    background: #1e293b;
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+  .pell-content {
+    min-height: 250px;
+    padding: 14px;
+    outline: none;
+    color: #f8fafc;
+    line-height: 1.6;
+    font-family: inherit;
+    background: #090d16;
+  }
+  .pell-content p { margin-bottom: 12px; }
+  .pell-content blockquote {
+    border-left: 3px solid #38bdf8;
+    padding-left: 12px;
+    color: #94a3b8;
+    margin: 12px 0;
+  }
+  .pell-content pre {
+    background: #030712;
+    padding: 10px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    overflow-x: auto;
+  }
   .toastui-editor-defaultUI { background: #090d16 !important; border-color: var(--surface-border) !important; border-radius: 6px; color: #f8fafc !important; }
   .toastui-editor-defaultUI .ProseMirror { color: #f8fafc !important; }
   .toastui-editor-toolbar { background: #0f172a !important; border-bottom: 1px solid var(--surface-border) !important; }

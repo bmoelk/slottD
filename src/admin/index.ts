@@ -26,6 +26,8 @@ import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
 import { computeContentDiff } from '../sync/diff.js';
 import { logActivity } from '../db/audit.js';
 import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
+import { MARKDOWN_TOOLBAR_VENDOR_JS } from './vendor/markdown-toolbar.js';
+import { PELL_VENDOR_JS } from './vendor/pell.js';
 import type { Env } from '../types.js';
 import { getSlottdConfig } from '../index.js';
 
@@ -104,11 +106,46 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   return { path: chosenPath, hasRemote, remoteUrl, branch, token };
 }
 
+export async function getEditorConfig(env?: any): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
+  let format: 'markdown' | 'richtext' = env?.EDITOR_FORMAT === 'richtext' ? 'richtext' : 'markdown';
+  let tier: 'light' | 'heavy' = env?.EDITOR_TIER === 'heavy' ? 'heavy' : 'light';
+
+  if (env?.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?)')
+        .bind('editor_format', 'editor_tier')
+        .all<{ key: string; value: string }>();
+      for (const row of rows.results || []) {
+        if (row.key === 'editor_format' && (row.value === 'markdown' || row.value === 'richtext')) {
+          format = row.value;
+        }
+        if (row.key === 'editor_tier' && (row.value === 'light' || row.value === 'heavy')) {
+          tier = row.value;
+        }
+      }
+    } catch {}
+  }
+
+  return { format, tier };
+}
+
 // ── 0. Static Vendor Assets (/admin/vendor/*) ────────────────────────────────
 adminRouter.get('/vendor/alpine.js', (c) => {
   c.header('Content-Type', 'application/javascript; charset=utf-8');
   c.header('Cache-Control', 'public, max-age=31536000, immutable');
   return c.body(ALPINE_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/markdown-toolbar.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(MARKDOWN_TOOLBAR_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/pell.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(PELL_VENDOR_JS);
 });
 
 // ── 0. Login & Session Management (/admin/login & /admin/logout) ─────────────
@@ -309,7 +346,8 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   const modelIcon = collectionMeta?.icon || '⚙️';
 
   const fields = await introspectCollectionFields(db, targetCollection);
-  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon, editorConfig));
 });
 
 // ── 3. Collections Dashboard (/admin) ─────────────────────────────────────────
@@ -762,7 +800,8 @@ adminRouter.get('/content/:collection/:id', async (c) => {
   const modelIcon = collectionMeta?.icon || '⚙️';
 
   const fields = await introspectCollectionFields(db, collection);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon, editorConfig));
 });
 
 // ── 6. Models & Schema Overview (/admin/models) ──────────────────────────────
@@ -1226,6 +1265,8 @@ adminRouter.get('/setup', async (c) => {
     } catch {}
   }
 
+  const editorConfig = await getEditorConfig(c.env);
+
   return c.html(renderSetupView({
     environment: c.env.ENVIRONMENT || 'development',
     operatorName,
@@ -1238,6 +1279,8 @@ adminRouter.get('/setup', async (c) => {
     gitRemoteUrl,
     gitBranch,
     hasToken,
+    editorFormat: editorConfig.format,
+    editorTier: editorConfig.tier,
   }, user));
 });
 
@@ -1348,6 +1391,33 @@ adminRouter.post('/setup/remote', async (c) => {
   return c.json({ success: true, message: 'Git remote settings saved.' });
 });
 
+// ── Editor Settings (/admin/setup/editor) ──────────────────────────────────
+adminRouter.post('/setup/editor', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const format = body.format === 'richtext' ? 'richtext' : 'markdown';
+  const tier = body.tier === 'heavy' ? 'heavy' : 'light';
+
+  if (!c.env.DB) {
+    return c.json({ error: 'D1 database binding not available' }, 500);
+  }
+
+  try {
+    const now = Date.now();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('editor_format', format, now),
+      c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('editor_tier', tier, now),
+    ]);
+  } catch (err: any) {
+    return c.json({ error: 'Failed to update editor settings: ' + err.message }, 500);
+  }
+
+  return c.json({ success: true, message: 'Editor preferences saved successfully.', format, tier });
+});
+
 adminRouter.post('/setup/reset-db', async (c) => {
   if (c.env.ENVIRONMENT === 'production') {
     return c.json({ error: 'Database reset is strictly prohibited in production mode' }, 403);
@@ -1412,5 +1482,6 @@ adminRouter.get('/:collection/:id', async (c) => {
   }
 
   const fields = await introspectCollectionFields(db, collection);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(collection, doc, fields, isNew, user, '⚙️', editorConfig));
 });

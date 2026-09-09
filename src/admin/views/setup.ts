@@ -15,6 +15,8 @@ export interface SetupViewData {
   gitBranch: string;
   gitProvider?: string;
   hasToken: boolean;
+  editorFormat?: 'markdown' | 'richtext';
+  editorTier?: 'light' | 'heavy';
 }
 
 export function renderSetupView(
@@ -94,6 +96,39 @@ export function renderSetupView(
         if (btn) {
           btn.disabled = false;
           btn.innerText = '💾 Save Remote Settings';
+        }
+      }
+    }
+
+    async function saveEditorPreferences() {
+      const format = document.querySelector('input[name="editorFormat"]:checked')?.value || 'markdown';
+      const tier = document.querySelector('input[name="editorTier"]:checked')?.value || 'light';
+
+      const btn = document.getElementById('btnSaveEditor');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ Saving...';
+      }
+
+      try {
+        const res = await fetch('/admin/setup/editor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ format, tier })
+        });
+        const json = await res.json();
+        if (res.ok) {
+          alert('✅ Editor preferences saved successfully!');
+          window.location.reload();
+        } else {
+          alert('❌ Failed to save editor preferences: ' + (json.error || json.message));
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = '💾 Save Editor Preferences';
         }
       }
     }
@@ -292,6 +327,87 @@ export function renderSetupView(
       <div style="display: flex; justify-content: flex-end; gap: 10px;">
         <button type="button" id="btnSaveRemote" class="btn btn-primary" onclick="saveRemoteSettings()">
           💾 Save Remote Settings
+        </button>
+      </div>
+    </div>
+
+    <!-- Editor & Authoring Suite Card -->
+    <div class="card" style="margin-top: 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h2 style="font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px;">
+          <span>📝</span> Editor & Authoring Suite
+          ${renderInfoBubble('Configure default output format and editor engine tier. Raw Textarea is permanently retained as an instant 1-click fallback & code view.', 'authoring-preferences')}
+        </h2>
+        <span style="font-size: 12px; color: ${data.editorTier === 'heavy' ? '#38bdf8' : '#34d399'};">
+          ${data.editorTier === 'heavy' ? '● CDN Powered' : '● 100% Offline (Zero-CDN)'}
+        </span>
+      </div>
+      <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 16px;">
+        Choose the content format expected by your frontend pipeline and the editor engine tier. In the content editor, fields use a clean 2-tab layout with an instant raw Textarea fallback.
+      </p>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 20px;">
+        <!-- Format Column -->
+        <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 16px; border-radius: 8px;">
+          <h3 style="font-size: 13px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 10px;">
+            Target Output Format
+          </h3>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+              <input type="radio" name="editorFormat" value="markdown" ${data.editorFormat !== 'richtext' ? 'checked' : ''} style="margin-top: 3px;" />
+              <div>
+                <strong style="color: #f8fafc; font-size: 13px; display: block;">Markdown (Recommended)</strong>
+                <span style="font-size: 12px; color: var(--text-muted); line-height: 1.4; display: block;">
+                  Outputs clean Markdown. Native format for Astro content loaders, Git synchronization, and SSG.
+                </span>
+              </div>
+            </label>
+            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+              <input type="radio" name="editorFormat" value="richtext" ${data.editorFormat === 'richtext' ? 'checked' : ''} style="margin-top: 3px;" />
+              <div>
+                <strong style="color: #f8fafc; font-size: 13px; display: block;">Rich Text (HTML)</strong>
+                <span style="font-size: 12px; color: var(--text-muted); line-height: 1.4; display: block;">
+                  Outputs semantic HTML. Ideal for HTML-first rendering and email templates.
+                </span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Engine Tier Column -->
+        <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 16px; border-radius: 8px;">
+          <h3 style="font-size: 13px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 10px;">
+            Editor Engine Tier
+          </h3>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+              <input type="radio" name="editorTier" value="light" ${data.editorTier !== 'heavy' ? 'checked' : ''} style="margin-top: 3px;" />
+              <div>
+                <strong style="color: #34d399; font-size: 13px; display: block;">Light Tier (Zero-CDN, Recommended)</strong>
+                <span style="font-size: 12px; color: var(--text-muted); line-height: 1.4; display: block;">
+                  <strong>GitHub Markdown Toolbar</strong> for Markdown & <strong>Pell</strong> (&lt;1.5KB) for Rich Text. 100% offline-resilient, native Cmd+Z undo buffer, served from local isolate.
+                </span>
+              </div>
+            </label>
+            <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+              <input type="radio" name="editorTier" value="heavy" ${data.editorTier === 'heavy' ? 'checked' : ''} style="margin-top: 3px;" />
+              <div>
+                <strong style="color: #38bdf8; font-size: 13px; display: block;">Heavy Tier (Full CDN)</strong>
+                <span style="font-size: 12px; color: var(--text-muted); line-height: 1.4; display: block;">
+                  <strong>Toast UI</strong> (split-pane WYSIWYG) for Markdown & <strong>Trix</strong> (ActionText) for Rich Text. Requires internet connection to fetch external CDNs.
+                </span>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 14px; flex-wrap: wrap; gap: 10px;">
+        <span style="font-size: 12px; color: var(--text-muted);">
+          ℹ️ The raw Textarea is always available on every field as an instant 1-click fallback & code view.
+        </span>
+        <button type="button" id="btnSaveEditor" class="btn btn-primary" onclick="saveEditorPreferences()">
+          💾 Save Editor Preferences
         </button>
       </div>
     </div>

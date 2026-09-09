@@ -6,7 +6,8 @@ import { renderInfoBubble } from '../ui.js';
 export function renderFieldWidget(
   field: any,
   value: any,
-  draftMeta?: { isModified?: boolean; publishedValue?: any; draftValue?: any }
+  draftMeta?: { isModified?: boolean; publishedValue?: any; draftValue?: any },
+  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' }
 ) {
   const val = value ?? '';
   const isDraftModified = Boolean(draftMeta?.isModified);
@@ -23,9 +24,9 @@ export function renderFieldWidget(
     lowerName === 'bio' ||
     lowerName === 'summary';
 
-  // 1. Long-form Text & Content Fields -> 3-Way Mode Switcher
+  // 1. Long-form Text & Content Fields -> Configurable 2-Tab Switcher
   if (isBodyOrLongText) {
-    return renderRichEditorWidget(field, String(val), draftMeta);
+    return renderRichEditorWidget(field, String(val), draftMeta, editorConfig);
   }
 
   // 2. Media Fields -> Live Preview Card & R2 Modal Browser
