@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export function renderModelsView(
   modelsWithFields: any[],
@@ -140,7 +141,10 @@ export function renderModelsView(
   return renderLayout('Model Registry — SlottD Studio', 'models', user, html`
     <div class="header">
       <div>
-        <h1>Content Models & Schema Registry</h1>
+        <h1 style="display: flex; align-items: center;">
+          Content Models & Schema Registry
+          ${renderInfoBubble('Schema registry for registered model packs and dynamic SQLite views in D1.', 'models-archetypes')}
+        </h1>
         <p class="subtitle">Read-only schema registry of active model packs, field contracts, and SQLite dynamic views.</p>
       </div>
       <div class="header-stats">

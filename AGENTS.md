@@ -40,11 +40,21 @@ This file defines coding standards, repository policies, and architectural guard
    - The SlottD Studio UI MUST remain lightweight, blazing fast, and dependency-lean.
    - **NO heavy client frameworks**: Do NOT introduce React, Vue, Angular, Svelte client-side runtimes, or hydration bundles into SlottD.
    - **NO frontend bundler pipelines**: The UI is server-rendered on-demand via `hono/html` directly inside the Cloudflare Worker isolate.
-2. **Vanilla, Web Components & Micro-Libraries**:
+2. **Vanilla, Web Components & Micro-Libraries (Alpine.js Standard)**:
    - Prefer plain vanilla JavaScript and native HTML5/DOM APIs.
-   - Native Web Components, custom elements, and lightweight libraries (like **HTMX** or **Alpine.js**) are welcome when progressive enhancement is needed.
+   - **Alpine.js** is vendor-served directly from the local Cloudflare Worker isolate (`/admin/vendor/alpine.js`) for 100% offline resilience and is the approved first-class micro-library for progressive enhancement in the Studio UI (reactive state, tabs, copy-to-clipboard feedback, collapsible sections, and in-situ contextual help bubbles).
+   - Native Web Components and lightweight libraries like **HTMX** are also welcome when needed.
 3. **Graceful Fallbacks & Resilience**:
    - Third-party CDN widgets (e.g. rich text / markdown editors) MUST have robust error handling and immediate graceful fallbacks to standard semantic HTML elements (e.g. standard `<textarea>`) so the UI never breaks or renders blank voids if a CDN fails or is blocked.
+
+---
+
+## ⚡ SlottD & SlotWire Synergy Directive
+
+1. **Native Companion & Contract Bridge**:
+   - SlottD was engineered to support **SlotWire** as its native in-situ editing companion and contract bridge (handling live preview cookie bypass `slotwire_preview=true`, SlotWire archetype mapping, visual badges, and pre-publish contract validation hooks).
+2. **Standalone Edge-Native Directus CMS**:
+   - SlottD simultaneously functions as a full-fledged, zero-Docker standalone Directus CMS on Cloudflare Workers + D1 + R2. All standard Directus AST REST operations remain 100% compliant and fully usable without SlotWire.
 
 ---
 

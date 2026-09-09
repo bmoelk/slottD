@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export interface GitViewData {
   environment: string;
@@ -277,7 +278,10 @@ export function renderGitView(
   return renderLayout('Git Center — SlottD Studio', 'git', user, html`
     <div class="header">
       <div>
-        <h1>Git Operations & Releases</h1>
+        <h1 style="display: flex; align-items: center;">
+          Git Operations & Releases
+          ${renderInfoBubble('Sync D1 records with Git releases using pure Git Smart HTTP wire protocol.', 'git-releases')}
+        </h1>
         <p class="subtitle">Version-control your schema and content in Git, preview safe diffs, and deploy across environments.</p>
       </div>
       <div class="header-actions">
@@ -350,7 +354,10 @@ export function renderGitView(
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
             <span style="font-size: 24px;">🏷️</span>
             <div>
-              <h3 style="margin: 0; font-size: 16px;">Git Commit & Tag Release</h3>
+              <h3 style="margin: 0; font-size: 16px; display: flex; align-items: center;">
+                Git Commit & Tag Release
+                ${renderInfoBubble('Exports D1 records into content/ and tags release. Evaluates pre-publish verification pipeline before tagging.', 'validations-hooks')}
+              </h3>
               <p style="margin: 0; font-size: 12px; color: #94a3b8;">Export active D1 database to <code>content/</code> and create an annotated Git tag.</p>
             </div>
           </div>
@@ -388,7 +395,10 @@ export function renderGitView(
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
             <span style="font-size: 24px;">🔄</span>
             <div>
-              <h3 style="margin: 0; font-size: 16px;">Load Content from Git Tag</h3>
+              <h3 style="margin: 0; font-size: 16px; display: flex; align-items: center;">
+                Compare & Load Content from Git Tag
+                ${renderInfoBubble('Safely diffs in-memory against D1 before restoring records by (collection, slug).', 'git-releases')}
+              </h3>
               <p style="margin: 0; font-size: 12px; color: #94a3b8;">Safe-by-default: preview file mutations before restoring records into D1.</p>
             </div>
           </div>

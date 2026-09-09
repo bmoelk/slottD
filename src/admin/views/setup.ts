@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export interface SetupViewData {
   environment: string;
@@ -233,6 +234,7 @@ export function renderSetupView(
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
         <h2 style="font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px;">
           <span>🌐</span> Git Remote Repository Configuration
+          ${renderInfoBubble('Configures remote repository. Passwords and tokens are AES-256 encrypted before D1 persistence.', 'git-releases')}
         </h2>
         <span style="font-size: 12px; color: #38bdf8;">Universal Git Sync</span>
       </div>
@@ -242,7 +244,10 @@ export function renderSetupView(
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 16px;">
         <div>
-          <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600;">Git Remote URL</label>
+          <label style="display: flex; align-items: center; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600;">
+            Git Remote URL
+            ${renderInfoBubble('Standard HTTPS or SSH URL. Automatically normalized to HTTPS on Cloudflare Workers.', 'git-releases')}
+          </label>
           <input
             type="text"
             id="remoteUrl"

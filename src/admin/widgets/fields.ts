@@ -1,6 +1,7 @@
 import { html } from 'hono/html';
 import { renderRichEditorWidget } from './rich-editor.js';
 import { renderMediaPickerWidget } from './media-picker.js';
+import { renderInfoBubble } from '../ui.js';
 
 export function renderFieldWidget(
   field: any,
@@ -37,13 +38,15 @@ export function renderFieldWidget(
   ) {
     return html`
       <div class="field-wrapper">
-        ${isDraftModified ? html`
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <label style="margin-bottom: 0; font-weight: 600;">${field.label}</label>
+          ${renderInfoBubble('Human-readable R2 storage key. Maps bi-directionally to Directus UUIDs in D1.', 'media-r2')}
+          ${isDraftModified ? html`
             <span class="field-draft-badge" style="background: #451a03; color: #fb923c; border: 1px solid #d97706; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
               Draft Modified
             </span>
-          </div>
-        ` : ''}
+          ` : ''}
+        </div>
         ${renderMediaPickerWidget(field, String(val))}
         ${isDraftModified ? html`
           <div style="font-size: 11px; color: #94a3b8; margin-top: -6px; margin-bottom: 12px;">
@@ -87,6 +90,7 @@ export function renderFieldWidget(
       <div class="form-group">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
           <label style="margin-bottom: 0;">${field.label} (Composite JSON)</label>
+          ${renderInfoBubble('Composite JSON repeater. Allows structured nested data arrays.', 'models-archetypes')}
           ${isDraftModified ? html`
             <span class="field-draft-badge" style="background: #451a03; color: #fb923c; border: 1px solid #d97706; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
               Draft Modified
@@ -104,10 +108,18 @@ export function renderFieldWidget(
   }
 
   // 5. Default Text / Number Input
+  const isCompositeKey = field.name === 'pageSlug' || field.name === 'sectionKey' || field.name === 'galleryKey' || field.name === 'menuKey';
+  const keyHelp = isCompositeKey 
+    ? 'SlotWire composite route identifier. Binds directly to frontend layout slots.' 
+    : field.name === 'slug'
+    ? 'Unique URL slug used for routing and Directus record lookups.'
+    : undefined;
+
   return html`
     <div class="form-group">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
         <label for="${field.name}" style="margin-bottom: 0;">${field.label}</label>
+        ${keyHelp ? renderInfoBubble(keyHelp, 'models-archetypes') : ''}
         ${isDraftModified ? html`
           <span class="field-draft-badge" style="background: #451a03; color: #fb923c; border: 1px solid #d97706; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 700;">
             Draft Modified

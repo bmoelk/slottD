@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export function renderLogsView(
   logs: any[],
@@ -162,7 +163,10 @@ export function renderLogsView(
   return renderLayout('Activity & Audit Logs — SlottD Studio', 'logs', user, html`
     <div class="header">
       <div>
-        <h1>Activity & Audit Logs</h1>
+        <h1 style="display: flex; align-items: center;">
+          Activity & Audit Logs
+          ${renderInfoBubble('Immutable audit ledger recording operator attribution and document revisions.', 'production-security')}
+        </h1>
         <p class="subtitle">Real-time append-only ledger of document mutations, media updates, and releases.</p>
       </div>
       <div class="header-stats">

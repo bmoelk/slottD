@@ -1,5 +1,6 @@
 import { html } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export interface HomeDashboardData {
   environment: string;
@@ -23,7 +24,10 @@ export function renderHomeView(
   return renderLayout('Dashboard — SlottD Studio', 'home', user, html`
     <div class="header">
       <div>
-        <h1>SlottD Studio Overview</h1>
+        <h1 style="display: flex; align-items: center;">
+          SlottD Studio Overview
+          ${renderInfoBubble('Edge-native micro-CMS for Cloudflare Workers, D1, and R2.', 'standalone-directus')}
+        </h1>
         <p class="subtitle">Cloudflare Edge-Native Headless CMS &bull; Zero-Build Runtime &bull; Git Version Control</p>
       </div>
       <div class="header-actions">
@@ -36,7 +40,10 @@ export function renderHomeView(
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
       
       <div class="card" style="padding: 20px; border-left: 4px solid #6366f1;">
-        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Content Records</span>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+          Content Records
+          ${renderInfoBubble('Total documents stored across D1 SQLite tables.', 'models-archetypes')}
+        </span>
         <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">
           ${data.docCount}
         </div>
@@ -46,7 +53,10 @@ export function renderHomeView(
       </div>
 
       <div class="card" style="padding: 20px; border-left: 4px solid #10b981;">
-        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Media & R2 Assets</span>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+          Media & R2 Assets
+          ${renderInfoBubble('Total assets stored in Cloudflare R2 with descriptive keys.', 'media-r2')}
+        </span>
         <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">
           ${data.mediaCount}
         </div>
@@ -56,7 +66,10 @@ export function renderHomeView(
       </div>
 
       <div class="card" style="padding: 20px; border-left: 4px solid #38bdf8;">
-        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Schema Models</span>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+          Schema Models
+          ${renderInfoBubble('Active model packs and dynamic SQLite views in D1.', 'models-archetypes')}
+        </span>
         <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">
           ${data.modelCount}
         </div>
@@ -66,7 +79,10 @@ export function renderHomeView(
       </div>
 
       <div class="card" style="padding: 20px; border-left: 4px solid #f59e0b;">
-        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Git Versioning</span>
+        <span style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+          Git Versioning
+          ${renderInfoBubble('Git snapshot tags discovered via Git Smart HTTP.', 'git-releases')}
+        </span>
         <div style="font-size: 28px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px;">
           ${data.tagCount} Tags
         </div>
@@ -84,6 +100,7 @@ export function renderHomeView(
       <div class="card" style="padding: 24px;">
         <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
           <span>⚡</span> Quick Action Hub
+          ${renderInfoBubble('Shortcuts to core SlottD Studio modules.', 'standalone-directus')}
         </h3>
         
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
@@ -112,9 +129,9 @@ export function renderHomeView(
             <span style="font-size: 11px; color: var(--text-muted);">Track real-time mutations</span>
           </a>
 
-          <a href="/admin/docs" class="btn btn-secondary" style="padding: 14px; text-align: left; display: flex; flex-direction: column; gap: 4px; height: auto;">
-            <strong style="color: #fff;">📖 User Documentation</strong>
-            <span style="font-size: 11px; color: var(--text-muted);">Architecture, guides & shortcuts</span>
+          <a href="/admin/docs" class="btn btn-secondary" style="padding: 14px; text-align: left; display: flex; flex-direction: column; gap: 4px; height: auto; border-color: rgba(56, 189, 248, 0.4);">
+            <strong style="color: #38bdf8;">📖 Guide & Recipes</strong>
+            <span style="font-size: 11px; color: var(--text-muted);">Quickstarts, SlotWire archetypes & REST cheat sheet</span>
           </a>
         </div>
       </div>

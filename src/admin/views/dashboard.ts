@@ -1,5 +1,6 @@
 import { html } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export interface DashboardCollectionItem {
   name: string;
@@ -20,7 +21,10 @@ export function renderDashboardView(
   return renderLayout('SlottD Studio', 'content', user, html`
     <div class="header">
       <div>
-        <h1>Content Collections</h1>
+        <h1 style="display: flex; align-items: center;">
+          Content Collections
+          ${renderInfoBubble('Collections are SQLite tables mapped to structured model schemas.', 'models-archetypes')}
+        </h1>
         <p class="subtitle">Select a collection to manage documents, inspect drafts, or release content.</p>
       </div>
       <div class="header-stats">
@@ -43,7 +47,7 @@ export function renderDashboardView(
 
       <div class="toolbar-actions">
         <!-- Pack Filter Pills -->
-        <div class="filter-pills" id="packFilterPills">
+        <div class="filter-pills" id="packFilterPills" style="display: flex; align-items: center;">
           <button type="button" class="pill-btn active" data-pack="all" onclick="filterByPack('all', this)">
             All <span class="pill-count">${collectionsList.length}</span>
           </button>

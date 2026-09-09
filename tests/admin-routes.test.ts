@@ -99,6 +99,23 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(html).toContain('Media');
   });
 
+  it('handles /admin/docs documentation route with recipes and archetypes', async () => {
+    const res = await app.fetch(
+      new Request('http://localhost:8787/admin/docs', {
+        headers: { host: 'localhost:8787' },
+      }),
+      mockEnv
+    );
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('SlottD Studio Guide & Recipes');
+    expect(html).toContain('SlotWire Live Preview Synergy');
+    expect(html).toContain('Standalone Directus CMS');
+    expect(html).toContain('SlotWire Layout Archetypes');
+    expect(html).toContain('Directus REST Query Cheat Sheet');
+  });
+
   it('handles /admin/:collection/new shorthand route without 404', async () => {
     const res = await app.fetch(
       new Request('http://localhost:8787/admin/projects/new', {

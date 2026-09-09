@@ -1,5 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
+import { renderInfoBubble } from '../ui.js';
 
 export function renderMediaView(
   mediaFiles: any[],
@@ -235,7 +236,10 @@ export function renderMediaView(
   return renderLayout('Media Library — SlottD Studio', 'media', user, html`
     <div class="header">
       <div>
-        <h1>Media & Assets (Cloudflare R2)</h1>
+        <h1 style="display: flex; align-items: center;">
+          Media & Assets (Cloudflare R2)
+          ${renderInfoBubble('Stored with human-readable slugs in Cloudflare R2 and indexed bi-directionally in D1.', 'media-r2')}
+        </h1>
         <p class="subtitle">Descriptive keys, edge-cached delivery, and bi-directional D1 indexing.</p>
       </div>
       <div class="header-actions">

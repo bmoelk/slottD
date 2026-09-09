@@ -2,6 +2,7 @@ import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
 import { renderFieldWidget } from '../widgets/fields.js';
 import { renderMediaModal } from '../widgets/media-picker.js';
+import { renderInfoBubble } from '../ui.js';
 
 export function renderEditorView(
   collection: string,
@@ -882,7 +883,10 @@ export function renderEditorView(
         <div class="card">
           <h3>Publishing & Status</h3>
           <div class="form-group" style="margin-top: 12px;">
-            <label for="status">Document Status</label>
+            <label for="status" style="display: flex; align-items: center;">
+              Document Status
+              ${renderInfoBubble('Draft documents are rendered live in frontend preview mode (slotwire_preview=true) but excluded from production.', 'quickstart-querying')}
+            </label>
             <select id="status" name="status" class="input-select">
               <option value="draft" ${!isNew && doc.status === 'draft' ? 'selected' : ''}>Draft</option>
               <option value="published" ${isNew || doc.status === 'published' ? 'selected' : ''}>Published</option>
@@ -923,7 +927,10 @@ export function renderEditorView(
         ` : ''}
 
         <div class="card" style="margin-top: 16px;">
-          <h3>SlotWire In-Situ Bridge</h3>
+          <h3 style="display: flex; align-items: center;">
+            SlotWire In-Situ Bridge
+            ${renderInfoBubble('Direct visual bridge connecting frontend SlotWire badges to this exact document editor.', 'quickstart-querying')}
+          </h3>
           <p style="font-size: 13px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">
             Changes saved as draft are instantly accessible in Astro Staging and In-Situ preview mode.
           </p>
