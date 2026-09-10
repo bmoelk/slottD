@@ -648,5 +648,78 @@ describe('SlottD Admin Router Deep Links', () => {
       const body = await res.text();
       expect(body).toContain('marked');
     });
+
+    it('handles /admin/login POST with slotwire_auth and returns postMessage relay HTML', async () => {
+      const form = new URLSearchParams();
+      form.set('password', 'correct-password');
+      form.set('slotwire_auth', '1');
+      form.set('origin', 'http://localhost:4321');
+
+      const mockDb: any = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnThis(),
+          first: vi.fn().mockResolvedValue(null),
+        }),
+      };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            host: 'localhost:8787',
+          },
+          body: form.toString(),
+        }),
+        {
+          ...mockEnv,
+          DB: mockDb,
+          ADMIN_PASSWORD: 'correct-password',
+          JWT_SECRET: 'test-jwt-secret-slottd',
+        }
+      );
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('slotwire:auth_success');
+      expect(html).toContain('http://localhost:4321');
+      expect(html).toContain('window.opener.postMessage');
+    });
+
+    it('serves /ext/auth/me returning 401 when unauthenticated', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/ext/auth/me', {
+          headers: { host: 'localhost:8787' },
+        }),
+        {
+          ...mockEnv,
+          ENVIRONMENT: 'development',
+          ADMIN_PASSWORD: 'secret-password',
+        }
+      );
+      expect(res.status).toBe(401);
+      const json: any = await res.json();
+      expect(json.authenticated).toBe(false);
+    });
+
+    it('serves /ext/auth/me returning 200 with user profile when authenticated via Bearer token', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/ext/auth/me', {
+          headers: {
+            host: 'localhost:8787',
+            authorization: 'Bearer local-briefcase-api-key',
+          },
+        }),
+        {
+          ...mockEnv,
+          ENVIRONMENT: 'development',
+          ADMIN_API_KEY: 'local-briefcase-api-key',
+        }
+      );
+      expect(res.status).toBe(200);
+      const json: any = await res.json();
+      expect(json.authenticated).toBe(true);
+      expect(json.user).toBeDefined();
+    });
   });
 });

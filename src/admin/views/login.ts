@@ -5,7 +5,9 @@ export function renderLoginView(
   error?: string,
   operatorName?: string,
   operatorEmail?: string,
-  redirect?: string
+  redirect?: string,
+  slotwireAuth?: boolean,
+  origin?: string
 ) {
   return html`
     <!DOCTYPE html>
@@ -155,6 +157,8 @@ export function renderLoginView(
 
         <form action="/admin/login" method="POST">
           ${redirect ? html`<input type="hidden" name="redirect" value="${redirect}" />` : ''}
+          ${slotwireAuth ? html`<input type="hidden" name="slotwire_auth" value="1" />` : ''}
+          ${origin ? html`<input type="hidden" name="origin" value="${origin}" />` : ''}
           <div class="form-group">
             <label for="password">Studio Password</label>
             <input
@@ -169,7 +173,7 @@ export function renderLoginView(
           </div>
 
           <button type="submit" class="btn-submit">
-            Unlock Briefcase 🔓
+            ${slotwireAuth ? 'Unlock & Connect to SlotWire 🔑' : 'Unlock Briefcase 🔓'}
           </button>
         </form>
 

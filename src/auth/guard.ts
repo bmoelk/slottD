@@ -234,7 +234,7 @@ export class CloudflareAccessAuthAdapter implements AuthAdapter {
 
 export class BearerTokenAuthAdapter implements AuthAdapter {
   name = 'bearer-token';
-  authenticate(c: Context<{ Bindings: Env }>): AuthenticatedUser | null {
+  async authenticate(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> {
     const authHeader = c.req.header('authorization');
     const apiKeyHeader = c.req.header('x-api-key');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : apiKeyHeader?.trim();
@@ -247,6 +247,19 @@ export class BearerTokenAuthAdapter implements AuthAdapter {
         authMethod: 'bearer-token',
       };
     }
+
+    // Check signed session token
+    if (token && token.includes('.')) {
+      const secret = c.env.JWT_SECRET || (c.env as any).PREVIEW_SECRET || 'briefcase-local-secret';
+      const session = await verifyBriefcaseSessionCookie(token, secret);
+      if (session && session.email) {
+        return {
+          email: session.email,
+          authMethod: 'bearer-token',
+        };
+      }
+    }
+
     return null;
   }
 }
@@ -302,6 +315,18 @@ export class LocalDevAuthAdapter implements AuthAdapter {
       const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : apiKeyHeader?.trim();
 
       if (token) {
+        // Also check if Bearer token is a signed Briefcase session token
+        if (token.includes('.')) {
+          const session = await verifyBriefcaseSessionCookie(token, secret);
+          if (session && session.email) {
+            return {
+              email: session.email,
+              name,
+              authMethod: 'bearer-token',
+            };
+          }
+        }
+
         if (token === apiKey || (legacyPlain && token === legacyPlain)) {
           return {
             email,

@@ -161,17 +161,25 @@ adminRouter.get('/login', async (c) => {
   const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
   const error = c.req.query('error') || '';
   const redirect = c.req.query('redirect') || '';
-  return c.html(renderLoginView(error, operatorName, operatorEmail, redirect));
+  const slotwireAuth = c.req.query('slotwire_auth') === '1' || c.req.query('slotwire_auth') === 'true';
+  const origin = c.req.query('origin') || '';
+  return c.html(renderLoginView(error, operatorName, operatorEmail, redirect, slotwireAuth, origin));
 });
 
 adminRouter.post('/login', async (c) => {
   const body = await c.req.parseBody().catch(() => ({}));
   const password = ((body as any)?.password as string) || '';
   const redirectParam = (((body as any)?.redirect as string) || c.req.query('redirect') || '').trim();
+  const slotwireAuth =
+    ((body as any)?.slotwire_auth as string) === '1' ||
+    c.req.query('slotwire_auth') === '1' ||
+    c.req.query('slotwire_auth') === 'true';
+  const originParam = (((body as any)?.origin as string) || c.req.query('origin') || '*').trim();
 
   const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
   const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
   const email = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+  const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
 
   let configuredHash = (c.env as any).ADMIN_PASSWORD_HASH;
   const legacyPlain = (c.env as any).ADMIN_PASSWORD;
@@ -197,13 +205,59 @@ adminRouter.post('/login', async (c) => {
   }
 
   if (!isValid) {
-    const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
-    const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
-    return c.html(renderLoginView('Invalid password. Please try again.', operatorName, operatorEmail, redirectParam), 401);
+    return c.html(
+      renderLoginView(
+        'Invalid password. Please try again.',
+        operatorName,
+        email,
+        redirectParam,
+        slotwireAuth,
+        originParam
+      ),
+      401
+    );
   }
 
   const sessionCookie = await createBriefcaseSessionCookie(email, secret);
   c.header('Set-Cookie', `slottd_session=${sessionCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+
+  // Handle SlotWire popup auth handshake
+  if (slotwireAuth) {
+    const safeOrigin =
+      originParam.startsWith('http://localhost') ||
+      originParam.startsWith('http://127.0.0.1') ||
+      originParam.startsWith('https://')
+        ? originParam
+        : '*';
+
+    return c.html(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>SlottD Authentication Successful</title>
+</head>
+<body style="background:#090d16;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;padding:24px;">
+    <h2 style="color:#10b981;margin-bottom:8px;">✓ Authenticated</h2>
+    <p style="color:#94a3b8;font-size:14px;">Connecting to SlotWire...</p>
+  </div>
+  <script>
+    if (window.opener) {
+      window.opener.postMessage({
+        type: 'slotwire:auth_success',
+        token: '${sessionCookie}',
+        email: '${email}',
+        name: '${operatorName}',
+        provider: 'slottd'
+      }, '${safeOrigin}');
+      setTimeout(function() { window.close(); }, 300);
+    } else {
+      window.location.href = '/admin/home';
+    }
+  </script>
+</body>
+</html>`);
+  }
 
   // Open-redirect protection: target must be a local /admin path and not a protocol or double-slash scheme
   let target = '/admin/home';
