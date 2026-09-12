@@ -8,8 +8,11 @@ import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGi
 import { createDb } from './db/client.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
-import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser } from './auth/guard.js';
+import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser, createBriefcaseSessionCookie } from './auth/guard.js';
 import { ALPINE_VENDOR_JS } from './admin/vendor/alpine.js';
+import { MARKDOWN_TOOLBAR_VENDOR_JS } from './admin/vendor/markdown-toolbar.js';
+import { PELL_VENDOR_JS } from './admin/vendor/pell.js';
+import { MARKED_VENDOR_JS } from './admin/vendor/marked.js';
 import type { Env, SlottdConfig, PublishHookContext } from './types.js';
 
 export * from './types.js';
@@ -233,6 +236,33 @@ app.get('/admin/vendor/alpine.js', (c) => {
   });
 });
 
+app.get('/admin/vendor/markdown-toolbar.js', (c) => {
+  return new Response(MARKDOWN_TOOLBAR_VENDOR_JS, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+});
+
+app.get('/admin/vendor/pell.js', (c) => {
+  return new Response(PELL_VENDOR_JS, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+});
+
+app.get('/admin/vendor/marked.js', (c) => {
+  return new Response(MARKED_VENDOR_JS, {
+    headers: {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+  });
+});
+
 // 6. Micro-Studio Admin UI (SlotWire deep-linkable)
 app.use('/admin/*', requireStudioAuth);
 app.route('/admin', adminRouter);
@@ -424,6 +454,64 @@ async function handlePublishRelease(c: any) {
 }
 
 // SlottD Extension Endpoints (/ext/*)
+app.get('/ext/auth/me', async (c) => {
+  const user = await getAuthenticatedUser(c);
+  if (!user) {
+    return c.json({ authenticated: false, error: 'Unauthenticated' }, 401);
+  }
+  return c.json({
+    authenticated: true,
+    user: {
+      email: user.email,
+      name: user.name || user.email.split('@')[0],
+      authMethod: user.authMethod,
+    },
+  });
+});
+
+app.get('/ext/auth/handshake', async (c) => {
+  const user = await getAuthenticatedUser(c);
+  const targetOrigin = (c.req.query('origin') || '*').trim();
+  const safeOrigin =
+    targetOrigin.startsWith('http://localhost') ||
+    targetOrigin.startsWith('http://127.0.0.1') ||
+    targetOrigin.startsWith('https://')
+      ? targetOrigin
+      : '*';
+
+  if (!user) {
+    return c.redirect(`/admin/login?slotwire_auth=1&origin=${encodeURIComponent(targetOrigin)}`);
+  }
+
+  const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+  const sessionToken = await createBriefcaseSessionCookie(user.email, secret);
+
+  return c.html(`<!DOCTYPE html>
+<html>
+<head><title>SlottD Authentication Successful</title></head>
+<body style="background:#090d16;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;padding:24px;">
+    <h2 style="color:#10b981;margin-bottom:8px;">✓ Authenticated</h2>
+    <p style="color:#94a3b8;font-size:14px;">Connecting to SlotWire...</p>
+  </div>
+  <script>
+    if (window.opener) {
+      window.opener.postMessage({
+        type: 'slotwire:auth_success',
+        token: '${sessionToken}',
+        email: '${user.email}',
+        name: '${user.name || user.email}',
+        provider: 'slottd'
+      }, '${safeOrigin}');
+      setTimeout(function() { window.close(); }, 300);
+    } else {
+      window.location.href = '/admin/home';
+    }
+  </script>
+</body>
+</html>`);
+});
+
 app.post('/ext/release/publish', requireWriteAuth, handlePublishRelease);
 
 app.post('/ext/sync/hydrate', requireWriteAuth, async (c) => {

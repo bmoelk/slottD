@@ -506,4 +506,220 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(html).toContain('splitphase.io');
     expect(html).not.toContain('Filtered by Context:');
   });
+
+  describe('Configurable Editor Suite & Vendor Assets', () => {
+    it('serves /admin/vendor/markdown-toolbar.js with correct headers', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/vendor/markdown-toolbar.js', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('javascript');
+      const body = await res.text();
+      expect(body).toContain('markdown-toolbar');
+    });
+
+    it('serves /admin/vendor/pell.js with correct headers', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/vendor/pell.js', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('javascript');
+      const body = await res.text();
+      expect(body).toContain('pell');
+    });
+
+    it('handles POST /admin/setup/editor to persist format and tier', async () => {
+      const batchMock = vi.fn().mockResolvedValue([]);
+      const prepareMock = vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnThis(),
+      });
+      const dbMock = { batch: batchMock, prepare: prepareMock };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/setup/editor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', host: 'localhost:8787' },
+          body: JSON.stringify({ format: 'markdown', tier: 'light' }),
+        }),
+        { ...mockEnv, DB: dbMock }
+      );
+
+      expect(res.status).toBe(200);
+      const json: any = await res.json();
+      expect(json.success).toBe(true);
+      expect(json.format).toBe('markdown');
+      expect(json.tier).toBe('light');
+      expect(batchMock).toHaveBeenCalled();
+    });
+
+    it('renders Editor & Authoring Suite preferences card in /admin/setup', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/setup', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('Editor & Authoring Suite');
+      expect(html).toContain('GitHub Markdown Toolbar');
+      expect(html).toContain('Pell');
+      expect(html).toContain('Light Tier');
+      expect(html).toContain('Heavy Tier');
+    });
+
+    it('renders clean 2-tab editor with GitHub Markdown Toolbar in light tier (default)', async () => {
+      const mockDoc = {
+        id: 'doc-1',
+        collection: 'posts',
+        slug: 'first-post',
+        title: 'First Post',
+        status: 'published',
+        data: JSON.stringify({ content: '# Hello World' }),
+        updated_at: 100,
+      };
+
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({ results: [], meta: { changes: 0 } }),
+          raw: vi.fn().mockResolvedValue([]),
+          first: vi.fn().mockResolvedValue(null),
+          run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+        }),
+        selectFrom: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
+          selectAll: vi.fn().mockReturnThis(),
+          select: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          executeTakeFirst: vi.fn().mockResolvedValue(mockDoc),
+          execute: vi.fn().mockResolvedValue([mockDoc]),
+        }),
+      };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/edit/first-post?collection=posts', {
+          headers: { host: 'localhost:8787' },
+        }),
+        { ...mockEnv, DB: mockDb }
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      // Verifies Option A 2-Tab layout:
+      expect(html).toContain('📝 Markdown');
+      expect(html).toContain('🔤 Raw Text');
+      // Verifies GitHub Markdown Toolbar component is rendered:
+      expect(html).toContain('<markdown-toolbar');
+      expect(html).toContain('data-md-action="bold"');
+      // Verifies vendor scripts are loaded from local isolate:
+      expect(html).toContain('/admin/vendor/markdown-toolbar.js');
+      expect(html).toContain('/admin/vendor/pell.js');
+      expect(html).toContain('/admin/vendor/marked.js');
+      // Verifies heavy CDNs are NOT loaded in light tier:
+      expect(html).not.toContain('uicdn.toast.com');
+      expect(html).not.toContain('unpkg.com/trix');
+
+      // Verifies separated Preview button and Preview target:
+      expect(html).toContain('preview-toggle-btn');
+      expect(html).toContain('Preview');
+      expect(html).toContain('preview-wrapper');
+      expect(html).toContain('preview-content');
+
+      // Verifies Media button in toolbar:
+      expect(html).toContain('data-md-action="image"');
+      expect(html).toContain('🖼️');
+    });
+
+    it('serves /admin/vendor/marked.js with correct headers', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/vendor/marked.js', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('javascript');
+      const body = await res.text();
+      expect(body).toContain('marked');
+    });
+
+    it('handles /admin/login POST with slotwire_auth and returns postMessage relay HTML', async () => {
+      const form = new URLSearchParams();
+      form.set('password', 'correct-password');
+      form.set('slotwire_auth', '1');
+      form.set('origin', 'http://localhost:4321');
+
+      const mockDb: any = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnThis(),
+          first: vi.fn().mockResolvedValue(null),
+        }),
+      };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            host: 'localhost:8787',
+          },
+          body: form.toString(),
+        }),
+        {
+          ...mockEnv,
+          DB: mockDb,
+          ADMIN_PASSWORD: 'correct-password',
+          JWT_SECRET: 'test-jwt-secret-slottd',
+        }
+      );
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('slotwire:auth_success');
+      expect(html).toContain('http://localhost:4321');
+      expect(html).toContain('window.opener.postMessage');
+    });
+
+    it('serves /ext/auth/me returning 401 when unauthenticated', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/ext/auth/me', {
+          headers: { host: 'localhost:8787' },
+        }),
+        {
+          ...mockEnv,
+          ENVIRONMENT: 'development',
+          ADMIN_PASSWORD: 'secret-password',
+        }
+      );
+      expect(res.status).toBe(401);
+      const json: any = await res.json();
+      expect(json.authenticated).toBe(false);
+    });
+
+    it('serves /ext/auth/me returning 200 with user profile when authenticated via Bearer token', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/ext/auth/me', {
+          headers: {
+            host: 'localhost:8787',
+            authorization: 'Bearer local-briefcase-api-key',
+          },
+        }),
+        {
+          ...mockEnv,
+          ENVIRONMENT: 'development',
+          ADMIN_API_KEY: 'local-briefcase-api-key',
+        }
+      );
+      expect(res.status).toBe(200);
+      const json: any = await res.json();
+      expect(json.authenticated).toBe(true);
+      expect(json.user).toBeDefined();
+    });
+  });
 });
