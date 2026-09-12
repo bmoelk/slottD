@@ -10,7 +10,8 @@ export function renderEditorView(
   fields: any[],
   isNew: boolean,
   user: { email: string; authMethod?: string; apiKey?: string },
-  modelIcon: string = '⚙️'
+  modelIcon: string = '⚙️',
+  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' }
 ) {
   let publishedData: Record<string, any> = {};
   let draftData: Record<string, any> = {};
@@ -48,7 +49,9 @@ export function renderEditorView(
     let isDraftSave = false;
     let showingLive = false;
     const toastEditors = {};
+    const pellEditors = {};
     let activeMediaTargetField = null;
+    let activeEditorMediaTarget = null;
     let cachedMedia = [];
 
     function getStudioHeaders(extra) {
@@ -122,12 +125,44 @@ export function renderEditorView(
       }
     });
 
-    // 2. Initialize Toast-UI Markdown Editors with Resilient Retry & Graceful Fallback
+    // 2. Initialize Editors (Toast-UI, Pell, Markdown Toolbar) with Resilient Retry & Fallback
+    function initPellEditors() {
+      if (typeof window.pell === 'undefined') return;
+      document.querySelectorAll('.pell-editor-target').forEach(function(el) {
+        const fieldName = el.getAttribute('data-field-name');
+        if (!fieldName || pellEditors[fieldName]) return;
+        const hidden = document.getElementById(fieldName + '_hidden');
+        const initialVal = (hidden ? hidden.value : '') || '';
+
+        try {
+          const editor = window.pell.init({
+            element: el,
+            fieldName: fieldName,
+            onChange: function(html) {
+              if (hidden) hidden.value = html;
+              const raw = document.getElementById(fieldName + '_raw_textarea');
+              if (raw && document.activeElement !== raw) raw.value = html;
+              if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();
+            },
+            defaultParagraphSeparator: 'p'
+          });
+
+          if (editor && editor.content) {
+            editor.content.innerHTML = initialVal;
+          }
+          pellEditors[fieldName] = editor;
+        } catch (e) {
+          console.warn('Pell init fallback for field:', fieldName, e);
+          window.switchEditorMode(fieldName, 'code');
+        }
+      });
+    }
+
     function initMarkdownEditors() {
       document.querySelectorAll('.toastui-editor-target').forEach(function(el) {
         const fieldName = el.getAttribute('data-field-name');
         const initialVal = el.getAttribute('data-initial-value') || '';
-        if (toastEditors[fieldName]) return;
+        if (!fieldName || toastEditors[fieldName]) return;
 
         try {
           if (window.toastui && window.toastui.Editor) {
@@ -143,6 +178,8 @@ export function renderEditorView(
             editor.on('change', function() {
               const hidden = document.getElementById(fieldName + '_hidden');
               if (hidden) hidden.value = editor.getMarkdown();
+              const raw = document.getElementById(fieldName + '_raw_textarea');
+              if (raw && document.activeElement !== raw) raw.value = editor.getMarkdown();
               if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();
             });
 
@@ -155,18 +192,19 @@ export function renderEditorView(
       });
     }
 
-    function scheduleInitMarkdownEditors(attempts) {
+    function scheduleInitEditors(attempts) {
       attempts = attempts || 0;
+      initPellEditors();
       if (window.toastui && window.toastui.Editor) {
         initMarkdownEditors();
       } else if (attempts < 8) {
-        setTimeout(function() { scheduleInitMarkdownEditors(attempts + 1); }, 150);
+        setTimeout(function() { scheduleInitEditors(attempts + 1); }, 150);
       } else {
-        console.warn('Toast-UI CDN unavailable, gracefully falling back to native textarea.');
-        document.querySelectorAll('.editor-container-wrapper').forEach(function(container) {
-          const fieldName = container.getAttribute('data-field');
-          const toastEl = document.getElementById(fieldName + '_toast_target');
-          if (toastEl && toastEl.style.display !== 'none') {
+        // If Toast UI CDN unavailable after retries, fallback those fields to raw textarea
+        document.querySelectorAll('.toastui-editor-target').forEach(function(el) {
+          const fieldName = el.getAttribute('data-field-name');
+          if (fieldName && !toastEditors[fieldName]) {
+            console.warn('Toast-UI CDN unavailable for ' + fieldName + ', falling back to native textarea.');
             window.switchEditorMode(fieldName, 'code');
           }
         });
@@ -174,29 +212,61 @@ export function renderEditorView(
     }
 
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', function() { scheduleInitMarkdownEditors(0); });
+      document.addEventListener('DOMContentLoaded', function() { scheduleInitEditors(0); });
     } else {
-      scheduleInitMarkdownEditors(0);
+      scheduleInitEditors(0);
     }
 
-    // 3. Editor Mode Switcher (Toast Markdown <-> Trix Rich Text <-> Raw Code)
+    // Two-way synchronization when editing in Raw Textarea tab
+    window.syncFromRawTextarea = function(fieldName, val) {
+      const hidden = document.getElementById(fieldName + '_hidden');
+      if (hidden) hidden.value = val;
+
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
+      if (mdTextarea && mdTextarea !== document.activeElement) {
+        mdTextarea.value = val;
+      }
+
+      if (pellEditors[fieldName] && pellEditors[fieldName].content && pellEditors[fieldName].content !== document.activeElement) {
+        pellEditors[fieldName].content.innerHTML = val;
+      }
+
+      if (toastEditors[fieldName]) {
+        try { toastEditors[fieldName].setMarkdown(val); } catch (e) {}
+      }
+
+      const trixEl = document.getElementById(fieldName + '_trix_target');
+      const trixEditor = trixEl ? trixEl.querySelector('trix-editor') : null;
+      if (trixEditor && trixEditor.editor) {
+        try { trixEditor.editor.loadHTML(val); } catch (e) {}
+      }
+    };
+
+    // 3. Clean 2-Tab Mode Switcher: 'primary' (Active Configured Engine) <-> 'code' (Raw Textarea)
     window.switchEditorMode = function(fieldName, mode) {
       const container = document.getElementById(fieldName + '_editor_container');
       const hiddenInput = document.getElementById(fieldName + '_hidden');
       if (!container || !hiddenInput) return;
 
+      const primaryEl = document.getElementById(fieldName + '_primary_target');
       const toastEl = document.getElementById(fieldName + '_toast_target');
       const trixEl = document.getElementById(fieldName + '_trix_target');
+      const pellEl = document.getElementById(fieldName + '_pell_target');
       const codeEl = document.getElementById(fieldName + '_code_target');
-      const trixEditor = trixEl ? trixEl.querySelector('trix-editor') : null;
-      const codeTextarea = codeEl ? (codeEl.querySelector('textarea') || document.getElementById(fieldName + '_raw_textarea')) : null;
+      const codeTextarea = document.getElementById(fieldName + '_raw_textarea');
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
 
-      // Extract current content from whichever mode was currently active:
+      // Extract current content from whichever view is currently active:
       let currentVal = '';
       if (codeEl && codeEl.style.display !== 'none' && codeTextarea) {
         currentVal = codeTextarea.value;
+      } else if (mdTextarea && primaryEl && primaryEl.style.display !== 'none') {
+        currentVal = mdTextarea.value;
+      } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+        currentVal = pellEditors[fieldName].content.innerHTML;
       } else if (trixEl && trixEl.style.display !== 'none') {
         const trixInput = document.getElementById(fieldName + '_trix_input');
+        const trixEditor = trixEl.querySelector('trix-editor');
         currentVal = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
       } else if (toastEl && toastEl.style.display !== 'none' && toastEditors[fieldName]) {
         try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
@@ -208,39 +278,129 @@ export function renderEditorView(
 
       hiddenInput.value = currentVal;
 
-      if (toastEl) toastEl.style.display = 'none';
-      if (trixEl) trixEl.style.display = 'none';
-      if (codeEl) codeEl.style.display = 'none';
-
       const switcher = container.querySelector('.mode-switcher');
       if (switcher) {
         switcher.querySelectorAll('.mode-btn').forEach(function(b) { b.classList.remove('active'); });
-        const activeBtn = switcher.querySelector('[data-mode="' + mode + '"]');
+        const activeBtn = switcher.querySelector('[data-mode="' + mode + '"]') || (mode !== 'code' ? switcher.querySelector('[data-mode="primary"]') : null);
         if (activeBtn) activeBtn.classList.add('active');
       }
 
-      if (mode === 'markdown') {
-        if (toastEl) {
-          toastEl.style.display = 'block';
-          if (toastEditors[fieldName]) {
-            toastEditors[fieldName].setMarkdown(currentVal);
-          } else {
-            initMarkdownEditors();
-          }
-        }
-      } else if (mode === 'richtext') {
-        if (trixEl) {
-          trixEl.style.display = 'block';
+      // Always dismiss preview when switching edit modes
+      const previewTarget = document.getElementById(fieldName + '_preview_target');
+      const previewBtn = document.getElementById(fieldName + '_preview_btn');
+      if (previewTarget) previewTarget.style.display = 'none';
+      if (previewBtn) previewBtn.classList.remove('active');
+
+      if (mode === 'primary' || mode === 'markdown' || mode === 'richtext') {
+        if (codeEl) codeEl.style.display = 'none';
+        if (primaryEl) primaryEl.style.display = 'block';
+        if (toastEl) toastEl.style.display = 'block';
+
+        if (mdTextarea) {
+          mdTextarea.value = currentVal;
+          mdTextarea.focus();
+        } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+          pellEditors[fieldName].content.innerHTML = currentVal;
+          pellEditors[fieldName].content.focus();
+        } else if (toastEditors[fieldName]) {
+          toastEditors[fieldName].setMarkdown(currentVal);
+        } else if (trixEl) {
+          const trixEditor = trixEl.querySelector('trix-editor');
           if (trixEditor && trixEditor.editor) {
             trixEditor.editor.loadHTML(currentVal);
           }
         }
       } else if (mode === 'code') {
+        if (primaryEl) primaryEl.style.display = 'none';
+        if (toastEl) toastEl.style.display = 'none';
         if (codeEl) {
           codeEl.style.display = 'block';
-          if (codeTextarea) codeTextarea.value = currentVal;
+          if (codeTextarea) {
+            codeTextarea.value = currentVal;
+            codeTextarea.focus();
+          }
         }
       }
+    };
+
+    // 3b. Rendered Preview Toggle (Separated from Edit Mode Switcher)
+    window.togglePreview = function(fieldName) {
+      const container = document.getElementById(fieldName + '_editor_container');
+      const hiddenInput = document.getElementById(fieldName + '_hidden');
+      const previewBtn = document.getElementById(fieldName + '_preview_btn');
+      const previewTarget = document.getElementById(fieldName + '_preview_target');
+      const previewContent = document.getElementById(fieldName + '_preview_content');
+      if (!container || !previewTarget || !previewContent) return;
+
+      const isPreviewing = previewTarget.style.display !== 'none';
+      if (isPreviewing) {
+        // Exit preview mode -> restore active editing view
+        previewTarget.style.display = 'none';
+        if (previewBtn) previewBtn.classList.remove('active');
+        const switcher = container.querySelector('.mode-switcher');
+        const activeModeBtn = switcher ? switcher.querySelector('.mode-btn.active') : null;
+        const mode = activeModeBtn ? activeModeBtn.getAttribute('data-mode') : 'primary';
+        window.switchEditorMode(fieldName, mode);
+        return;
+      }
+
+      // Enter preview mode: extract latest content from currently visible editor
+      const primaryEl = document.getElementById(fieldName + '_primary_target');
+      const toastEl = document.getElementById(fieldName + '_toast_target');
+      const trixEl = document.getElementById(fieldName + '_trix_target');
+      const codeEl = document.getElementById(fieldName + '_code_target');
+      const codeTextarea = document.getElementById(fieldName + '_raw_textarea');
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
+
+      let currentVal = '';
+      if (codeEl && codeEl.style.display !== 'none' && codeTextarea) {
+        currentVal = codeTextarea.value;
+      } else if (mdTextarea && primaryEl && primaryEl.style.display !== 'none') {
+        currentVal = mdTextarea.value;
+      } else if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+        currentVal = pellEditors[fieldName].content.innerHTML;
+      } else if (trixEl && trixEl.style.display !== 'none') {
+        const trixInput = document.getElementById(fieldName + '_trix_input');
+        const trixEditor = trixEl.querySelector('trix-editor');
+        currentVal = (trixInput && trixInput.value) || (trixEditor && trixEditor.value) || '';
+      } else if (toastEl && toastEl.style.display !== 'none' && toastEditors[fieldName]) {
+        try { currentVal = toastEditors[fieldName].getMarkdown(); } catch (e) {}
+      }
+
+      if (!currentVal && hiddenInput && hiddenInput.value) {
+        currentVal = hiddenInput.value;
+      }
+
+      if (hiddenInput) hiddenInput.value = currentVal;
+
+      // Hide all editor input panes
+      if (primaryEl) primaryEl.style.display = 'none';
+      if (codeEl) codeEl.style.display = 'none';
+      if (toastEl) toastEl.style.display = 'none';
+
+      // Render preview
+      const format = container.getAttribute('data-format') || 'markdown';
+      let htmlOutput = '';
+      if (!currentVal || !currentVal.trim()) {
+        htmlOutput = '<p style="color:var(--text-muted);font-style:italic;margin:0;">No content to preview.</p>';
+      } else if (format === 'richtext') {
+        htmlOutput = currentVal;
+      } else {
+        // Markdown rendering via isolate-served marked.js
+        if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+          try {
+            htmlOutput = window.marked.parse(currentVal);
+          } catch (err) {
+            htmlOutput = '<p style="color:#ef4444;">Preview error: ' + err.message + '</p><pre>' + currentVal + '</pre>';
+          }
+        } else {
+          htmlOutput = currentVal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\\n/g, '<br/>');
+        }
+      }
+
+      previewContent.innerHTML = htmlOutput;
+      previewTarget.style.display = 'block';
+      if (previewBtn) previewBtn.classList.add('active');
     };
 
     // 4. Form Submission
@@ -586,8 +746,16 @@ export function renderEditorView(
     };
 
     // 6. Media Picker & Thumbnail Logic
+    window.openEditorMediaModal = function(fieldName, format) {
+      activeEditorMediaTarget = { fieldName: fieldName, format: format || 'markdown' };
+      activeMediaTargetField = null;
+      window.openMediaModal(fieldName);
+    };
+
     window.openMediaModal = async function(fieldName) {
-      activeMediaTargetField = fieldName;
+      if (!activeEditorMediaTarget) {
+        activeMediaTargetField = fieldName;
+      }
       const modal = document.getElementById('mediaModal');
       if (modal) modal.style.display = 'flex';
 
@@ -607,6 +775,7 @@ export function renderEditorView(
       const modal = document.getElementById('mediaModal');
       if (modal) modal.style.display = 'none';
       activeMediaTargetField = null;
+      activeEditorMediaTarget = null;
     };
 
     function renderModalMedia(items) {
@@ -626,17 +795,14 @@ export function renderEditorView(
         itemEl.className = 'modal-media-item';
         itemEl.title = m.filename || m.key;
 
-        const isImg = (m.type || m.mime_type || '').indexOf('image/') === 0 || /\\.(jpg|jpeg|png|webp|svg|gif)$/i.test(m.key || '');
+        const isImg = (m.type || m.mime_type || '').indexOf('image/') === 0 || /\.(jpg|jpeg|png|webp|svg|gif)$/i.test(m.key || '');
         const assetUrl = m.url || ('/media/' + m.key);
-
-        itemEl.addEventListener('click', function() {
-          window.selectMediaAsset(assetUrl);
-        });
+        const displayName = m.filename || m.key;
 
         if (isImg) {
           const imgEl = document.createElement('img');
           imgEl.src = '/media/' + m.key;
-          imgEl.alt = m.filename || '';
+          imgEl.alt = displayName;
           imgEl.loading = 'lazy';
           itemEl.appendChild(imgEl);
         } else {
@@ -648,8 +814,61 @@ export function renderEditorView(
 
         const nameEl = document.createElement('span');
         nameEl.className = 'modal-media-name';
-        nameEl.innerText = m.filename || m.key;
+        nameEl.innerText = displayName;
         itemEl.appendChild(nameEl);
+
+        if (activeEditorMediaTarget) {
+          const actionsEl = document.createElement('div');
+          actionsEl.className = 'modal-media-actions';
+
+          const btnInsert = document.createElement('button');
+          btnInsert.type = 'button';
+          btnInsert.className = 'btn-modal-action';
+          btnInsert.title = 'Insert image into content';
+          btnInsert.innerText = isImg ? '🖼️ Image' : '📄 Insert';
+          btnInsert.onclick = function(e) {
+            e.stopPropagation();
+            window.insertEditorMedia(assetUrl, displayName, false);
+          };
+          actionsEl.appendChild(btnInsert);
+
+          const btnLink = document.createElement('button');
+          btnLink.type = 'button';
+          btnLink.className = 'btn-modal-action';
+          btnLink.title = 'Insert link to asset';
+          btnLink.innerText = '🔗 Link';
+          btnLink.onclick = function(e) {
+            e.stopPropagation();
+            window.insertEditorMedia(assetUrl, displayName, true);
+          };
+          actionsEl.appendChild(btnLink);
+
+          const btnCopy = document.createElement('button');
+          btnCopy.type = 'button';
+          btnCopy.className = 'btn-modal-action';
+          btnCopy.title = 'Copy URL to clipboard';
+          btnCopy.innerText = '📋';
+          btnCopy.onclick = function(e) {
+            e.stopPropagation();
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(assetUrl).then(function() {
+                btnCopy.innerText = '✓';
+                setTimeout(function() { btnCopy.innerText = '📋'; }, 1500);
+              });
+            }
+          };
+          actionsEl.appendChild(btnCopy);
+
+          itemEl.appendChild(actionsEl);
+
+          itemEl.addEventListener('click', function() {
+            window.insertEditorMedia(assetUrl, displayName, false);
+          });
+        } else {
+          itemEl.addEventListener('click', function() {
+            window.selectMediaAsset(assetUrl);
+          });
+        }
 
         grid.appendChild(itemEl);
       });
@@ -664,12 +883,64 @@ export function renderEditorView(
     };
 
     window.selectMediaAsset = function(url) {
+      if (activeEditorMediaTarget) {
+        window.insertEditorMedia(url, '', false);
+        return;
+      }
       if (!activeMediaTargetField) return;
       const input = document.getElementById(activeMediaTargetField + '_input');
       if (input) {
         input.value = url;
         window.updateThumbnailPreview(activeMediaTargetField, url);
       }
+      window.closeMediaModal();
+    };
+
+    window.insertEditorMedia = function(url, filename, asLink) {
+      if (!activeEditorMediaTarget) return;
+      const targetField = activeEditorMediaTarget.fieldName;
+      const format = activeEditorMediaTarget.format;
+
+      const mdTextarea = document.getElementById(targetField + '_md_textarea');
+      const rawTextarea = document.getElementById(targetField + '_raw_textarea');
+
+      const activeTa = (mdTextarea && mdTextarea.offsetParent !== null) ? mdTextarea : rawTextarea;
+
+      if (format === 'markdown' || (activeTa && activeTa.offsetParent !== null)) {
+        if (activeTa) {
+          activeTa.focus();
+          const start = activeTa.selectionStart || 0;
+          const end = activeTa.selectionEnd || 0;
+          const selected = activeTa.value.slice(start, end) || filename || 'image';
+          const snippet = asLink
+            ? ('[' + selected + '](' + url + ')')
+            : ('![' + selected + '](' + url + ')');
+
+          let success = false;
+          try {
+            success = document.execCommand('insertText', false, snippet);
+          } catch (e) { success = false; }
+          if (!success) {
+            activeTa.setRangeText(snippet, start, end, 'select');
+          }
+          activeTa.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      } else if (format === 'html' || pellEditors[targetField]) {
+        if (pellEditors[targetField] && pellEditors[targetField].content) {
+          pellEditors[targetField].content.focus();
+          if (asLink) {
+            document.execCommand('createLink', false, url);
+          } else {
+            document.execCommand('insertImage', false, url);
+          }
+          pellEditors[targetField].content.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+
+      if (typeof window.updateDraftButtonState === 'function') {
+        window.updateDraftButtonState();
+      }
+
       window.closeMediaModal();
     };
 
@@ -727,7 +998,11 @@ export function renderEditorView(
           const json = await res.json();
           const fileUrl = json.data && json.data.url ? json.data.url : ('/media/' + json.data.key);
           cachedMedia = [];
-          window.selectMediaAsset(fileUrl);
+          if (activeEditorMediaTarget) {
+            window.insertEditorMedia(fileUrl, file.name, false);
+          } else {
+            window.selectMediaAsset(fileUrl);
+          }
         } else {
           alert('Upload failed: ' + await res.text());
         }
@@ -875,7 +1150,7 @@ export function renderEditorView(
               isModified: isMod,
               publishedValue: publishedData[f.name],
               draftValue: draftData[f.name],
-            });
+            }, editorConfig);
           })}
       </div>
 
@@ -944,5 +1219,5 @@ export function renderEditorView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, editorConfig);
 }

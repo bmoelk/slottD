@@ -272,10 +272,37 @@ export const adminStyles = `
   .form-group { margin-bottom: 22px; }
   .form-group label { display: block; font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
   .editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .editor-header-actions { display: flex; align-items: center; gap: 8px; }
+  .editor-header-divider { width: 1px; height: 16px; background: var(--surface-border); margin: 0 2px; }
+  .preview-toggle-btn { display: inline-flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--surface-border); color: var(--text-muted); padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; user-select: none; }
+  .preview-toggle-btn:hover { background: rgba(255, 255, 255, 0.08); color: #fff; border-color: rgba(255, 255, 255, 0.2); }
+  .preview-toggle-btn.active { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
   .mode-switcher { display: flex; gap: 4px; background: #090d16; padding: 2px; border-radius: 6px; border: 1px solid var(--surface-border); }
   .mode-btn { background: transparent; border: none; color: var(--text-muted); padding: 4px 8px; font-size: 11px; font-weight: 600; border-radius: 4px; cursor: pointer; transition: 0.15s; }
   .mode-btn:hover { color: #fff; }
   .mode-btn.active { background: #1e293b; color: #fff; }
+  .preview-wrapper { background: #090d16; border: 1px solid var(--surface-border); border-radius: 6px; padding: 16px 20px; min-height: 240px; max-height: 520px; overflow-y: auto; line-height: 1.6; color: #e2e8f0; }
+  .preview-content { font-size: 14px; color: #e2e8f0; }
+  .preview-content h1, .preview-content h2, .preview-content h3, .preview-content h4 { color: #f8fafc; margin-top: 1.2em; margin-bottom: 0.5em; font-weight: 700; }
+  .preview-content h1 { font-size: 1.5em; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.3em; }
+  .preview-content h2 { font-size: 1.3em; border-bottom: 1px solid var(--surface-border); padding-bottom: 0.3em; }
+  .preview-content h3 { font-size: 1.1em; }
+  .preview-content p { margin-bottom: 1em; }
+  .preview-content blockquote { border-left: 3px solid #38bdf8; padding-left: 12px; margin: 1em 0; color: #94a3b8; font-style: italic; }
+  .preview-content code { background: rgba(255, 255, 255, 0.08); padding: 2px 6px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: #f1f5f9; }
+  .preview-content pre { background: #030712; border: 1px solid var(--surface-border); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 1em 0; }
+  .preview-content pre code { background: transparent; padding: 0; }
+  .preview-content img { max-width: 100%; height: auto; border-radius: 6px; margin: 0.8em 0; border: 1px solid var(--surface-border); display: block; }
+  .preview-content a { color: #38bdf8; text-decoration: underline; }
+  .preview-content ul, .preview-content ol { margin-bottom: 1em; padding-left: 1.5em; }
+  .preview-content li { margin-bottom: 0.25em; }
+  .preview-content hr { border: 0; height: 1px; background: var(--surface-border); margin: 1.5em 0; }
+  .preview-content table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+  .preview-content th, .preview-content td { border: 1px solid var(--surface-border); padding: 8px 12px; text-align: left; }
+  .preview-content th { background: #0f172a; font-weight: 600; color: #f8fafc; }
+  .modal-media-actions { display: flex; gap: 4px; justify-content: center; margin-top: 6px; }
+  .btn-modal-action { background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 2px 6px; font-size: 10px; border-radius: 4px; cursor: pointer; transition: all 0.15s; }
+  .btn-modal-action:hover { background: #38bdf8; color: #090d16; border-color: #38bdf8; }
   .input-text, .input-select, .input-textarea { width: 100%; background: #090d16; border: 1px solid var(--surface-border); color: #fff; padding: 10px 12px; border-radius: 6px; font-size: 14px; outline: none; }
   .input-text:focus, .input-select:focus, .input-textarea:focus { border-color: var(--primary); }
   .breadcrumbs { display: flex; gap: 8px; font-size: 14px; color: var(--text-muted); align-items: center; }
@@ -285,7 +312,141 @@ export const adminStyles = `
   .meta-info p { font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
   .divider { border: 0; height: 1px; background: var(--surface-border); margin: 16px 0; }
   
-  /* Toast-UI & Trix Styles */
+  /* Editor Styles: GitHub Toolbar, Pell, Toast-UI & Trix */
+  markdown-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    background: #0f172a;
+    border: 1px solid var(--surface-border);
+    border-bottom: 0;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 10px;
+  }
+  markdown-toolbar button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #cbd5e1;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    line-height: 1;
+    user-select: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    box-sizing: border-box;
+  }
+  markdown-toolbar button svg {
+    display: block;
+    fill: currentColor;
+  }
+  markdown-toolbar button:hover {
+    background: #1e293b;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+  markdown-toolbar button:active {
+    background: #334155;
+  }
+  .md-toolbar-divider {
+    width: 1px;
+    height: 18px;
+    background: var(--surface-border);
+    margin: 0 4px;
+  }
+  .md-toolbar-textarea {
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+    border-color: var(--surface-border) !important;
+    background: #090d16 !important;
+    color: #f8fafc !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    line-height: 1.6 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .md-toolbar-textarea:focus {
+    border-color: var(--primary) !important;
+  }
+  .pell-wrapper {
+    background: #090d16;
+    border: 1px solid var(--surface-border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .pell-actionbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
+    background: #0f172a;
+    border-bottom: 1px solid var(--surface-border);
+    padding: 6px 10px;
+  }
+  .pell-button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #cbd5e1;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    line-height: 1;
+    user-select: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    box-sizing: border-box;
+  }
+  .pell-button svg {
+    display: block;
+    fill: currentColor;
+  }
+  .pell-button:hover {
+    background: #1e293b;
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+  .pell-button-selected {
+    background: #1e293b;
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+  .pell-content {
+    min-height: 250px;
+    padding: 14px;
+    outline: none;
+    color: #f8fafc;
+    line-height: 1.6;
+    font-family: inherit;
+    background: #090d16;
+  }
+  .pell-content p { margin-bottom: 12px; }
+  .pell-content blockquote {
+    border-left: 3px solid #38bdf8;
+    padding-left: 12px;
+    color: #94a3b8;
+    margin: 12px 0;
+  }
+  .pell-content pre {
+    background: #030712;
+    padding: 10px;
+    border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    overflow-x: auto;
+  }
   .toastui-editor-defaultUI { background: #090d16 !important; border-color: var(--surface-border) !important; border-radius: 6px; color: #f8fafc !important; }
   .toastui-editor-defaultUI .ProseMirror { color: #f8fafc !important; }
   .toastui-editor-toolbar { background: #0f172a !important; border-bottom: 1px solid var(--surface-border) !important; }

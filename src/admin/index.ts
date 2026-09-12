@@ -26,6 +26,9 @@ import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
 import { computeContentDiff } from '../sync/diff.js';
 import { logActivity } from '../db/audit.js';
 import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
+import { MARKDOWN_TOOLBAR_VENDOR_JS } from './vendor/markdown-toolbar.js';
+import { PELL_VENDOR_JS } from './vendor/pell.js';
+import { MARKED_VENDOR_JS } from './vendor/marked.js';
 import type { Env } from '../types.js';
 import { getSlottdConfig } from '../index.js';
 
@@ -104,11 +107,52 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   return { path: chosenPath, hasRemote, remoteUrl, branch, token };
 }
 
+export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
+  let format: 'markdown' | 'richtext' = (env as any)?.EDITOR_FORMAT === 'richtext' ? 'richtext' : 'markdown';
+  let tier: 'light' | 'heavy' = (env as any)?.EDITOR_TIER === 'heavy' ? 'heavy' : 'light';
+
+  if (env?.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?)')
+        .bind('editor_format', 'editor_tier')
+        .all<{ key: string; value: string }>();
+      for (const row of rows.results || []) {
+        if (row.key === 'editor_format' && (row.value === 'markdown' || row.value === 'richtext')) {
+          format = row.value;
+        }
+        if (row.key === 'editor_tier' && (row.value === 'light' || row.value === 'heavy')) {
+          tier = row.value;
+        }
+      }
+    } catch {}
+  }
+
+  return { format, tier };
+}
+
 // ── 0. Static Vendor Assets (/admin/vendor/*) ────────────────────────────────
 adminRouter.get('/vendor/alpine.js', (c) => {
   c.header('Content-Type', 'application/javascript; charset=utf-8');
   c.header('Cache-Control', 'public, max-age=31536000, immutable');
   return c.body(ALPINE_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/markdown-toolbar.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(MARKDOWN_TOOLBAR_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/pell.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(PELL_VENDOR_JS);
+});
+
+adminRouter.get('/vendor/marked.js', (c) => {
+  c.header('Content-Type', 'application/javascript; charset=utf-8');
+  c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  return c.body(MARKED_VENDOR_JS);
 });
 
 // ── 0. Login & Session Management (/admin/login & /admin/logout) ─────────────
@@ -117,17 +161,25 @@ adminRouter.get('/login', async (c) => {
   const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
   const error = c.req.query('error') || '';
   const redirect = c.req.query('redirect') || '';
-  return c.html(renderLoginView(error, operatorName, operatorEmail, redirect));
+  const slotwireAuth = c.req.query('slotwire_auth') === '1' || c.req.query('slotwire_auth') === 'true';
+  const origin = c.req.query('origin') || '';
+  return c.html(renderLoginView(error, operatorName, operatorEmail, redirect, slotwireAuth, origin));
 });
 
 adminRouter.post('/login', async (c) => {
   const body = await c.req.parseBody().catch(() => ({}));
   const password = ((body as any)?.password as string) || '';
   const redirectParam = (((body as any)?.redirect as string) || c.req.query('redirect') || '').trim();
+  const slotwireAuth =
+    ((body as any)?.slotwire_auth as string) === '1' ||
+    c.req.query('slotwire_auth') === '1' ||
+    c.req.query('slotwire_auth') === 'true';
+  const originParam = (((body as any)?.origin as string) || c.req.query('origin') || '*').trim();
 
   const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
   const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
   const email = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
+  const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
 
   let configuredHash = (c.env as any).ADMIN_PASSWORD_HASH;
   const legacyPlain = (c.env as any).ADMIN_PASSWORD;
@@ -153,13 +205,59 @@ adminRouter.post('/login', async (c) => {
   }
 
   if (!isValid) {
-    const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
-    const operatorEmail = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
-    return c.html(renderLoginView('Invalid password. Please try again.', operatorName, operatorEmail, redirectParam), 401);
+    return c.html(
+      renderLoginView(
+        'Invalid password. Please try again.',
+        operatorName,
+        email,
+        redirectParam,
+        slotwireAuth,
+        originParam
+      ),
+      401
+    );
   }
 
   const sessionCookie = await createBriefcaseSessionCookie(email, secret);
   c.header('Set-Cookie', `slottd_session=${sessionCookie}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+
+  // Handle SlotWire popup auth handshake
+  if (slotwireAuth) {
+    const safeOrigin =
+      originParam.startsWith('http://localhost') ||
+      originParam.startsWith('http://127.0.0.1') ||
+      originParam.startsWith('https://')
+        ? originParam
+        : '*';
+
+    return c.html(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>SlottD Authentication Successful</title>
+</head>
+<body style="background:#090d16;color:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+  <div style="text-align:center;padding:24px;">
+    <h2 style="color:#10b981;margin-bottom:8px;">✓ Authenticated</h2>
+    <p style="color:#94a3b8;font-size:14px;">Connecting to SlotWire...</p>
+  </div>
+  <script>
+    if (window.opener) {
+      window.opener.postMessage({
+        type: 'slotwire:auth_success',
+        token: '${sessionCookie}',
+        email: '${email}',
+        name: '${operatorName}',
+        provider: 'slottd'
+      }, '${safeOrigin}');
+      setTimeout(function() { window.close(); }, 300);
+    } else {
+      window.location.href = '/admin/home';
+    }
+  </script>
+</body>
+</html>`);
+  }
 
   // Open-redirect protection: target must be a local /admin path and not a protocol or double-slash scheme
   let target = '/admin/home';
@@ -309,7 +407,8 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   const modelIcon = collectionMeta?.icon || '⚙️';
 
   const fields = await introspectCollectionFields(db, targetCollection);
-  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon, editorConfig));
 });
 
 // ── 3. Collections Dashboard (/admin) ─────────────────────────────────────────
@@ -762,7 +861,8 @@ adminRouter.get('/content/:collection/:id', async (c) => {
   const modelIcon = collectionMeta?.icon || '⚙️';
 
   const fields = await introspectCollectionFields(db, collection);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon, editorConfig));
 });
 
 // ── 6. Models & Schema Overview (/admin/models) ──────────────────────────────
@@ -1226,6 +1326,8 @@ adminRouter.get('/setup', async (c) => {
     } catch {}
   }
 
+  const editorConfig = await getEditorConfig(c.env);
+
   return c.html(renderSetupView({
     environment: c.env.ENVIRONMENT || 'development',
     operatorName,
@@ -1238,6 +1340,8 @@ adminRouter.get('/setup', async (c) => {
     gitRemoteUrl,
     gitBranch,
     hasToken,
+    editorFormat: editorConfig.format,
+    editorTier: editorConfig.tier,
   }, user));
 });
 
@@ -1348,6 +1452,33 @@ adminRouter.post('/setup/remote', async (c) => {
   return c.json({ success: true, message: 'Git remote settings saved.' });
 });
 
+// ── Editor Settings (/admin/setup/editor) ──────────────────────────────────
+adminRouter.post('/setup/editor', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const format = body.format === 'richtext' ? 'richtext' : 'markdown';
+  const tier = body.tier === 'heavy' ? 'heavy' : 'light';
+
+  if (!c.env.DB) {
+    return c.json({ error: 'D1 database binding not available' }, 500);
+  }
+
+  try {
+    const now = Date.now();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('editor_format', format, now),
+      c.env.DB.prepare(
+        'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+      ).bind('editor_tier', tier, now),
+    ]);
+  } catch (err: any) {
+    return c.json({ error: 'Failed to update editor settings: ' + err.message }, 500);
+  }
+
+  return c.json({ success: true, message: 'Editor preferences saved successfully.', format, tier });
+});
+
 adminRouter.post('/setup/reset-db', async (c) => {
   if (c.env.ENVIRONMENT === 'production') {
     return c.json({ error: 'Database reset is strictly prohibited in production mode' }, 403);
@@ -1412,5 +1543,6 @@ adminRouter.get('/:collection/:id', async (c) => {
   }
 
   const fields = await introspectCollectionFields(db, collection);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user));
+  const editorConfig = await getEditorConfig(c.env);
+  return c.html(renderEditorView(collection, doc, fields, isNew, user, '⚙️', editorConfig));
 });
