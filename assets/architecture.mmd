@@ -1,0 +1,40 @@
+flowchart LR
+    subgraph Workstation["Local Workstation (Briefcase Mode)"]
+        direction TB
+        BriefcaseTUI["🧳 Briefcase TUI & Supervisor\n(Rust / Ratatui)"]
+        LocalCMS["SlottD Local Worker\n(:8787)"]
+        AstroDev["Astro Dev Server\n(:4321 + SlotWire)"]
+        LocalBridge["Git Bridge\n(:8788)"]
+        LocalD1[("Local D1\nSQLite")]
+
+        BriefcaseTUI -->|Supervises| LocalCMS
+        BriefcaseTUI -->|Supervises| AstroDev
+        AstroDev -->|Queries| LocalCMS
+        LocalCMS -->|Reads/Writes| LocalD1
+        BriefcaseTUI -->|Hydrate/Export| LocalD1
+        BriefcaseTUI -->|Trigger Git| LocalBridge
+    end
+
+    subgraph GitBridge["Universal Git Content Repository"]
+        direction TB
+        GitRepo["Git Remote Origin\n(GitHub / GitLab / Self-Hosted)"]
+        ReleaseTags["Immutable Release Tags\n& Flat Files (.json / .md)"]
+        GitRepo --- ReleaseTags
+    end
+
+    subgraph Edge["Cloudflare Edge (Production)"]
+        direction TB
+        AstroProd["Astro Production Site\n(Content Layer / SSR)"]
+        EdgeWorker["SlottD Edge Worker\n(Hono + Kysely + Studio)"]
+        IsoGit["In-Memory Git Engine\n(isomorphic-git + memfs)"]
+        CloudflareD1[("Cloudflare D1\nPhysical + Views")]
+        CloudflareR2[("Cloudflare R2\nMedia Storage")]
+
+        AstroProd -->|readItems| EdgeWorker
+        EdgeWorker -->|Kysely SQL| CloudflareD1
+        EdgeWorker -->|Media R2| CloudflareR2
+        EdgeWorker -->|Tag / Diff / Hydrate| IsoGit
+    end
+
+    LocalBridge -->|Native SSH & Git CLI| GitRepo
+    IsoGit -->|Smart HTTPS Sync| GitRepo
