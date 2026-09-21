@@ -41,16 +41,34 @@ impl SyncEngine {
         let docs = db.list_documents()
             .context("Failed to query documents from database")?;
 
+        // Safety guard: NEVER export into a CMS or project root directory!
+        if self.content_dir.join("wrangler.toml").exists()
+            || self.content_dir.join("wrangler.jsonc").exists()
+            || self.content_dir.join("slottd.config.ts").exists()
+        {
+            anyhow::bail!(
+                "Refusing to export into CMS directory: {:?}. Content directory must be a separate repository.",
+                self.content_dir
+            );
+        }
+
+        let protected_dirs = [
+            "node_modules", "src", "scripts", "migrations", "tests",
+            "public", "dist", "docs", "packages", "assets", "briefcase"
+        ];
+
         if self.content_dir.exists() {
             if let Ok(entries) = fs::read_dir(&self.content_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     let name = path.file_name().unwrap_or_default().to_string_lossy();
                     if name.starts_with('.')
-                        || name == "node_modules"
+                        || protected_dirs.contains(&name.as_ref())
                         || name == "package.json"
                         || name == "README.md"
                         || name == ".gitignore"
+                        || name == "Cargo.toml"
+                        || name == "tsconfig.json"
                     {
                         continue;
                     }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -25,18 +25,20 @@ use std::sync::{Arc, Mutex};
 #[command(name = "slottd")]
 #[command(about = "Native Briefcase CLI & TUI for SlottD CMS and Astro Frontend", long_about = None)]
 struct Cli {
-    #[arg(short, long, default_value = "/Users/bmo/code/websites-deployed/brainendeavor.com")]
+    /// Path to the Git content repository (or local content folder)
+    #[arg(short, long, env = "REPO_PATH", default_value = "content")]
     content_dir: String,
 
-    #[arg(short, long, default_value = "/Users/bmo/code/websites/brainendeavor-slottd-cms/.wrangler/state/v3/d1/miniflare-D1DatabaseObject/3d535fbf7b999553924854d156be0504900204de12924b359a7a78708fb42342.sqlite")]
+    /// Path to local SQLite D1 database (auto-discovered from CMS if omitted)
+    #[arg(short, long, env = "DB_PATH", default_value = "")]
     db_path: String,
 
     /// Path to the SlottD CMS directory containing wrangler.toml
-    #[arg(long, default_value = "/Users/bmo/code/websites/brainendeavor-slottd-cms")]
+    #[arg(long, env = "CMS_DIR", default_value = ".")]
     cms_dir: String,
 
     /// Path to the Astro website directory containing package.json / astro.config
-    #[arg(long, default_value = "/Users/bmo/code/websites/brainendeavor.com")]
+    #[arg(long, env = "SITE_DIR")]
     site_dir: Option<String>,
 
     /// Disable running the Astro website dev server
@@ -128,23 +130,72 @@ fn resolve_paths(cli_cms: &str, cli_site: Option<&str>) -> (PathBuf, Option<Path
         if p.exists() {
             Some(p)
         } else {
-            // Check sibling
-            let sibling = cms_path.parent().map(|p| p.join("brainendeavor.com"));
-            if sibling.as_ref().map(|p| p.exists()).unwrap_or(false) {
-                sibling
+            let rel = cms_path.join(site);
+            if rel.exists() {
+                Some(rel)
             } else {
                 Some(p)
             }
         }
     } else {
-        None
+        // Auto-detect site directory:
+        // 1. Check sibling `astro` (e.g. ../astro from cms_dir)
+        let sibling_astro = cms_path.parent().map(|p| p.join("astro"));
+        if sibling_astro.as_ref().map(|p| p.exists()).unwrap_or(false) {
+            sibling_astro
+        } else {
+            // 2. Check subfolder `astro` inside cms (if run from monorepo root)
+            let sub_astro = cms_path.join("astro");
+            if sub_astro.exists() {
+                Some(sub_astro)
+            } else {
+                // 3. Scan sibling directories for package.json or astro.config
+                let mut found_site = None;
+                if let Some(parent) = cms_path.parent() {
+                    if let Ok(entries) = std::fs::read_dir(parent) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_dir() && path != cms_path {
+                                if path.join("astro.config.mjs").exists()
+                                    || path.join("astro.config.ts").exists()
+                                {
+                                    found_site = Some(path);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                found_site
+            }
+        }
     };
 
     (cms_path, site_path)
 }
 
+fn resolve_content_path(cli_content: &str, cms_path: &Path) -> PathBuf {
+    let p = PathBuf::from(cli_content);
+    if p.is_absolute() || p.exists() {
+        return p;
+    }
+    // Check if cms_path contains the content folder (e.g. ./content)
+    let inside_cms = cms_path.join(cli_content);
+    if inside_cms.exists() {
+        return inside_cms;
+    }
+    // Check sibling of cms_path (e.g. ../content)
+    if let Some(parent) = cms_path.parent() {
+        let sibling = parent.join(cli_content);
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    p
+}
+
 fn resolve_db_path(explicit_db_path: &Path, cms_path: &Path) -> PathBuf {
-    if explicit_db_path.exists() {
+    if !explicit_db_path.as_os_str().is_empty() && explicit_db_path.exists() {
         return explicit_db_path.to_path_buf();
     }
     // Auto-discover active SQLite database inside Miniflare D1 state folder
@@ -162,17 +213,21 @@ fn resolve_db_path(explicit_db_path: &Path, cms_path: &Path) -> PathBuf {
             }
         }
     }
-    explicit_db_path.to_path_buf()
+    if !explicit_db_path.as_os_str().is_empty() {
+        explicit_db_path.to_path_buf()
+    } else {
+        cms_path.join(".wrangler/state/v3/d1/local.sqlite")
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let content_path = PathBuf::from(&cli.content_dir);
     let (cms_path, site_path) = if cli.no_site {
         (PathBuf::from(&cli.cms_dir), None)
     } else {
         resolve_paths(&cli.cms_dir, cli.site_dir.as_deref())
     };
+    let content_path = resolve_content_path(&cli.content_dir, &cms_path);
     let db_path = resolve_db_path(&PathBuf::from(&cli.db_path), &cms_path);
 
     if let Some(cmd) = cli.command {
@@ -618,7 +673,7 @@ fn run_tui(
                 Span::raw(" Restore | "),
                 Span::styled("[1-3/Tab]", Style::default().fg(Color::Yellow)),
                 Span::raw(" Tabs | "),
-                Span::styled("[Q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::styled("[Q / ^C]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                 Span::raw(" Quit"),
             ]))
             .block(Block::default().borders(Borders::ALL));
@@ -627,6 +682,13 @@ fn run_tui(
 
         if event::poll(std::time::Duration::from_millis(300))? {
             if let Event::Key(key) = event::read()? {
+                // Universal graceful quit on Ctrl+C
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
+                {
+                    break;
+                }
+
                 // 1. Handle Search Modal Input
                 if let ModalState::Search { ref mut input } = modal_state {
                     match key.code {

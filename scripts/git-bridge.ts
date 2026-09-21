@@ -9,7 +9,8 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 8788;
 const HOST = '127.0.0.1';
-const defaultNeutralRepo = process.env.REPO_PATH || path.resolve(cmsRootDir, '../websites-deployed/brainendeavor.com');
+const cmsRootDir = path.resolve(__dirname, '..');
+const defaultNeutralRepo = process.env.REPO_PATH || path.resolve(cmsRootDir, 'content');
 
 function parseJsonBody(req: http.IncomingMessage): Promise<any> {
   return new Promise((resolve) => {

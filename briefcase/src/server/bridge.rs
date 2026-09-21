@@ -104,6 +104,20 @@ impl BridgeServer {
     }
 }
 
+fn resolve_target_repo(req_repo: Option<PathBuf>, content_dir: &Path) -> PathBuf {
+    // 1. If content_dir is an explicit path that exists and is not "." or "./", prioritize it
+    if content_dir.exists() && content_dir != Path::new(".") && content_dir != Path::new("./") {
+        return content_dir.to_path_buf();
+    }
+    // 2. If req_repo is provided, exists, and is not "." or "./", use it
+    if let Some(p) = req_repo {
+        if p.exists() && p != Path::new(".") && p != Path::new("./") {
+            return p;
+        }
+    }
+    content_dir.to_path_buf()
+}
+
 fn handle_client(
     mut stream: TcpStream,
     content_dir: &Path,
@@ -196,9 +210,7 @@ Connection: close\r\n\
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
 
-        let target_repo = req_repo
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| content_dir.to_path_buf());
+        let target_repo = resolve_target_repo(req_repo, content_dir);
 
         log_msg(
             logs,
@@ -274,9 +286,7 @@ Connection: close\r\n\
             .get("repoPath")
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
-        let target_repo = req_repo
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| content_dir.to_path_buf());
+        let target_repo = resolve_target_repo(req_repo, content_dir);
 
         let git = GitDriver::new(target_repo);
         match git.fetch_remote_tags() {
@@ -308,9 +318,7 @@ Connection: close\r\n\
             .get("repoPath")
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
-        let target_repo = req_repo
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| content_dir.to_path_buf());
+        let target_repo = resolve_target_repo(req_repo, content_dir);
 
         let git = GitDriver::new(target_repo);
         match git.diff(tag) {

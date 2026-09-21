@@ -75,6 +75,16 @@ impl ManagedService {
             anyhow::bail!(err);
         }
 
+        if is_port_ready(self.port) {
+            let err = format!(
+                "Port {} is already in use by another process. Please free port {} before starting {}.",
+                self.port, self.port, self.name
+            );
+            *self.status.lock().unwrap() = ServiceStatus::Error(err.clone());
+            self.append_log(format!("❌ {}", err));
+            anyhow::bail!(err);
+        }
+
         *self.status.lock().unwrap() = ServiceStatus::Starting;
         self.append_log(format!("🚀 Starting {} in {:?}...", self.name, self.working_dir));
 
@@ -213,7 +223,7 @@ impl DualSupervisor {
             cms_dir,
             "npx",
             &["wrangler", "dev", "--port", "8787", "--ip", "127.0.0.1"],
-            &[],
+            &[("NO_UPDATE_CHECK", "1")],
             8787,
         );
 

@@ -17,7 +17,7 @@ path = "src/main.rs"
 # Terminal UI & CLI
 ratatui = "0.29"
 crossterm = "0.28"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 
 # SQLite & Data Persistence
 rusqlite = { version = "0.33", features = ["bundled"] }
