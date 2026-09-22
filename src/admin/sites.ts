@@ -33,9 +33,9 @@ export async function renameSite(
     throw new Error('Invalid or identical new site ID provided.');
   }
 
-  // 1. Verify destination domain is not already registered in site_settings
+  // 1. Verify destination domain is not already registered in system_site_settings
   const existing = await db
-    .selectFrom('site_settings')
+    .selectFrom('system_site_settings')
     .where('site_id', '=', cleanNew)
     .select('site_id')
     .executeTakeFirst();
@@ -47,7 +47,7 @@ export async function renameSite(
   const now = Date.now();
   const updatedContentTables: string[] = [];
   const updatedSystemTables: string[] = [
-    'site_settings',
+    'system_site_settings',
     'media',
     'site_domain_referrals',
     'directus_versions',
@@ -56,9 +56,9 @@ export async function renameSite(
   // 2. Execute updates across system and content tables
   const executor = db;
 
-  // ── Dedicated Handler 1: site_settings (site_id & updated_at in one go) ──
+  // ── Dedicated Handler 1: system_site_settings (site_id & updated_at in one go) ──
   await sql.raw(
-    `UPDATE site_settings SET site_id = '${cleanNew}', updated_at = ${now} WHERE site_id = '${cleanOld}'`
+    `UPDATE system_site_settings SET site_id = '${cleanNew}', updated_at = ${now} WHERE site_id = '${cleanOld}'`
   ).execute(executor);
 
   // ── Dedicated Handler 2: media (site_id & descriptive R2 key prefixes) ──
@@ -72,26 +72,26 @@ export async function renameSite(
     WHERE site_id = '${cleanOld}'
   `).execute(executor);
 
-  // ── Dedicated Handler 3: site_domain_referrals (target canonical domain) ──
-  try {
-    await sql.raw(
-      `UPDATE site_domain_referrals SET target_site_id = '${cleanNew}' WHERE target_site_id = '${cleanOld}'`
-    ).execute(executor);
-  } catch {}
+  // ── Dedicated Handler 3: site_domain_referrals ──
+  await sql.raw(
+    `UPDATE site_domain_referrals SET target_site_id = '${cleanNew}' WHERE target_site_id = '${cleanOld}'`
+  ).execute(executor);
 
-  // ── Dedicated Handler 4: directus_versions (Directus system collection) ──
-  try {
-    await sql.raw(
-      `UPDATE directus_versions SET site_id = '${cleanNew}' WHERE site_id = '${cleanOld}'`
-    ).execute(executor);
-  } catch {}
+  // ── Dedicated Handler 4: directus_versions & bundles & activity_log ──
+  for (const tbl of ['directus_versions', 'bundles', 'activity_log']) {
+    try {
+      await sql.raw(
+        `UPDATE "${tbl}" SET site_id = '${cleanNew}' WHERE site_id = '${cleanOld}'`
+      ).execute(executor);
+    } catch {}
+  }
 
-  // ── Dynamic Content Discovery: SQLite Filters Excluded & System Tables ──
+  // 3. Dynamic Physical Table Discovery (Content Tables)
   const physicalTables = await sql<{ name: string }>`
     SELECT name FROM sqlite_master 
     WHERE type = 'table' 
       AND name NOT IN (
-        'site_settings',
+        'system_site_settings',
         'site_domain_referrals',
         'media',
         'directus_versions',
@@ -127,15 +127,15 @@ export async function renameSite(
 }
 
 /**
- * Retrieves all registered sites from site_settings and documents tables.
+ * Retrieves all registered sites from system_site_settings and documents tables.
  */
 export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
   const sitesMap = new Map<string, Partial<SiteInfo>>();
 
-  // 1. Gather all site IDs from site_settings
+  // 1. Gather all site IDs from system_site_settings
   try {
     const settingsRows = await db
-      .selectFrom('site_settings')
+      .selectFrom('system_site_settings')
       .selectAll()
       .execute();
 
@@ -183,7 +183,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
 }
 
 /**
- * Registers or updates a site's configuration in site_settings.
+ * Registers or updates a site's configuration in system_site_settings.
  */
 export async function registerSite(
   db: Kysely<Database>,
@@ -196,7 +196,7 @@ export async function registerSite(
   for (const [key, value] of Object.entries(settings)) {
     if (value === undefined || value === null) continue;
     await sql.raw(`
-      INSERT INTO site_settings (site_id, key, value, updated_at)
+      INSERT INTO system_site_settings (site_id, key, value, updated_at)
       VALUES ('${cleanSiteId}', '${key}', '${value.replace(/'/g, "''")}', ${now})
       ON CONFLICT(site_id, key) DO UPDATE SET
         value = excluded.value,

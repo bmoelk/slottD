@@ -92,11 +92,11 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
   }
 
   if (candidateDomain) {
-    // Check if candidateDomain exists directly in site_settings
+    // Check if candidateDomain exists directly in system_site_settings
     if (c.env.DB) {
       try {
         const siteExists = (await c.env.DB.prepare(
-          'SELECT site_id FROM site_settings WHERE site_id = ? LIMIT 1'
+          'SELECT site_id FROM system_site_settings WHERE site_id = ? LIMIT 1'
         )
           .bind(candidateDomain)
           .first()) as { site_id: string } | null;

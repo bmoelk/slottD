@@ -78,10 +78,10 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
     branch = appConfig.git.branch;
   }
 
-  // 2. Check site_settings in D1 if siteId provided
+  // 2. Check system_site_settings in D1 if siteId provided
   if (siteId && env?.DB) {
     try {
-      const rows = await env.DB.prepare('SELECT key, value FROM site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?)')
+      const rows = await env.DB.prepare('SELECT key, value FROM system_site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?)')
         .bind(siteId, 'git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
         .all<{ key: string; value: string }>();
       let encToken = '';
@@ -1471,7 +1471,7 @@ adminRouter.post('/sites/pull', async (c) => {
   const db = createDb(c.env.DB);
   try {
     const siteSettingsRows = await db
-      .selectFrom('site_settings')
+      .selectFrom('system_site_settings')
       .where('site_id', '=', siteId)
       .selectAll()
       .execute();

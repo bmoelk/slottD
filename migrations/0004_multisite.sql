@@ -2,15 +2,15 @@
 -- SlottD Multi-Website Database Migration & Rigid Site Isolation
 -- 100% Generic: uses 'default' placeholder without hardcoding private domains
 
--- 1. Create site_settings registry table
-CREATE TABLE IF NOT EXISTS site_settings (
+-- 1. Create system_site_settings registry table
+CREATE TABLE IF NOT EXISTS system_site_settings (
   site_id TEXT NOT NULL,
   key TEXT NOT NULL,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (site_id, key)
 );
-CREATE INDEX IF NOT EXISTS idx_site_settings_site ON site_settings(site_id);
+CREATE INDEX IF NOT EXISTS idx_system_site_settings_site ON system_site_settings(site_id);
 
 -- 2. Create site_domain_referrals table (for configurable domain referral fallback)
 CREATE TABLE IF NOT EXISTS site_domain_referrals (
@@ -20,8 +20,8 @@ CREATE TABLE IF NOT EXISTS site_domain_referrals (
 );
 CREATE INDEX IF NOT EXISTS idx_referrals_target ON site_domain_referrals(target_site_id);
 
--- 3. Backfill existing system_settings to site_settings under generic 'default' site
-INSERT OR IGNORE INTO site_settings (site_id, key, value, updated_at)
+-- 3. Backfill existing system_settings to system_site_settings under generic 'default' site
+INSERT OR IGNORE INTO system_site_settings (site_id, key, value, updated_at)
 SELECT 'default', key, value, updated_at FROM system_settings
 WHERE key IN ('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc', 'content_path');
 

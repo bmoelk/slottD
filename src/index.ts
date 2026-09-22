@@ -321,7 +321,7 @@ async function handlePublishRelease(c: any) {
   if (env.DB) {
     try {
       const rows = await db
-        .selectFrom('site_settings')
+        .selectFrom('system_site_settings')
         .where('site_id', '=', siteId)
         .selectAll()
         .execute();
@@ -589,7 +589,7 @@ app.post('/ext/sync/pull', requireWriteAuth, async (c) => {
   if (c.env.DB) {
     try {
       const rows = await db
-        .selectFrom('site_settings')
+        .selectFrom('system_site_settings')
         .where('site_id', '=', siteId)
         .selectAll()
         .execute();
@@ -777,7 +777,7 @@ app.post('/ext/deploy/trigger', requireWriteAuth, async (c) => {
     try {
       const db = createDb(c.env.DB);
       const row = await db
-        .selectFrom('site_settings')
+        .selectFrom('system_site_settings')
         .where('site_id', '=', siteId)
         .where('key', 'in', ['deploy_hook', 'deploy_hook_url'])
         .select('value')
@@ -849,7 +849,7 @@ export default {
         let siteSettings: Record<string, string> = {};
         try {
           const rows = await db
-            .selectFrom('site_settings')
+            .selectFrom('system_site_settings')
             .where('site_id', '=', siteId)
             .selectAll()
             .execute();

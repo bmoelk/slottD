@@ -18,7 +18,7 @@ export interface Database {
   bundles: BundleRow;
   directus_versions: DirectusVersionRow;
   system_settings: SystemSettingRow;
-  site_settings: SiteSettingRow;
+  system_site_settings: SiteSettingRow;
   site_domain_referrals: SiteDomainReferralRow;
   [viewName: string]: any; // Supports dynamic SQLite views
 }

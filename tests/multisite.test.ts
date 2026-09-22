@@ -195,7 +195,7 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(result.success).toBe(true);
       expect(result.oldSiteId).toBe('old-site.com');
       expect(result.newSiteId).toBe('new-site.com');
-      expect(result.updatedSystemTables).toContain('site_settings');
+      expect(result.updatedSystemTables).toContain('system_site_settings');
       expect(result.updatedSystemTables).toContain('media');
       expect(result.updatedSystemTables).toContain('site_domain_referrals');
       expect(result.updatedSystemTables).toContain('directus_versions');
