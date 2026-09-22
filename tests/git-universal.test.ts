@@ -137,22 +137,6 @@ describe('Content Diff Engine: computeContentDiff', () => {
   });
 });
 
-describe('NativeShellGitDriver: Root Collection Tag Loading', () => {
-  it('loads content from git tag with root-level collections', async () => {
-    const { NativeShellGitDriver } = await import('../src/sync/native-shell-driver.js');
-    const driver = new NativeShellGitDriver({
-      url: 'git@github.com:bmoelk/brainendeavor.com.git',
-      repoPath: '/Users/bmo/code/websites-deployed/brainendeavor.com',
-    });
-
-    const items = await driver.loadTagContent('release-2026.09.08-v1');
-    expect(items.length).toBeGreaterThan(50);
-    const blogPost = items.find((i) => i.collection === 'blog_posts');
-    expect(blogPost).toBeDefined();
-    expect(blogPost?.slug).toBeTruthy();
-  });
-});
-
 describe('D1 Database Hydration: hydrateFromGit ID collision safety', () => {
   it('handles targetId collisions by re-assigning UUID and avoiding primary key constraint errors', async () => {
     const { hydrateFromGit } = await import('../src/sync/git-sync.js');

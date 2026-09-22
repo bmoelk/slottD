@@ -49,6 +49,9 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   remoteUrl: string;
   branch: string;
   token?: string;
+  isMonorepo?: boolean;
+  contentPath?: string;
+  gitTopLevel?: string;
 }> {
   const fs = await dynamicImport('fs');
   const cp = await dynamicImport('child_process');
@@ -62,7 +65,16 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   let branch = (env as any)?.GIT_BRANCH || 'main';
   let token = (env as any)?.GIT_TOKEN || (env as any)?.GITHUB_TOKEN || '';
 
-  // Check system_settings in D1 if available
+  // 1. Check slottd.config.ts if available
+  const appConfig = getSlottdConfig();
+  if (appConfig?.git?.repo && !remoteUrl) {
+    remoteUrl = appConfig.git.repo;
+  }
+  if (appConfig?.git?.branch && branch === 'main') {
+    branch = appConfig.git.branch;
+  }
+
+  // 2. Check system_settings in D1 if available
   if (env?.DB) {
     try {
       const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
@@ -70,7 +82,7 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
         .all<{ key: string; value: string }>();
       let encToken = '';
       for (const r of rows.results || []) {
-        if (r.key === 'git_remote_url' && r.value) remoteUrl = r.value;
+        if (r.key === 'git_remote_url' && r.value && !remoteUrl) remoteUrl = r.value;
         if (r.key === 'repo_path' && r.value) chosenPath = r.value;
         if (r.key === 'git_branch' && r.value) branch = r.value;
         if (r.key === 'git_token_enc' && r.value) encToken = r.value;
@@ -87,15 +99,15 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     chosenPath = (env as any)?.REPO_PATH || './';
   }
 
-  if (remoteUrl) {
-    hasRemote = true;
-  }
+  // 3. Detect Monorepo Context & Remote Content Path
+  const explicitPath = appConfig?.git?.path || (env as any)?.GIT_CONTENT_PATH;
+  const { detectMonorepo } = await import('../sync/monorepo.js');
+  const monorepo = await detectMonorepo(chosenPath, explicitPath);
 
   if (cp && (cp as any).execSync && chosenPath && chosenPath !== '/' && chosenPath !== './') {
     try {
       const remotes = (cp as any).execSync(`git -C "${chosenPath}" remote -v`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
       if (remotes && remotes.trim()) {
-        hasRemote = true;
         const match = remotes.match(/origin\s+([^\s]+)/);
         if (!remoteUrl) {
           remoteUrl = match ? match[1] : remotes.split('\n')[0];
@@ -104,7 +116,20 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     } catch {}
   }
 
-  return { path: chosenPath, hasRemote, remoteUrl, branch, token };
+  if (remoteUrl) {
+    hasRemote = true;
+  }
+
+  return {
+    path: chosenPath,
+    hasRemote,
+    remoteUrl,
+    branch,
+    token,
+    isMonorepo: monorepo.isMonorepo,
+    contentPath: monorepo.contentPath,
+    gitTopLevel: monorepo.gitTopLevel,
+  };
 }
 
 export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
@@ -977,6 +1002,9 @@ adminRouter.get('/git', async (c) => {
           token: repoInfo.token,
           repoPath: repoInfo.path,
           isProduction: c.env.ENVIRONMENT === 'production',
+          isMonorepo: repoInfo.isMonorepo,
+          contentPath: repoInfo.contentPath,
+          gitTopLevel: repoInfo.gitTopLevel,
         });
         engineName = driver.engineName;
         tags = await driver.listTags();
@@ -999,6 +1027,9 @@ adminRouter.get('/git', async (c) => {
         collectionCount,
         mediaCount,
         tags,
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
       },
       user
     )
@@ -1075,7 +1106,8 @@ adminRouter.post('/git/release', async (c) => {
 
   try {
     const items = await exportToGitFormat(db);
-    const files = serializeToFiles(items, 'content');
+    const contentPath = repoInfo.contentPath || 'content';
+    const files = serializeToFiles(items, contentPath);
     const forcePublish = body.forcePublish === true;
 
     // Execute onBeforePublish pre-release verification if configured
@@ -1114,6 +1146,9 @@ adminRouter.post('/git/release', async (c) => {
         token: repoInfo.token,
         repoPath: repoInfo.path,
         isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
       });
 
       const user = await getAuthenticatedUser(c);
@@ -1187,6 +1222,9 @@ adminRouter.post('/git/diff', async (c) => {
       token: repoInfo.token,
       repoPath: repoInfo.path,
       isProduction: c.env.ENVIRONMENT === 'production',
+      isMonorepo: repoInfo.isMonorepo,
+      contentPath: repoInfo.contentPath,
+      gitTopLevel: repoInfo.gitTopLevel,
     });
 
     const activeItems = await exportToGitFormat(db);
@@ -1204,7 +1242,7 @@ adminRouter.post('/git/diff', async (c) => {
   }
 });
 
-// ── 13. Load Content from Git Tag (/admin/git/load) ───────────────────────────
+// ── 13. Load / Checkout Content from Git Tag (/admin/git/load) ────────────────
 adminRouter.post('/git/load', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
@@ -1216,8 +1254,8 @@ adminRouter.post('/git/load', async (c) => {
   }
 
   try {
-    if (!repoInfo.hasRemote) {
-      return c.json({ error: 'No Git remote configured. Configure a remote URL in Setup first.' }, 400);
+    if (!repoInfo.hasRemote && !repoInfo.path) {
+      return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Setup first.' }, 400);
     }
 
     const driver = await getGitDriver({
@@ -1226,6 +1264,9 @@ adminRouter.post('/git/load', async (c) => {
       token: repoInfo.token,
       repoPath: repoInfo.path,
       isProduction: c.env.ENVIRONMENT === 'production',
+      isMonorepo: repoInfo.isMonorepo,
+      contentPath: repoInfo.contentPath,
+      gitTopLevel: repoInfo.gitTopLevel,
     });
 
     const items = await driver.loadTagContent(tag);

@@ -5,16 +5,24 @@ import type { GitDriver, GitDriverOptions, GitReleaseResult } from './driver.js'
 import { normalizeGitUrl } from './driver.js';
 import type { GitContentItem, SerializedGitFile } from './git-sync.js';
 
+import { scopeReleaseTag } from './monorepo.js';
+
 export class IsomorphicGitDriver implements GitDriver {
   readonly engineName = 'isomorphic-git (Smart HTTP)';
   private readonly url: string;
   private readonly branch: string;
   private readonly token?: string;
+  private readonly contentSubpath?: string;
+  private readonly isMonorepo?: boolean;
+  private readonly siteId?: string;
 
   constructor(options: GitDriverOptions) {
     this.url = normalizeGitUrl(options.url);
     this.branch = options.branch || 'main';
     this.token = options.token;
+    this.contentSubpath = options.contentSubpath;
+    this.isMonorepo = options.isMonorepo;
+    this.siteId = options.siteId;
   }
 
   private getAuthCallback() {
@@ -75,9 +83,12 @@ export class IsomorphicGitDriver implements GitDriver {
       onAuth,
     });
 
-    // Support both /content subfolder and root-level collections
+    // Support monorepo subpath, /content subfolder, and root-level collections
     let baseDir = '/';
-    if (fs.existsSync('/content') && fs.statSync('/content').isDirectory()) {
+    const cleanSubpath = this.contentSubpath ? (this.contentSubpath.startsWith('/') ? this.contentSubpath : `/${this.contentSubpath}`) : '';
+    if (cleanSubpath && fs.existsSync(cleanSubpath) && fs.statSync(cleanSubpath).isDirectory()) {
+      baseDir = cleanSubpath;
+    } else if (fs.existsSync('/content') && fs.statSync('/content').isDirectory()) {
       baseDir = '/content';
     }
 
@@ -155,6 +166,7 @@ export class IsomorphicGitDriver implements GitDriver {
       throw new Error('No Git remote URL configured.');
     }
 
+    const scopedTag = scopeReleaseTag(options.tag, this.siteId, this.isMonorepo);
     const vol = new Volume();
     const fs = createFsFromVolume(vol);
     const onAuth = this.getAuthCallback();
@@ -176,9 +188,13 @@ export class IsomorphicGitDriver implements GitDriver {
       await git.branch({ fs: fs as any, dir: '/', ref: this.branch, checkout: true });
     }
 
-    // 2. Write all serialized files into /
+    // 2. Write all serialized files into / (or monorepo subpath)
     for (const file of options.files) {
-      const filePath = file.path.startsWith('/') ? file.path : `/${file.path}`;
+      let relativePath = file.path.replace(/^\//, '');
+      if (this.isMonorepo && this.contentSubpath && !relativePath.startsWith(this.contentSubpath)) {
+        relativePath = `${this.contentSubpath.replace(/^\//, '')}/${relativePath.replace(/^content\//, '')}`;
+      }
+      const filePath = `/${relativePath}`;
       const lastSlash = filePath.lastIndexOf('/');
       const dir = lastSlash > 0 ? filePath.substring(0, lastSlash) : '/';
       if (!fs.existsSync(dir)) {
@@ -188,7 +204,7 @@ export class IsomorphicGitDriver implements GitDriver {
       await git.add({
         fs: fs as any,
         dir: '/',
-        filepath: file.path.replace(/^\//, ''),
+        filepath: relativePath,
       });
     }
 
@@ -207,7 +223,7 @@ export class IsomorphicGitDriver implements GitDriver {
     await git.tag({
       fs: fs as any,
       dir: '/',
-      ref: options.tag,
+      ref: scopedTag,
     });
 
     // 5. Push if requested
@@ -229,7 +245,7 @@ export class IsomorphicGitDriver implements GitDriver {
         http,
         dir: '/',
         url: this.url,
-        ref: options.tag,
+        ref: scopedTag,
         onAuth,
       });
       pushed = true;
@@ -238,8 +254,10 @@ export class IsomorphicGitDriver implements GitDriver {
     return {
       commitSha,
       tagCreated: true,
-      message: `Release '${options.tag}' committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`,
+      message: `Release '${scopedTag}' committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`,
       pushed,
+      contentSubpath: this.contentSubpath || 'content',
+      isMonorepo: this.isMonorepo,
     };
   }
 }

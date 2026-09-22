@@ -13,6 +13,9 @@ export interface GitViewData {
   collectionCount: number;
   mediaCount: number;
   tags: string[];
+  isMonorepo?: boolean;
+  contentSubpath?: string;
+  gitTopLevel?: string;
 }
 
 export function renderGitView(
@@ -342,6 +345,20 @@ export function renderGitView(
             <div style="font-size: 12px; color: #f59e0b;">Not configured</div>
           `}
         </div>
+        <div>
+          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Repository Scope</span>
+          ${data.isMonorepo ? html`
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: #a78bfa; font-size: 13px;">
+              <span>📁</span> Monorepo Subpath
+            </span>
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Target: <code style="color: #cbd5e1; background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 3px;">${data.contentSubpath || 'content'}</code></div>
+          ` : html`
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: #34d399; font-size: 13px;">
+              <span>📦</span> Standalone Repo
+            </span>
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Target: <code>content/</code></div>
+          `}
+        </div>
       </div>
     </div>
 
@@ -358,7 +375,7 @@ export function renderGitView(
                 Git Commit & Tag Release
                 ${renderInfoBubble('Exports D1 records into content/ and tags release. Evaluates pre-publish verification pipeline before tagging.', 'validations-hooks')}
               </h3>
-              <p style="margin: 0; font-size: 12px; color: #94a3b8;">Export active D1 database to <code>content/</code> and create an annotated Git tag.</p>
+              <p style="margin: 0; font-size: 12px; color: #94a3b8;">Export active D1 database to <code>${data.contentSubpath || 'content'}</code> and create an annotated Git tag.</p>
             </div>
           </div>
 

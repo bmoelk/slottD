@@ -45,41 +45,37 @@ impl SyncEngine {
         if self.content_dir.join("wrangler.toml").exists()
             || self.content_dir.join("wrangler.jsonc").exists()
             || self.content_dir.join("slottd.config.ts").exists()
+            || self.content_dir.join("pnpm-workspace.yaml").exists()
+            || self.content_dir.join("lerna.json").exists()
+            || self.content_dir.join("turbo.json").exists()
         {
             anyhow::bail!(
-                "Refusing to export into CMS directory: {:?}. Content directory must be a separate repository.",
+                "Refusing to export into CMS or monorepo root directory: {:?}. Content directory must be a separate repository or dedicated content subpath.",
                 self.content_dir
             );
         }
 
-        let protected_dirs = [
-            "node_modules", "src", "scripts", "migrations", "tests",
-            "public", "dist", "docs", "packages", "assets", "briefcase"
-        ];
+        if !self.content_dir.exists() {
+            fs::create_dir_all(&self.content_dir)
+                .context("Failed to create content directory")?;
+        }
 
-        if self.content_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&self.content_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    if name.starts_with('.')
-                        || protected_dirs.contains(&name.as_ref())
-                        || name == "package.json"
-                        || name == "README.md"
-                        || name == ".gitignore"
-                        || name == "Cargo.toml"
-                        || name == "tsconfig.json"
-                    {
-                        continue;
-                    }
-                    if path.is_dir() {
-                        let _ = fs::remove_dir_all(&path);
+        // Safe pruning: Only clean .json and .md files inside active collection directories being exported
+        let active_collections: std::collections::HashSet<String> = docs.iter().map(|d| d.collection.clone()).collect();
+        for col in &active_collections {
+            let col_dir = self.content_dir.join(col);
+            if col_dir.exists() && col_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&col_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                            if ext == "json" || ext == "md" {
+                                let _ = fs::remove_file(&p);
+                            }
+                        }
                     }
                 }
             }
-        } else {
-            fs::create_dir_all(&self.content_dir)
-                .context("Failed to create content directory")?;
         }
 
         let mut count = 0;
