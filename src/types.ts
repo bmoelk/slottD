@@ -19,6 +19,17 @@ export interface Env {
   STAGING_DEPLOY_HOOK_URL?: string;
   DEPLOY_HOOK_URL?: string;
   REMOTE_MEDIA_URL?: string;
+  DEFAULT_SITE_ID?: string;
+  INITIAL_SITE_ID?: string;
+  ALLOW_DOMAIN_REFERRAL_FALLBACK?: string | boolean;
+  GIT_TOKEN?: string;
+  GITHUB_OWNER?: string;
+  GITHUB_REPO?: string;
+  CANONICAL_HOST?: string;
+}
+
+export interface AppVariables {
+  siteId: string;
 }
 
 export type DocumentStatus = 'draft' | 'scheduled' | 'published' | 'archived';
@@ -39,6 +50,7 @@ export interface CollectionRow {
 
 export interface DocumentRow {
   id: string;
+  site_id?: string;
   collection: string;
   slug: string;
   title: string;
@@ -55,6 +67,7 @@ export interface DocumentRow {
 
 export interface DirectusVersionRow {
   id: string;
+  site_id?: string;
   key: string;
   name: string;
   collection: string;
@@ -68,6 +81,7 @@ export interface DirectusVersionRow {
 
 export interface BundleRow {
   id: string;
+  site_id?: string;
   name: string;
   slug: string;
   status: 'draft' | 'in_review' | 'approved' | 'published';
@@ -79,6 +93,7 @@ export interface BundleRow {
 
 export interface MediaRow {
   id: string;
+  site_id?: string;
   key: string;
   filename: string;
   mime_type: string;
@@ -90,6 +105,7 @@ export interface MediaRow {
 
 export interface ActivityLogRow {
   id: string;
+  site_id?: string;
   timestamp: number;
   actor: string;
   action: string;
@@ -103,6 +119,19 @@ export interface SystemSettingRow {
   key: string;
   value: string;
   updated_at: number;
+}
+
+export interface SiteSettingRow {
+  site_id: string;
+  key: string;
+  value: string;
+  updated_at: number;
+}
+
+export interface SiteDomainReferralRow {
+  referral_domain: string;
+  target_site_id: string;
+  created_at: number;
 }
 
 export interface DirectusQueryParams {
@@ -159,6 +188,7 @@ export interface HookResult<T = any> {
 export interface ItemHookContext<T = Record<string, any>> {
   collection: string;
   id: string;
+  siteId?: string;
   data: T;
   existing?: T;
   db: any;
@@ -179,6 +209,7 @@ export interface CollectionHooks<T = Record<string, any>> {
 }
 
 export interface PublishHookContext {
+  siteId?: string;
   bundle?: { id: string; slug: string; name: string };
   items?: any[];
   changedItems?: {

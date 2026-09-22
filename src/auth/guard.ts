@@ -12,7 +12,7 @@ export interface AuthenticatedUser {
  */
 export interface AuthAdapter {
   name: string;
-  authenticate(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> | AuthenticatedUser | null;
+  authenticate(c: Context<any>): Promise<AuthenticatedUser | null> | AuthenticatedUser | null;
 }
 
 function getCookie(header: string | undefined, name: string): string | null {
@@ -201,7 +201,7 @@ export async function verifyCloudflareAccessJwt(
 
 export class CloudflareAccessAuthAdapter implements AuthAdapter {
   name = 'cloudflare-access';
-  async authenticate(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> {
+  async authenticate(c: Context<any>): Promise<AuthenticatedUser | null> {
     // 1. Direct Edge Header (injected by Cloudflare Access when path is inside Access policy)
     const cfAccessEmail = c.req.header('cf-access-authenticated-user-email');
     if (cfAccessEmail) {
@@ -234,7 +234,7 @@ export class CloudflareAccessAuthAdapter implements AuthAdapter {
 
 export class BearerTokenAuthAdapter implements AuthAdapter {
   name = 'bearer-token';
-  async authenticate(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> {
+  async authenticate(c: Context<any>): Promise<AuthenticatedUser | null> {
     const authHeader = c.req.header('authorization');
     const apiKeyHeader = c.req.header('x-api-key');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : apiKeyHeader?.trim();
@@ -266,7 +266,7 @@ export class BearerTokenAuthAdapter implements AuthAdapter {
 
 export class LocalDevAuthAdapter implements AuthAdapter {
   name = 'local-briefcase';
-  async authenticate(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> {
+  async authenticate(c: Context<any>): Promise<AuthenticatedUser | null> {
     const isDev = c.env.ENVIRONMENT !== 'production';
     if (!isDev) {
       return null;
@@ -283,9 +283,9 @@ export class LocalDevAuthAdapter implements AuthAdapter {
     // Check if password hash is stored in system_settings in D1
     if (!configuredHash && c.env.DB) {
       try {
-        const row = await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
+        const row = (await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
           .bind('admin_password_hash')
-          .first<{ value: string }>();
+          .first()) as { value: string } | null;
         if (row?.value) {
           configuredHash = row.value;
         }
@@ -380,7 +380,7 @@ export function registerAuthAdapter(adapter: AuthAdapter) {
 /**
  * Extracts authenticated user identity using registered AuthAdapters.
  */
-export async function getAuthenticatedUser(c: Context<{ Bindings: Env }>): Promise<AuthenticatedUser | null> {
+export async function getAuthenticatedUser(c: Context<any>): Promise<AuthenticatedUser | null> {
   const existing = typeof (c as any)?.get === 'function' ? (c as any).get('user') : null;
   if (existing && existing.email) {
     return existing as AuthenticatedUser;
@@ -402,7 +402,7 @@ export async function getAuthenticatedUser(c: Context<{ Bindings: Env }>): Promi
  * Middleware: Requires valid Cloudflare Access session or Bearer API token
  * for all mutating operations (POST, PATCH, DELETE, releases).
  */
-export const requireWriteAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+export const requireWriteAuth: MiddlewareHandler<any> = async (c, next) => {
   const user = await getAuthenticatedUser(c);
 
   if (!user) {
@@ -429,7 +429,7 @@ export const requireWriteAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
  * Middleware: Protects draft queries and version inspections.
  * Unauthenticated users are rejected when requesting unpublished content.
  */
-export const requireDraftReadAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+export const requireDraftReadAuth: MiddlewareHandler<any> = async (c, next) => {
   const user = await getAuthenticatedUser(c);
 
   if (!user) {
@@ -449,7 +449,7 @@ export const requireDraftReadAuth: MiddlewareHandler<{ Bindings: Env }> = async 
 /**
  * Middleware: Guard for Admin Studio UI (/admin/*).
  */
-export const requireStudioAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+export const requireStudioAuth: MiddlewareHandler<any> = async (c, next) => {
   const user = await getAuthenticatedUser(c);
 
   // If in production and unauthenticated by Cloudflare Access or API key

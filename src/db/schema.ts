@@ -1,4 +1,14 @@
-import type { ActivityLogRow, BundleRow, CollectionRow, DirectusVersionRow, DocumentRow, MediaRow, SystemSettingRow } from '../types.js';
+import type {
+  ActivityLogRow,
+  BundleRow,
+  CollectionRow,
+  DirectusVersionRow,
+  DocumentRow,
+  MediaRow,
+  SiteDomainReferralRow,
+  SiteSettingRow,
+  SystemSettingRow,
+} from '../types.js';
 
 export interface Database {
   collections: CollectionRow;
@@ -8,6 +18,8 @@ export interface Database {
   bundles: BundleRow;
   directus_versions: DirectusVersionRow;
   system_settings: SystemSettingRow;
+  site_settings: SiteSettingRow;
+  site_domain_referrals: SiteDomainReferralRow;
   [viewName: string]: any; // Supports dynamic SQLite views
 }
 

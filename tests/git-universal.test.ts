@@ -145,6 +145,7 @@ describe('D1 Database Hydration: hydrateFromGit ID collision safety', () => {
     const table: any[] = [
       {
         id: 'gal-pottery-1',
+        site_id: 'default',
         collection: 'gallery',
         slug: 'gargoyle-fountain',
         title: 'Gargoyle Fountain',
@@ -153,14 +154,19 @@ describe('D1 Database Hydration: hydrateFromGit ID collision safety', () => {
 
     const mockDb: any = {
       selectFrom: () => ({
-        select: () => ({
-          where: (col: string, op: string, val: any) => ({
-            where: (col2: string, op2: string, val2: any) => ({
-              executeTakeFirst: async () => table.find((r) => r[col] === val && r[col2] === val2) || null,
-            }),
-            executeTakeFirst: async () => table.find((r) => r[col] === val) || null,
-          }),
-        }),
+        select: () => {
+          const conditions: Array<[string, any]> = [];
+          const queryObj = {
+            where: (col: string, _op: string, val: any) => {
+              conditions.push([col, val]);
+              return queryObj;
+            },
+            executeTakeFirst: async () => {
+              return table.find((r) => conditions.every(([col, val]) => (r[col] ?? 'default') === val)) || null;
+            },
+          };
+          return queryObj;
+        },
       }),
       insertInto: () => ({
         values: (vals: any) => ({

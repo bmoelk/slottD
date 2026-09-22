@@ -79,13 +79,14 @@ export async function syncCollectionView(
   collection: string,
   customFieldNames: string[] = []
 ): Promise<void> {
-  const standardFields = ['id', 'collection', 'slug', 'title', 'status', 'schema_version', 'publish_at', 'created_at', 'updated_at'];
+  const standardFields = ['id', 'site_id', 'collection', 'slug', 'title', 'status', 'schema_version', 'publish_at', 'created_at', 'updated_at'];
   const customFieldProjections = customFieldNames
     .filter((f) => !standardFields.includes(f))
     .map((field) => `json_extract(data, '$.${field}') AS "${field}"`);
 
   const selectColumns = [
     'id',
+    'site_id',
     'collection',
     'slug',
     'title',

@@ -18,9 +18,13 @@ import { renderSyncView } from './views/sync.js';
 import { renderGitView } from './views/git.js';
 import { renderLogsView } from './views/logs.js';
 import { renderHomeView } from './views/home.js';
+import { renderSitesView } from './views/sites.js';
 import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
+import { renameSite, listSites, registerSite } from './sites.js';
+import { resolveSiteId, normalizeSiteId } from '../auth/site.js';
+import { syncCollectionView } from '../api/views.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
 import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
 import { computeContentDiff } from '../sync/diff.js';
@@ -29,10 +33,10 @@ import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
 import { MARKDOWN_TOOLBAR_VENDOR_JS } from './vendor/markdown-toolbar.js';
 import { PELL_VENDOR_JS } from './vendor/pell.js';
 import { MARKED_VENDOR_JS } from './vendor/marked.js';
-import type { Env } from '../types.js';
+import type { Env, AppVariables } from '../types.js';
 import { getSlottdConfig } from '../index.js';
 
-export const adminRouter = new Hono<{ Bindings: Env }>();
+export const adminRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 const dynamicImport = (modName: string): Promise<any> => {
   try {
@@ -43,7 +47,7 @@ const dynamicImport = (modName: string): Promise<any> => {
   }
 };
 
-async function resolveDeploymentRepo(env?: Env): Promise<{
+async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
   path: string;
   hasRemote: boolean;
   remoteUrl: string;
@@ -74,8 +78,29 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     branch = appConfig.git.branch;
   }
 
-  // 2. Check system_settings in D1 if available
-  if (env?.DB) {
+  // 2. Check site_settings in D1 if siteId provided
+  if (siteId && env?.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT key, value FROM site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?)')
+        .bind(siteId, 'git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
+        .all<{ key: string; value: string }>();
+      let encToken = '';
+      for (const r of rows.results || []) {
+        if (r.key === 'git_remote_url' && r.value && !remoteUrl) remoteUrl = r.value;
+        if (r.key === 'repo_path' && r.value) chosenPath = r.value;
+        if (r.key === 'git_branch' && r.value) branch = r.value;
+        if (r.key === 'git_token_enc' && r.value) encToken = r.value;
+      }
+      if (encToken && !token) {
+        const secret = env.JWT_SECRET || 'briefcase-local-secret';
+        const dec = await decryptSecret(encToken, secret);
+        if (dec) token = dec;
+      }
+    } catch {}
+  }
+
+  // 3. Check system_settings in D1 as global fallback
+  if (!remoteUrl && env?.DB) {
     try {
       const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
         .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
@@ -87,7 +112,7 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
         if (r.key === 'git_branch' && r.value) branch = r.value;
         if (r.key === 'git_token_enc' && r.value) encToken = r.value;
       }
-      if (encToken) {
+      if (encToken && !token) {
         const secret = env.JWT_SECRET || 'briefcase-local-secret';
         const dec = await decryptSecret(encToken, secret);
         if (dec) token = dec;
@@ -130,6 +155,19 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     contentPath: monorepo.contentPath,
     gitTopLevel: monorepo.gitTopLevel,
   };
+}
+
+export async function getSiteContext(c: any, db: any) {
+  const activeSite = (c.get('siteId') as string) || (await resolveSiteId(c));
+  let availableSites: string[] = [activeSite];
+  try {
+    const sites = await listSites(db);
+    availableSites = sites.map((s) => s.site_id);
+    if (!availableSites.includes(activeSite)) {
+      availableSites.unshift(activeSite);
+    }
+  } catch {}
+  return { activeSite, availableSites };
 }
 
 export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
@@ -301,7 +339,9 @@ adminRouter.get('/logout', (c) => {
 adminRouter.get('/home', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const repoInfo = await resolveDeploymentRepo(c.env);
+  const siteContext = await getSiteContext(c, db);
+  const siteId = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, siteId);
 
   let docCount = 0;
   let publishedCount = 0;
@@ -314,7 +354,12 @@ adminRouter.get('/home', async (c) => {
   let recentActivity: any[] = [];
 
   try {
-    const docRows = await db.selectFrom('documents').select(['collection', 'status', db.fn.count('id').as('count')]).groupBy(['collection', 'status']).execute();
+    const docRows = await db
+      .selectFrom('documents')
+      .where('site_id', '=', siteId)
+      .select(['collection', 'status', db.fn.count('id').as('count')])
+      .groupBy(['collection', 'status'])
+      .execute();
     const cols = new Set<string>();
     docRows.forEach((r: any) => {
       const count = Number(r.count) || 0;
@@ -327,7 +372,11 @@ adminRouter.get('/home', async (c) => {
   } catch {}
 
   try {
-    const mediaRows = await db.selectFrom('media').select([db.fn.count('id').as('count'), db.fn.sum('size').as('total_size')]).executeTakeFirst();
+    const mediaRows = await db
+      .selectFrom('media')
+      .where('site_id', '=', siteId)
+      .select([db.fn.count('id').as('count'), db.fn.sum('size').as('total_size')])
+      .executeTakeFirst();
     mediaCount = Number(mediaRows?.count) || 0;
     mediaSizeBytes = Number(mediaRows?.total_size) || 0;
   } catch {}
@@ -346,7 +395,13 @@ adminRouter.get('/home', async (c) => {
   } catch {}
 
   try {
-    recentActivity = await db.selectFrom('activity_log').selectAll().orderBy('timestamp', 'desc').limit(5).execute();
+    recentActivity = await db
+      .selectFrom('activity_log')
+      .where('site_id', '=', siteId)
+      .selectAll()
+      .orderBy('timestamp', 'desc')
+      .limit(5)
+      .execute();
   } catch {}
 
   return c.html(
@@ -363,7 +418,8 @@ adminRouter.get('/home', async (c) => {
         tagCount,
         recentActivity,
       },
-      user
+      user,
+      siteContext
     )
   );
 });
@@ -383,10 +439,12 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
 
   let targetCollection = queryCol || '';
   let doc: any = null;
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
   if (targetCollection && !isNew) {
     doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', targetCollection)
       .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
@@ -396,6 +454,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   if (!doc && !isNew) {
     doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
       .executeTakeFirst();
@@ -409,6 +468,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
     targetCollection = targetCollection || 'pages';
     doc = {
       id: idOrSlug === '+' || idOrSlug === 'new' ? crypto.randomUUID() : idOrSlug,
+      site_id: siteId,
       collection: targetCollection,
       slug: isNew ? '' : idOrSlug,
       title: isNew ? '' : idOrSlug,
@@ -440,6 +500,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
 adminRouter.get('/', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
   // 1. Fetch registered collections with metadata
   let collectionsList: any[] = [];
@@ -451,11 +512,12 @@ adminRouter.get('/', async (c) => {
       .execute();
   } catch {}
 
-  // 2. Count active documents per collection
+  // 2. Count active documents per collection scoped to siteId
   let countsMap: Record<string, number> = {};
   try {
     const countRows = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .select(['collection', db.fn.count('id').as('count')])
       .groupBy('collection')
       .execute();
@@ -596,6 +658,8 @@ adminRouter.get('/content/:collection', async (c) => {
   const sectionKey = c.req.query('sectionKey') || c.req.query('galleryKey');
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const siteId = siteContext.activeSite;
 
   const fields = await introspectCollectionFields(db, collection);
   const orderFieldDef = fields.find(
@@ -610,6 +674,7 @@ adminRouter.get('/content/:collection', async (c) => {
 
   const rawDocuments = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .selectAll()
     .orderBy('updated_at', 'desc')
@@ -668,18 +733,10 @@ adminRouter.get('/content/:collection', async (c) => {
   const effectiveSectionKey = (isDirectCollectionLink || !hasSectionKeyField) ? undefined : sectionKey;
   const effectivePageSlug = (isDirectCollectionLink || !hasPageSlugField) ? undefined : pageSlug;
 
-  // 1. Detect candidate scope key from query params or auto-discovery
-  const explicitScopeKey = CANDIDATE_SCOPE_KEYS.find((k) => {
-    const val = c.req.query(k);
-    if (val === undefined) return false;
-    if (k === 'sectionKey' && !effectiveSectionKey) return false;
-    if (k === 'pageSlug' && !effectivePageSlug) return false;
-    return true;
-  });
-  const scopeFilterDef = discoverScopeFilter(rawDocuments, explicitScopeKey);
+  // 1. Discover scope discriminator filter definitions across items
+  const scopeFilterDef = discoverScopeFilter(rawDocuments, sectionKey);
 
-  // 2. Determine active scope if selected in query
-  let activeScope: { key: string; value: string; label: string } | null = null;
+  let activeScope: TableViewScopeOptions['activeScope'] = null;
   if (scopeFilterDef && c.req.query(scopeFilterDef.key)) {
     const isSuppressed = (scopeFilterDef.key === 'sectionKey' && !effectiveSectionKey) ||
                          (scopeFilterDef.key === 'pageSlug' && !effectivePageSlug);
@@ -761,7 +818,8 @@ adminRouter.get('/content/:collection', async (c) => {
         activeScope,
         totalCount: rawDocuments.length,
         autoReorder,
-      }
+      },
+      siteContext
     )
   );
 });
@@ -775,6 +833,7 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
   };
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
   const items = body.items || [];
   if (!Array.isArray(items) || items.length === 0) {
@@ -789,6 +848,7 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
     if (!item.id) continue;
     const doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', collection)
       .where('id', '=', item.id)
       .select(['id', 'title', 'data', 'draft_data'])
@@ -824,12 +884,14 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
         updated_at: now,
       })
       .where('id', '=', doc.id)
+      .where('site_id', '=', siteId)
       .execute();
 
     updatedCount++;
   }
 
   await logActivity(db, {
+    siteId,
     actor: user.email,
     action: 'reorder',
     collection,
@@ -913,17 +975,19 @@ adminRouter.get('/models', async (c) => {
 adminRouter.get('/media', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   let mediaFiles: any[] = [];
   try {
     mediaFiles = await db
       .selectFrom('media')
+      .where('site_id', '=', siteContext.activeSite)
       .selectAll()
       .orderBy('created_at', 'desc')
       .execute();
   } catch {}
 
-  return c.html(renderMediaView(mediaFiles, user));
+  return c.html(renderMediaView(mediaFiles, user, siteContext));
 });
 
 // ── 8. Activity & Audit Logs (/admin/logs & /admin/activity) ──────────────────
@@ -932,11 +996,13 @@ adminRouter.get('/activity', (c) => c.redirect('/admin/logs'));
 adminRouter.get('/logs', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   let logs: any[] = [];
   try {
     logs = await db
       .selectFrom('activity_log')
+      .where('site_id', '=', siteContext.activeSite)
       .selectAll()
       .orderBy('timestamp', 'desc')
       .limit(200)
@@ -1322,6 +1388,128 @@ adminRouter.get('/docs', async (c) => {
 });
 
 adminRouter.get('/help', (c) => c.redirect('/admin/docs'));
+
+// ── 15a. Multi-Website Management (/admin/sites) ──────────────────────────────
+adminRouter.get('/sites/switch', async (c) => {
+  const targetSite = normalizeSiteId(c.req.query('site') || 'default');
+  const redirect = (c.req.query('redirect') || '/admin').trim();
+  c.header('Set-Cookie', `slottd_site=${targetSite}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return c.redirect(redirect, 302);
+});
+
+adminRouter.get('/sites', async (c) => {
+  const db = createDb(c.env.DB);
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const sites = await listSites(db);
+
+  let message = '';
+  if (c.req.query('renamed')) message = 'Website domain successfully renamed across all partitioned database tables!';
+  if (c.req.query('created')) message = 'New website successfully registered and configured!';
+  if (c.req.query('pulled')) message = 'Git content successfully pulled and hydrated into D1!';
+
+  const error = c.req.query('error') || '';
+
+  return c.html(
+    renderSitesView({
+      sites,
+      activeSite: siteContext.activeSite,
+      user,
+      message,
+      error,
+    })
+  );
+});
+
+adminRouter.post('/sites/rename', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const oldSiteId = ((body.oldSiteId as string) || '').trim();
+  const newSiteId = ((body.newSiteId as string) || '').trim();
+  const db = createDb(c.env.DB);
+
+  try {
+    await renameSite(db, oldSiteId, newSiteId);
+    // If the renamed site was the active site, update the session cookie
+    const activeSite = c.get('siteId') || (await resolveSiteId(c));
+    if (activeSite === oldSiteId.toLowerCase()) {
+      c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(newSiteId.toLowerCase())}; Path=/; Max-Age=31536000`);
+    }
+    return c.redirect('/admin/sites?renamed=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/create', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    await registerSite(db, siteId, {
+      git_remote_url: ((body.git_remote_url as string) || '').trim(),
+      git_branch: ((body.git_branch as string) || 'main').trim(),
+      content_path: ((body.content_path as string) || 'content').trim(),
+      deploy_hook: ((body.deploy_hook as string) || '').trim(),
+    });
+    return c.redirect('/admin/sites?created=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/pull', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Missing+site+ID');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    const siteSettingsRows = await db
+      .selectFrom('site_settings')
+      .where('site_id', '=', siteId)
+      .selectAll()
+      .execute();
+    const siteSettings: Record<string, string> = {};
+    for (const s of siteSettingsRows) siteSettings[s.key] = s.value;
+
+    const remoteUrl = siteSettings.git_remote_url || c.env.GIT_REMOTE_URL;
+    if (!remoteUrl) {
+      return c.redirect(`/admin/sites?error=${encodeURIComponent(`No Git remote configured for site '${siteId}'. Please edit repository settings first.`)}`);
+    }
+
+    const driver = await getGitDriver({
+      url: remoteUrl,
+      branch: siteSettings.git_branch || 'main',
+      token: siteSettings.git_token || c.env.GIT_TOKEN || c.env.GITHUB_TOKEN,
+      repoPath: siteSettings.repo_path || c.env.REPO_PATH,
+      isProduction: c.env.ENVIRONMENT === 'production',
+    });
+
+    const tags = await driver.listTags();
+    const tag = tags.slice(-1)[0] || 'HEAD';
+    const items = await driver.loadTagContent(tag);
+    await hydrateFromGit(db, items, 1, siteId);
+
+    // Sync collection views
+    const collections = new Set<string>();
+    for (const it of items) if (it.collection) collections.add(it.collection);
+    for (const col of collections) {
+      try {
+        await syncCollectionView(db, col);
+      } catch {}
+    }
+
+    return c.redirect('/admin/sites?pulled=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
 
 // ── 15b. Setup & Briefcase Operations (/admin/setup) ─────────────────────────
 adminRouter.get('/setup', async (c) => {

@@ -17,6 +17,7 @@ pub struct GitDriver {
     remote_url: Option<String>,
     branch: String,
     content_subpath: String,
+    site_id: Option<String>,
 }
 
 struct TempDirGuard(PathBuf);
@@ -34,6 +35,7 @@ impl GitDriver {
             remote_url: None,
             branch: "main".to_string(),
             content_subpath: "content".to_string(),
+            site_id: None,
         }
     }
 
@@ -49,6 +51,11 @@ impl GitDriver {
 
     pub fn with_content_subpath(mut self, subpath: String) -> Self {
         self.content_subpath = subpath;
+        self
+    }
+
+    pub fn with_site_id(mut self, site_id: Option<String>) -> Self {
+        self.site_id = site_id;
         self
     }
 
@@ -205,7 +212,7 @@ impl GitDriver {
 
         // Step 2: Export files into that location
         let target_content = temp_dir_path.join(&self.content_subpath);
-        let sync_engine = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content);
+        let sync_engine = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, self.site_id.clone());
         sync_engine.export_to_disk()
             .context("Failed to export database documents into temp release location")?;
 

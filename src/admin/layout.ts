@@ -1,14 +1,15 @@
 import { html } from 'hono/html';
 import { adminStyles } from './styles.js';
 
-export type AdminTab = 'home' | 'content' | 'media' | 'models' | 'logs' | 'activity' | 'sync' | 'git' | 'setup' | 'docs' | 'help';
+export type AdminTab = 'home' | 'content' | 'media' | 'models' | 'logs' | 'activity' | 'sync' | 'git' | 'setup' | 'docs' | 'help' | 'sites';
 
 export function renderLayout(
   title: string,
   activeTab: AdminTab,
   user: { email: string; name?: string; authMethod?: string },
   content: any,
-  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' }
+  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const tier = editorConfig?.tier || 'light';
   const format = editorConfig?.format || 'markdown';
@@ -59,12 +60,21 @@ export function renderLayout(
           <a href="/admin" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
           <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
+          <a href="/admin/sites" class="nav-tab ${activeTab === 'sites' ? 'active' : ''}">Sites</a>
           <a href="/admin/logs" class="nav-tab ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs</a>
           <a href="/admin/git" class="nav-tab ${activeTab === 'git' ? 'active' : ''}">Git</a>
           <a href="/admin/setup" class="nav-tab ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
           <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
+          ${siteContext?.activeSite ? html`
+            <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context (Single-Site Mode)">
+              <span style="font-size: 13px;">🌐</span>
+              <select onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
+                ${(siteContext.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext.activeSite]).map(s => html`<option value="${s}" ${s === siteContext.activeSite ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
+              </select>
+            </div>
+          ` : ''}
           <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
             <span style="color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
             <span>${user?.name || user?.email || 'dev@localhost'}</span>

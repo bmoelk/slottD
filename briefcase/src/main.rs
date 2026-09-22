@@ -41,6 +41,10 @@ struct Cli {
     #[arg(long, env = "SITE_DIR")]
     site_dir: Option<String>,
 
+    /// Active website ID / domain (defaults to "default")
+    #[arg(long, env = "SITE_ID", default_value = "default")]
+    site_id: String,
+
     /// Disable running the Astro website dev server
     #[arg(long, default_value_t = false)]
     no_site: bool,
@@ -245,8 +249,8 @@ fn main() -> Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             Commands::Export => {
-                println!("🚀 Exporting SlottD D1 database to: {:?}", content_path);
-                let engine = SyncEngine::new(db_path, content_path);
+                println!("🚀 Exporting SlottD D1 database (site: {}) to: {:?}", cli.site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
                 let count = engine.export_to_disk()?;
                 println!("✅ Exported {} documents successfully!", count);
             }
@@ -256,8 +260,8 @@ fn main() -> Result<()> {
                     println!("🏷️ Checking out tag '{}' in content repository...", t);
                     git.checkout_ref(t)?;
                 }
-                println!("📥 Restoring and loading SlottD D1 database from: {:?}", content_path);
-                let engine = SyncEngine::new(db_path, content_path);
+                println!("📥 Restoring and loading SlottD D1 database (site: {}) from: {:?}", cli.site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
                 let count = engine.hydrate_from_disk()?;
                 println!("🎉 Successfully restored and loaded {} documents into D1!", count);
             }
@@ -269,7 +273,8 @@ fn main() -> Result<()> {
                 let git = GitDriver::new(content_path)
                     .with_remote(cli.remote_url)
                     .with_branch(cli.branch)
-                    .with_content_subpath(cli.content_subpath);
+                    .with_content_subpath(cli.content_subpath)
+                    .with_site_id(Some(cli.site_id.clone()));
                 println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
                 let commit_sha = git.release_via_temp(&db_path, &release_tag, &message, push)?;
                 println!("✅ Successfully released! Commit SHA: {}", commit_sha);
@@ -300,6 +305,7 @@ fn main() -> Result<()> {
         cli.remote_url,
         cli.branch,
         cli.content_subpath,
+        cli.site_id,
     )
 }
 
@@ -311,6 +317,7 @@ fn run_tui(
     remote_url: Option<String>,
     branch: String,
     content_subpath: String,
+    site_id: String,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -318,11 +325,12 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let sync_engine = SyncEngine::new(db_path.clone(), content_path.clone());
+    let sync_engine = SyncEngine::new(db_path.clone(), content_path.clone(), Some(site_id.clone()));
     let git_driver = GitDriver::new(content_path.clone())
         .with_remote(remote_url)
         .with_branch(branch)
-        .with_content_subpath(content_subpath);
+        .with_content_subpath(content_subpath)
+        .with_site_id(Some(site_id.clone()));
 
     // Boot Dual Process Supervisor (CMS + Astro site)
     let mut supervisor = DualSupervisor::new(cms_path.clone(), site_path.clone());
@@ -499,7 +507,7 @@ fn run_tui(
                     ]),
                     Line::from(vec![
                         Span::styled("Content DB: ", Style::default().fg(Color::Yellow)),
-                        Span::raw(format!("{} documents ({} collections)", doc_count, col_count)),
+                        Span::raw(format!("{} documents ({} collections) | 🌐 Site: {}", doc_count, col_count, site_id)),
                         Span::raw(" | Git: "),
                         if git_status.is_dirty {
                             Span::styled(format!("⚠️ Dirty ({} uncommitted)", git_status.dirty_files.len()), Style::default().fg(Color::LightRed))

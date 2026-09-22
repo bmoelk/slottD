@@ -223,9 +223,15 @@ Connection: close\r\n\
             ),
         );
 
+        let req_site_id = parsed
+            .get("siteId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let mut git = GitDriver::new(target_repo.clone())
             .with_branch(req_branch.to_string())
-            .with_content_subpath(req_content_path.to_string());
+            .with_content_subpath(req_content_path.to_string())
+            .with_site_id(req_site_id);
         if req_url.is_some() {
             git = git.with_remote(req_url);
         }

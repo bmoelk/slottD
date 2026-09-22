@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/client.js';
 import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
+import { resolveSiteId } from '../auth/site.js';
 import { logActivity } from '../db/audit.js';
 import type { Env } from '../types.js';
 
@@ -34,6 +35,7 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
     return c.json({ error: 'No file provided in form field "file"' }, 400);
   }
 
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const id = crypto.randomUUID();
   const originalName = file.name || 'unnamed-file';
   const { base, ext, key: initialKey } = sanitizeFilename(originalName);
@@ -43,28 +45,30 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
 
   const db = createDb(c.env.DB);
 
-  // Check for existing key collision in D1 to guarantee descriptive uniqueness
+  // Check for existing key collision in D1 for this site
   let key = initialKey;
   const existing = await db
     .selectFrom('media')
+    .where('site_id', '=', siteId)
     .where('key', '=', key)
     .select('id')
     .executeTakeFirst();
 
   if (existing) {
-    // Append timestamp suffix to avoid overwriting distinct media with same name
     const suffix = Date.now().toString(36).slice(-4);
     key = `${base}-${suffix}.${ext}`;
   }
 
-  // 1. Upload to Cloudflare R2 Bucket using descriptive key
+  // 1. Upload to Cloudflare R2 Bucket using descriptive key namespaced by site
+  const r2StorageKey = siteId !== 'default' ? `${siteId}/${key}` : key;
   const fileBuffer = await file.arrayBuffer();
-  await c.env.MEDIA.put(key, fileBuffer, {
+  await c.env.MEDIA.put(r2StorageKey, fileBuffer, {
     httpMetadata: {
       contentType: mimeType,
     },
     customMetadata: {
       id,
+      siteId,
       originalName,
       uploadedAt: String(now),
     },
@@ -75,6 +79,7 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
     .insertInto('media')
     .values({
       id,
+      site_id: siteId,
       key,
       filename: originalName,
       mime_type: mimeType,
@@ -83,10 +88,21 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
     })
     .execute();
 
+  await logActivity(db, {
+    siteId,
+    actor: (await getAuthenticatedUser(c))?.email || 'admin@localhost',
+    action: 'upload_file',
+    collection: 'media',
+    documentId: id,
+    documentTitle: originalName,
+    details: { key, r2StorageKey, siteId },
+  });
+
   return c.json(
     {
       data: {
         id,
+        site_id: siteId,
         storage: 'r2',
         filename_disk: key,
         filename_download: originalName,
@@ -106,10 +122,12 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
 
 // 2. Query File Metadata or List (Directus compatible GET /files or GET /files/:idOrKey)
 filesRouter.get('/', async (c) => {
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
-  const rows = await db.selectFrom('media').selectAll().execute();
+  const rows = await db.selectFrom('media').where('site_id', '=', siteId).selectAll().execute();
   const data = rows.map((r) => ({
     id: r.id,
+    site_id: r.site_id,
     storage: 'r2',
     filename_disk: r.key,
     filename_download: r.filename,
@@ -126,21 +144,24 @@ filesRouter.get('/', async (c) => {
 // 3. Stream/Serve File or Return Metadata by UUID or Descriptive Key
 filesRouter.get('/:idOrKey', async (c) => {
   const idOrKey = c.req.param('idOrKey');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
 
-  // 1. Lookup in D1 by UUID or descriptive storage key
+  // 1. Lookup in D1 by UUID or descriptive storage key strictly for active site
   const mediaRecord = await db
     .selectFrom('media')
+    .where('site_id', '=', siteId)
     .where((eb) => eb.or([eb('id', '=', idOrKey), eb('key', '=', idOrKey)]))
     .selectAll()
     .executeTakeFirst();
 
-  // If client requests JSON metadata (e.g. Directus SDK readItem('directus_files', id))
+  // If client requests JSON metadata
   const wantsJson = c.req.query('meta') === 'true' || c.req.header('Accept')?.includes('application/json');
   if (wantsJson && mediaRecord) {
     return c.json({
       data: {
         id: mediaRecord.id,
+        site_id: mediaRecord.site_id,
         storage: 'r2',
         filename_disk: mediaRecord.key,
         filename_download: mediaRecord.filename,
@@ -154,29 +175,19 @@ filesRouter.get('/:idOrKey', async (c) => {
     });
   }
 
-  // 2. Resolve R2 key: use mapped key from D1 record or fallback to direct key
+  // 2. Resolve R2 key: try site-prefixed key first, then raw key
   const r2Key = mediaRecord ? mediaRecord.key : idOrKey;
-  let object = c.env.MEDIA ? await c.env.MEDIA.get(r2Key) : null;
+  let object = null;
+  if (c.env.MEDIA) {
+    if (siteId !== 'default') {
+      object = await c.env.MEDIA.get(`${siteId}/${r2Key}`);
+    }
+    if (!object) {
+      object = await c.env.MEDIA.get(r2Key);
+    }
+  }
 
   if (!object) {
-    // Fallback to remote Cloudflare R2 bucket for local development
-    const remoteUrl = c.env.REMOTE_MEDIA_URL || 'https://cms.brainendeavor.com/media';
-    try {
-      const res = await fetch(`${remoteUrl}/${encodeURIComponent(r2Key)}`);
-      if (res.ok) {
-        const body = await res.arrayBuffer();
-        if (c.env.MEDIA) {
-          c.executionCtx?.waitUntil?.(
-            c.env.MEDIA.put(r2Key, body, {
-              httpMetadata: { contentType: res.headers.get('content-type') || mediaRecord?.mime_type || 'image/jpeg' },
-            }).catch(() => {})
-          );
-        }
-        const headers = new Headers(res.headers);
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(body, { headers });
-      }
-    } catch {}
     return c.text('File not found', 404);
   }
 
@@ -196,28 +207,33 @@ filesRouter.get('/:idOrKey', async (c) => {
 // 4. Delete File
 filesRouter.delete('/:idOrKey', async (c) => {
   const idOrKey = c.req.param('idOrKey');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
 
   const mediaRecord = await db
     .selectFrom('media')
+    .where('site_id', '=', siteId)
     .where((eb) => eb.or([eb('id', '=', idOrKey), eb('key', '=', idOrKey)]))
     .selectAll()
     .executeTakeFirst();
 
   if (mediaRecord) {
-    await db.deleteFrom('media').where('id', '=', mediaRecord.id).execute();
+    await db.deleteFrom('media').where('id', '=', mediaRecord.id).where('site_id', '=', siteId).execute();
     if (c.env.MEDIA) {
+      const siteR2Key = siteId !== 'default' ? `${siteId}/${mediaRecord.key}` : mediaRecord.key;
+      await c.env.MEDIA.delete(siteR2Key).catch(() => {});
       await c.env.MEDIA.delete(mediaRecord.key).catch(() => {});
     }
 
     const user = await getAuthenticatedUser(c);
     await logActivity(db, {
+      siteId,
       actor: user?.email || 'admin@localhost',
       action: 'delete',
       collection: 'media',
       documentId: mediaRecord.id,
       documentTitle: mediaRecord.filename,
-      details: { key: mediaRecord.key },
+      details: { key: mediaRecord.key, siteId },
     });
   }
 

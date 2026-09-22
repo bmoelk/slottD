@@ -5,6 +5,7 @@ import { assertSchemaVersion } from '../api/views.js';
 
 export interface GitContentItem {
   id?: string;
+  siteId?: string;
   collection: string;
   slug: string;
   title: string;
@@ -23,16 +24,19 @@ export interface SerializedGitFile {
 
 /**
  * Hydrates / restores the D1 database from an array of Git content items.
+ * Scoped strictly to siteId to enforce multi-site database isolation.
  * Enforces Rule 5 Fail-Fast version validation.
  */
 export async function hydrateFromGit(
   db: Kysely<Database>,
   items: GitContentItem[],
-  supportedVersion: number = 1
+  supportedVersion: number = 1,
+  siteId: string = 'default'
 ): Promise<{ inserted: number; updated: number }> {
   let inserted = 0;
   let updated = 0;
   const now = Date.now();
+  const cleanSiteId = (siteId || 'default').toLowerCase().trim();
 
   for (const item of items) {
     const docVersion = item.schemaVersion || 1;
@@ -42,6 +46,7 @@ export async function hydrateFromGit(
     const existing = await db
       .selectFrom('documents')
       .select(['id'])
+      .where('site_id', '=', cleanSiteId)
       .where('collection', '=', item.collection)
       .where('slug', '=', item.slug)
       .executeTakeFirst();
@@ -83,6 +88,7 @@ export async function hydrateFromGit(
         .insertInto('documents')
         .values({
           id: targetId,
+          site_id: cleanSiteId,
           collection: item.collection,
           slug: item.slug,
           title: item.title,
@@ -103,12 +109,17 @@ export async function hydrateFromGit(
 
 /**
  * Exports records from D1 into serialized format suitable for writing to Git files.
+ * Can be optionally filtered by siteId and collection.
  */
 export async function exportToGitFormat(
   db: Kysely<Database>,
-  collection?: string
+  collection?: string,
+  siteId?: string
 ): Promise<GitContentItem[]> {
   let query = db.selectFrom('documents').selectAll();
+  if (siteId) {
+    query = query.where('site_id', '=', siteId.toLowerCase().trim());
+  }
   if (collection) {
     query = query.where('collection', '=', collection);
   }
@@ -122,6 +133,7 @@ export async function exportToGitFormat(
 
     return {
       id: r.id,
+      siteId: r.site_id,
       collection: r.collection,
       slug: r.slug,
       title: r.title,

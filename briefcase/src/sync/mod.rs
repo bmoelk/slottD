@@ -18,27 +18,37 @@ pub struct ExportedMeta {
     pub created_at: i64,
     pub updated_at: i64,
     pub data: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
 }
 
 pub struct SyncEngine {
     db_path: PathBuf,
     content_dir: PathBuf,
+    site_id: String,
 }
 
 impl SyncEngine {
-    pub fn new(db_path: PathBuf, content_dir: PathBuf) -> Self {
+    pub fn new(db_path: PathBuf, content_dir: PathBuf, site_id: Option<String>) -> Self {
         Self {
             db_path,
             content_dir,
+            site_id: site_id.unwrap_or_else(|| "default".to_string()),
         }
     }
 
-    /// Exports all documents from SQLite into flat JSON and Markdown files.
+    /// Exports documents from SQLite into flat JSON and Markdown files.
     pub fn export_to_disk(&self) -> Result<usize> {
         let db = D1Database::open_readonly(self.db_path.to_str().unwrap())
             .context("Failed to open local database for export")?;
 
-        let docs = db.list_documents()
+        let filter_site = if self.site_id == "all" {
+            None
+        } else {
+            Some(self.site_id.as_str())
+        };
+
+        let docs = db.list_documents(filter_site)
             .context("Failed to query documents from database")?;
 
         // Safety guard: NEVER export into a CMS or project root directory!
@@ -109,6 +119,7 @@ impl SyncEngine {
                 created_at: doc.created_at,
                 updated_at: doc.updated_at,
                 data: custom_data,
+                site_id: if doc.site_id != "default" { Some(doc.site_id) } else { None },
             };
 
             let json_path = col_dir.join(format!("{}.json", doc.slug));
@@ -157,8 +168,11 @@ impl SyncEngine {
                             }
                         }
 
+                        let effective_site = meta.site_id.unwrap_or_else(|| self.site_id.clone());
+
                         let doc_record = DocumentRecord {
                             id: meta.id,
+                            site_id: effective_site,
                             collection: meta.collection,
                             slug: meta.slug,
                             title: meta.title,
