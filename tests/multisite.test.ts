@@ -241,7 +241,7 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(html).toContain('/admin/logout');
       expect(html).toContain('nav-dropdown-menu-right');
       expect(html).toContain('data-site-favicon="alpha.dev"');
-      expect(html).toContain('https://alpha.dev/favicon.ico');
+      expect(html).toContain('https://alpha.dev/favicon.svg');
       expect(html).toContain('Git Remote:');
       expect(html).toContain('Local Clone Path:');
       expect(html).toContain('Atomic Domain Rename');

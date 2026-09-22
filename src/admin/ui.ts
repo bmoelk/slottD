@@ -32,7 +32,7 @@ export function renderInfoBubble(
 export function renderFavicon(siteId: string, size = 16, cachedFavicon?: string) {
   const enc = encodeURIComponent(siteId || '');
   const cleanId = (siteId || '').trim().toLowerCase();
-  const src = cachedFavicon || (cleanId && cleanId !== 'default' ? `https://${cleanId}/favicon.ico` : '');
+  const src = cachedFavicon || (cleanId && cleanId !== 'default' ? `https://${cleanId}/favicon.svg` : '');
 
   if (!src) {
     return html`<span style="font-size: ${size}px; line-height: 1; vertical-align: middle;">🌐</span>`;
@@ -46,6 +46,6 @@ export function renderFavicon(siteId: string, size = 16, cachedFavicon?: string)
     height="${size}"
     loading="lazy"
     style="width: ${size}px; height: ${size}px; border-radius: 3px; object-fit: contain; vertical-align: middle; flex-shrink: 0;"
-    onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-block';"
+    onerror="if(!this.dataset.triedIco){this.dataset.triedIco='1';this.src='https://${cleanId}/favicon.ico';}else{this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='inline-block';}"
   /><span style="display: none; font-size: ${size}px; line-height: 1; vertical-align: middle;">🌐</span>`;
 }

@@ -202,9 +202,10 @@ export async function fetchSiteFavicon(siteId: string): Promise<string | null> {
   }
 
   const urlsToTry = [
+    `https://${domain}/favicon.svg`,
     `https://${domain}/favicon.ico`,
     `https://${domain}/favicon.png`,
-    `https://${domain}/favicon.svg`,
+    `http://${domain}/favicon.svg`,
     `http://${domain}/favicon.ico`,
   ];
 
@@ -216,16 +217,23 @@ export async function fetchSiteFavicon(siteId: string): Promise<string | null> {
         signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; SlottD-Studio/1.0; +https://slottd.io)',
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Accept': 'image/svg+xml,image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
         },
         redirect: 'follow',
       });
       clearTimeout(timeoutId);
 
       if (res.ok) {
-        const contentType = res.headers.get('content-type') || 'image/x-icon';
-        if (contentType.startsWith('text/') || contentType.includes('html')) {
+        const contentType = (res.headers.get('content-type') || '').toLowerCase();
+        let mime = contentType.split(';')[0].trim();
+        if (url.endsWith('.svg') || mime.includes('svg')) {
+          mime = 'image/svg+xml';
+        }
+        if (mime.includes('html') || (mime.startsWith('text/') && !mime.includes('xml'))) {
           continue;
+        }
+        if (!mime) {
+          mime = url.endsWith('.svg') ? 'image/svg+xml' : 'image/x-icon';
         }
         const buffer = await res.arrayBuffer();
         if (buffer.byteLength > 0 && buffer.byteLength < 256 * 1024) {
@@ -235,7 +243,6 @@ export async function fetchSiteFavicon(siteId: string): Promise<string | null> {
             binary += String.fromCharCode(bytes[i]);
           }
           const base64 = btoa(binary);
-          const mime = contentType.split(';')[0].trim() || 'image/x-icon';
           return `data:${mime};base64,${base64}`;
         }
       }
