@@ -22,3 +22,19 @@ export function renderInfoBubble(
     </span>
   `;
 }
+
+/**
+ * Renders site favicon with automatic fallback to globe emoji
+ */
+export function renderFavicon(siteId: string, size = 16) {
+  const enc = encodeURIComponent(siteId || '');
+  return html`<img
+    src="https://www.google.com/s2/favicons?domain=${enc}&sz=${size * 2}"
+    alt=""
+    width="${size}"
+    height="${size}"
+    loading="lazy"
+    style="width: ${size}px; height: ${size}px; border-radius: 3px; object-fit: contain; vertical-align: middle; flex-shrink: 0;"
+    onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-block';"
+  /><span style="display: none; font-size: ${size}px; line-height: 1;">🌐</span>`;
+}

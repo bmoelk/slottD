@@ -1,6 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
-import { renderInfoBubble } from '../ui.js';
+import { renderInfoBubble, renderFavicon } from '../ui.js';
 
 export interface GitViewData {
   environment: string;
@@ -339,7 +339,10 @@ export function renderGitView(
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
         <div>
           <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Active Site</span>
-          <span style="font-weight: 700; color: #38bdf8; font-size: 14px;">🌐 ${activeSite}</span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #38bdf8; font-size: 14px;">
+            ${renderFavicon(activeSite, 16)}
+            <span>${activeSite}</span>
+          </span>
         </div>
         <div>
           <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Database Records</span>

@@ -1,6 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
-import { renderInfoBubble } from '../ui.js';
+import { renderInfoBubble, renderFavicon } from '../ui.js';
 import type { SiteInfo } from '../sites.js';
 
 export interface SitesViewProps {
@@ -73,7 +73,10 @@ export function renderSitesView({
           <div>
             <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; font-weight: 600;">Current Studio Context</span>
             <div style="font-size: 22px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px; margin-top: 2px;">
-              <span>🌐 ${activeSite}</span>
+              <span style="display: inline-flex; align-items: center; gap: 8px;">
+                ${renderFavicon(activeSite, 22)}
+                <span>${activeSite}</span>
+              </span>
               <span style="font-size: 11px; background: rgba(56,189,248,0.15); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-weight: 500;">Active Partition</span>
             </div>
             <p style="font-size: 12px; color: #64748b; margin: 4px 0 0 0;">
@@ -164,8 +167,9 @@ export function renderSitesView({
             <div class="card" style="padding: 20px; border: 1px solid ${isActive ? '#38bdf8' : 'rgba(255,255,255,0.08)'}; background: #131d2e;">
               <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px;">
                 <div>
-                  <div style="font-size: 16px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 6px;">
-                    🌐 ${site.site_id}
+                  <div style="font-size: 16px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
+                    ${renderFavicon(site.site_id, 18)}
+                    <span>${site.site_id}</span>
                     ${isActive ? html`<span style="font-size: 10px; background: #38bdf8; color: #0284c7; padding: 1px 6px; border-radius: 10px; font-weight: 700; color: #0f172a;">ACTIVE</span>` : ''}
                   </div>
                   <div style="font-size: 11px; color: #64748b; margin-top: 2px;">Updated: ${updatedDate}</div>
@@ -181,32 +185,74 @@ export function renderSitesView({
                 ` : ''}
               </div>
 
-              <div style="font-size: 12px; color: #94a3b8; display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; background: #0b1120; padding: 10px; border-radius: 6px;">
-                <div style="display: flex; justify-content: space-between;">
-                  <span style="color: #64748b;">Git Remote:</span>
-                  <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${site.git_remote_url || 'Not configured'}">
-                    ${site.git_remote_url || '—'}
-                  </span>
+              <div style="font-size: 12px; color: #94a3b8; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; background: #0b1120; padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                <div>
+                  <div style="color: #64748b; font-size: 11px; margin-bottom: 3px; font-weight: 500;">Git Remote:</div>
+                  ${site.git_remote_url ? html`
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                      <input
+                        type="text"
+                        readonly
+                        value="${site.git_remote_url}"
+                        onclick="this.select()"
+                        style="flex: 1; min-width: 0; background: #090d16; border: 1px solid #1e293b; color: #cbd5e1; font-family: monospace; font-size: 11px; padding: 5px 8px; border-radius: 4px; outline: none;"
+                        title="${site.git_remote_url}"
+                      />
+                      <button
+                        type="button"
+                        class="btn-copy"
+                        onclick="navigator.clipboard.writeText('${site.git_remote_url}'); const b=this; b.textContent='✓'; setTimeout(()=>b.textContent='Copy', 1500);"
+                        style="height: 26px; padding: 0 10px; font-size: 11px; flex-shrink: 0;"
+                        title="Copy Git Remote URL"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  ` : html`
+                    <div style="font-family: monospace; font-size: 11px; color: #64748b;">— Not configured</div>
+                  `}
                 </div>
-                <div style="display: flex; justify-content: space-between;">
+
+                <div>
+                  <div style="color: #64748b; font-size: 11px; margin-bottom: 3px; font-weight: 500;">Local Clone Path:</div>
+                  ${site.repo_path ? html`
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                      <input
+                        type="text"
+                        readonly
+                        value="${site.repo_path}"
+                        onclick="this.select()"
+                        style="flex: 1; min-width: 0; background: #090d16; border: 1px solid #1e293b; color: #38bdf8; font-family: monospace; font-size: 11px; padding: 5px 8px; border-radius: 4px; outline: none;"
+                        title="${site.repo_path}"
+                      />
+                      <button
+                        type="button"
+                        class="btn-copy"
+                        onclick="navigator.clipboard.writeText('${site.repo_path}'); const b=this; b.textContent='✓'; setTimeout(()=>b.textContent='Copy', 1500);"
+                        style="height: 26px; padding: 0 10px; font-size: 11px; flex-shrink: 0;"
+                        title="Copy Local Clone Path"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  ` : html`
+                    <div style="font-size: 11px; color: #94a3b8; font-style: italic;">Temp Location Mode (Ephemeral)</div>
+                  `}
+                </div>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06);">
                   <span style="color: #64748b;">Git Token:</span>
-                  <span style="color: ${site.has_token ? '#34d399' : '#64748b'};">
+                  <span style="color: ${site.has_token ? '#34d399' : '#64748b'}; font-size: 11px;">
                     ${site.has_token ? '●●●●●●● (Encrypted)' : '— Not set'}
                   </span>
                 </div>
-                <div style="display: flex; justify-content: space-between;">
-                  <span style="color: #64748b;">Local Clone:</span>
-                  <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: ${site.repo_path ? '#38bdf8' : '#94a3b8'};" title="${site.repo_path || 'Temp Location Mode'}">
-                    ${site.repo_path ? site.repo_path : 'Temp Location Mode'}
-                  </span>
-                </div>
-                <div style="display: flex; justify-content: space-between;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="color: #64748b;">Branch / Path:</span>
-                  <span style="font-family: monospace;">${site.git_branch || 'main'} / ${site.content_path ? site.content_path : 'root (/)'}</span>
+                  <span style="font-family: monospace; font-size: 11px;">${site.git_branch || 'main'} / ${site.content_path ? site.content_path : 'root (/)'}</span>
                 </div>
-                <div style="display: flex; justify-content: space-between;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="color: #64748b;">Deploy Hook:</span>
-                  <span>${site.deploy_hook ? '✓ Configured' : '—'}</span>
+                  <span style="font-size: 11px;">${site.deploy_hook ? '✓ Configured' : '—'}</span>
                 </div>
               </div>
 
