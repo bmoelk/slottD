@@ -70,17 +70,16 @@ export function renderLayout(
           <a href="/admin/content" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
           <a href="/admin/git" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
-          <div class="nav-dropdown" x-data="{ open: false }" @click.outside="open = false">
+          <div class="nav-dropdown">
             <button
               type="button"
               class="nav-tab ${isSystemActive ? 'active' : ''}"
-              @click="open = !open"
               style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer; background: ${isSystemActive ? 'var(--accent)' : 'transparent'}; border: none; font-family: inherit; font-size: 13px;"
             >
               <span>System</span>
               <span style="font-size: 9px; opacity: 0.7;">▼</span>
             </button>
-            <div class="nav-dropdown-menu" :style="open ? 'display: flex;' : ''">
+            <div class="nav-dropdown-menu">
               <a href="/admin/models" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">Models</a>
               <a href="/admin/logs" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs & Activity</a>
               <a href="/admin/setup" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
@@ -88,15 +87,22 @@ export function renderLayout(
           </div>
           <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
-        <div style="display: flex; align-items: center; gap: 6px;">
+        <div class="nav-dropdown">
           <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
             <span style="font-size: 8px; color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
             <span style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${user?.name || user?.email || 'dev@localhost'}</span>
             ${user?.authMethod === 'local-briefcase' ? html`<span style="font-size: 9px; color: #38bdf8; font-weight: 700;">[Briefcase]</span>` : ''}
+            <span style="font-size: 9px; opacity: 0.7; margin-left: 2px;">▼</span>
           </div>
-          <a href="/admin/logout" class="btn btn-secondary" style="font-size: 11px; padding: 4px 6px; text-decoration: none; color: #94a3b8; display: inline-flex; align-items: center; border-color: rgba(255,255,255,0.12); line-height: 1;" title="Lock Session & Sign Out">
-            <span style="font-size: 11px;">🔒</span>
-          </a>
+          <div class="nav-dropdown-menu nav-dropdown-menu-right" style="min-width: 190px;">
+            <div style="padding: 8px 12px; font-size: 11px; border-bottom: 1px solid #1e293b; margin-bottom: 4px;">
+              <div style="font-weight: 600; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${user?.name || 'Operator'}</div>
+              <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; font-size: 10px; margin-top: 2px;">${user?.email || 'dev@localhost'}</div>
+            </div>
+            <a href="/admin/logout" class="nav-dropdown-item danger">
+              Sign Out
+            </a>
+          </div>
         </div>
       </div>
       ${content}

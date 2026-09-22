@@ -366,20 +366,20 @@ export function renderGitView(
     <div x-data="{ gitTab: 'export' }" style="margin-bottom: 24px;">
       
       <!-- Tab Navigation -->
-      <div style="display: flex; gap: 6px; border-bottom: 2px solid #1e293b; margin-bottom: 24px;">
+      <div class="git-tab-bar">
         <button
           type="button"
+          class="git-tab-btn"
+          :class="gitTab === 'export' ? 'active' : ''"
           @click="gitTab = 'export'"
-          :style="gitTab === 'export' ? 'background: #0f172a; color: #f8fafc; border-color: #38bdf8 #1e293b #0f172a #1e293b; border-bottom-color: #0f172a; margin-bottom: -2px; font-weight: 700;' : 'background: rgba(15, 23, 42, 0.4); color: #94a3b8; border-color: transparent; font-weight: 500;'"
-          style="padding: 12px 28px; font-size: 14px; border-radius: 8px 8px 0 0; border-width: 2px 1px 1px 1px; border-style: solid; cursor: pointer; transition: 0.15s; outline: none;"
         >
           Export & Releases
         </button>
         <button
           type="button"
+          class="git-tab-btn"
+          :class="gitTab === 'import' ? 'active' : ''"
           @click="gitTab = 'import'"
-          :style="gitTab === 'import' ? 'background: #0f172a; color: #f8fafc; border-color: #38bdf8 #1e293b #0f172a #1e293b; border-bottom-color: #0f172a; margin-bottom: -2px; font-weight: 700;' : 'background: rgba(15, 23, 42, 0.4); color: #94a3b8; border-color: transparent; font-weight: 500;'"
-          style="padding: 12px 28px; font-size: 14px; border-radius: 8px 8px 0 0; border-width: 2px 1px 1px 1px; border-style: solid; cursor: pointer; transition: 0.15s; outline: none;"
         >
           Import & Restore
         </button>

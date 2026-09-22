@@ -237,6 +237,9 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(html).toContain('alpha.dev');
       expect(html).toContain('/admin/sites');
       expect(html).toContain('System');
+      expect(html).toContain('Sign Out');
+      expect(html).toContain('/admin/logout');
+      expect(html).toContain('nav-dropdown-menu-right');
       expect(html).toContain('Atomic Domain Rename');
       expect(html).toContain('Delete / Unregister Site');
     });
@@ -251,6 +254,8 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
 
       expect(res.status).toBe(200);
       const html = await res.text();
+      expect(html).toContain('git-tab-bar');
+      expect(html).toContain('git-tab-btn');
       expect(html).toContain('Export & Releases');
       expect(html).toContain('Import & Restore');
       expect(html).toContain('Fetch Remote Tags');

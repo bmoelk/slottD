@@ -28,7 +28,7 @@ export const adminStyles = `
     display: none;
     position: absolute;
     top: 100%;
-    right: 0;
+    left: 0;
     min-width: 160px;
     background: #0f172a;
     border: 1px solid #1e293b;
@@ -37,6 +37,10 @@ export const adminStyles = `
     padding: 6px;
     z-index: 1000;
     margin-top: 2px;
+  }
+  .nav-dropdown-menu.nav-dropdown-menu-right {
+    left: auto;
+    right: 0;
   }
   .nav-dropdown-menu::before {
     content: '';
@@ -74,7 +78,70 @@ export const adminStyles = `
     background: rgba(255, 138, 0, 0.12);
     font-weight: 600;
   }
-  .user-badge { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); background: #1e293b; padding: 3px 8px; border-radius: 99px; }
+  .nav-dropdown-item.danger,
+  .nav-dropdown-item-danger {
+    color: #f87171;
+  }
+  .nav-dropdown-item.danger:hover,
+  .nav-dropdown-item-danger:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.12);
+  }
+  .user-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: #1e293b;
+    padding: 5px 10px;
+    border-radius: 99px;
+    cursor: pointer;
+    transition: 0.15s;
+    user-select: none;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .user-badge:hover {
+    background: #334155;
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+  .git-tab-bar {
+    display: flex;
+    gap: 8px;
+    border-bottom: 2px solid #334155;
+    margin-bottom: 24px;
+    align-items: flex-end;
+  }
+  .git-tab-btn {
+    padding: 14px 32px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 8px 8px 0 0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    outline: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid #334155;
+    background: #1e293b;
+    color: #94a3b8;
+  }
+  .git-tab-btn:hover {
+    color: #ffffff;
+    background: #334155;
+    border-color: #475569;
+  }
+  .git-tab-btn.active {
+    background: #0f172a;
+    color: #38bdf8;
+    border-color: #38bdf8 #334155 #0f172a #334155;
+    border-top-width: 3px;
+    border-bottom-color: #0f172a;
+    margin-bottom: -2px;
+    font-weight: 700;
+  }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
   .header-stats { display: flex; gap: 8px; }
   .stat-pill { background: #1e293b; color: var(--accent); font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 99px; border: 1px solid #334155; }
