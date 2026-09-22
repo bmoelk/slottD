@@ -5,6 +5,7 @@ import { assertSchemaVersion } from '../api/views.js';
 
 export interface GitContentItem {
   id?: string;
+  siteId?: string;
   collection: string;
   slug: string;
   title: string;
@@ -23,16 +24,19 @@ export interface SerializedGitFile {
 
 /**
  * Hydrates / restores the D1 database from an array of Git content items.
+ * Scoped strictly to siteId to enforce multi-site database isolation.
  * Enforces Rule 5 Fail-Fast version validation.
  */
 export async function hydrateFromGit(
   db: Kysely<Database>,
   items: GitContentItem[],
-  supportedVersion: number = 1
+  supportedVersion: number = 1,
+  siteId: string = 'default'
 ): Promise<{ inserted: number; updated: number }> {
   let inserted = 0;
   let updated = 0;
   const now = Date.now();
+  const cleanSiteId = (siteId || 'default').toLowerCase().trim();
 
   for (const item of items) {
     const docVersion = item.schemaVersion || 1;
@@ -42,6 +46,7 @@ export async function hydrateFromGit(
     const existing = await db
       .selectFrom('documents')
       .select(['id'])
+      .where('site_id', '=', cleanSiteId)
       .where('collection', '=', item.collection)
       .where('slug', '=', item.slug)
       .executeTakeFirst();
@@ -83,6 +88,7 @@ export async function hydrateFromGit(
         .insertInto('documents')
         .values({
           id: targetId,
+          site_id: cleanSiteId,
           collection: item.collection,
           slug: item.slug,
           title: item.title,
@@ -103,12 +109,17 @@ export async function hydrateFromGit(
 
 /**
  * Exports records from D1 into serialized format suitable for writing to Git files.
+ * Can be optionally filtered by siteId and collection.
  */
 export async function exportToGitFormat(
   db: Kysely<Database>,
-  collection?: string
+  collection?: string,
+  siteId?: string
 ): Promise<GitContentItem[]> {
   let query = db.selectFrom('documents').selectAll();
+  if (siteId) {
+    query = query.where('site_id', '=', siteId.toLowerCase().trim());
+  }
   if (collection) {
     query = query.where('collection', '=', collection);
   }
@@ -122,6 +133,7 @@ export async function exportToGitFormat(
 
     return {
       id: r.id,
+      siteId: r.site_id,
       collection: r.collection,
       slug: r.slug,
       title: r.title,
@@ -136,13 +148,53 @@ export async function exportToGitFormat(
 }
 
 /**
- * Converts GitContentItems into plain .json and narrative .md file pairs.
+ * Auto-generates a standardized README.md for dedicated or monorepo content repositories.
  */
-export function serializeToFiles(items: GitContentItem[], basePath: string = 'content'): SerializedGitFile[] {
+export function generateContentReadme(siteId: string = 'default', isMonorepo?: boolean): string {
+  const cleanSiteId = (siteId || 'default').toLowerCase().trim();
+  const repoType = isMonorepo ? 'Monorepo content directory' : 'Dedicated content repository';
+  return `# ${cleanSiteId} — Content Repository
+
+This repository stores the version-controlled content and release snapshots for **${cleanSiteId}**, powered by [SlottD CMS](https://github.com/bmoelk/slottD).
+
+## 📁 Repository Structure (${repoType})
+
+- Collections are stored as serialized companion files:
+  - \`<collection>/<slug>.json\`: Document metadata, schema version, status, and structured fields.
+  - \`<collection>/<slug>.md\`: Companion Markdown body (for documents with narrative content).
+- \`README.md\`: Architecture and workflow documentation.
+
+## 🚀 Headless Architecture & Workflows
+
+1. **SlottD Headless CMS**:
+   - Manages content authoring, SQLite D1 database persistence, and Cloudflare R2 media storage.
+   - Serves AST REST endpoints (\`/items/<collection>\`, \`/files/<idOrKey>\`) partitioned by \`site_id: ${cleanSiteId}\`.
+
+2. **Git Snapshot Releases**:
+   - Every published release snapshot creates an annotated Git tag (\`release-YYYY.MM.DD-HHMM\`).
+   - Tags can be inspected, compared, and restored at any time via the SlottD Studio Git Center.
+
+3. **Frontend Integration**:
+   - Consumed by Astro and SlotWire frontends via \`x-slottd-site: ${cleanSiteId}\`.
+`;
+}
+
+/**
+ * Converts GitContentItems into plain .json and narrative .md file pairs.
+ * Optionally includes an auto-generated README.md for the content repository.
+ */
+export function serializeToFiles(
+  items: GitContentItem[],
+  basePath: string = 'content',
+  siteId: string = 'default',
+  isMonorepo?: boolean,
+  includeReadme: boolean = true
+): SerializedGitFile[] {
   const files: SerializedGitFile[] = [];
+  const normalizedBase = basePath === '.' || basePath === '/' ? '' : basePath.replace(/^\/+|\/+$/g, '');
 
   for (const item of items) {
-    const dir = `${basePath}/${item.collection}`;
+    const dir = normalizedBase ? `${normalizedBase}/${item.collection}` : item.collection;
     const dataCopy = { ...item.data };
 
     // If narrative body/content exists, separate it to clean companion .md
@@ -172,6 +224,17 @@ export function serializeToFiles(items: GitContentItem[], basePath: string = 'co
       path: `${dir}/${item.slug}.json`,
       content: JSON.stringify(metadata, null, 2),
     });
+  }
+
+  // Include auto-generated README.md if requested and not present in collection files
+  if (includeReadme) {
+    const readmePath = normalizedBase ? `${normalizedBase}/README.md` : 'README.md';
+    if (!files.some((f) => f.path === readmePath)) {
+      files.push({
+        path: readmePath,
+        content: generateContentReadme(siteId, isMonorepo),
+      });
+    }
   }
 
   return files;

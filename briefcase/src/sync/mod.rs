@@ -18,68 +18,74 @@ pub struct ExportedMeta {
     pub created_at: i64,
     pub updated_at: i64,
     pub data: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
 }
 
 pub struct SyncEngine {
     db_path: PathBuf,
     content_dir: PathBuf,
+    site_id: String,
 }
 
 impl SyncEngine {
-    pub fn new(db_path: PathBuf, content_dir: PathBuf) -> Self {
+    pub fn new(db_path: PathBuf, content_dir: PathBuf, site_id: Option<String>) -> Self {
         Self {
             db_path,
             content_dir,
+            site_id: site_id.unwrap_or_else(|| "default".to_string()),
         }
     }
 
-    /// Exports all documents from SQLite into flat JSON and Markdown files.
+    /// Exports documents from SQLite into flat JSON and Markdown files.
     pub fn export_to_disk(&self) -> Result<usize> {
         let db = D1Database::open_readonly(self.db_path.to_str().unwrap())
             .context("Failed to open local database for export")?;
 
-        let docs = db.list_documents()
+        let filter_site = if self.site_id == "all" {
+            None
+        } else {
+            Some(self.site_id.as_str())
+        };
+
+        let docs = db.list_documents(filter_site)
             .context("Failed to query documents from database")?;
 
         // Safety guard: NEVER export into a CMS or project root directory!
         if self.content_dir.join("wrangler.toml").exists()
             || self.content_dir.join("wrangler.jsonc").exists()
             || self.content_dir.join("slottd.config.ts").exists()
+            || self.content_dir.join("pnpm-workspace.yaml").exists()
+            || self.content_dir.join("lerna.json").exists()
+            || self.content_dir.join("turbo.json").exists()
         {
             anyhow::bail!(
-                "Refusing to export into CMS directory: {:?}. Content directory must be a separate repository.",
+                "Refusing to export into CMS or monorepo root directory: {:?}. Content directory must be a separate repository or dedicated content subpath.",
                 self.content_dir
             );
         }
 
-        let protected_dirs = [
-            "node_modules", "src", "scripts", "migrations", "tests",
-            "public", "dist", "docs", "packages", "assets", "briefcase"
-        ];
+        if !self.content_dir.exists() {
+            fs::create_dir_all(&self.content_dir)
+                .context("Failed to create content directory")?;
+        }
 
-        if self.content_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&self.content_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let name = path.file_name().unwrap_or_default().to_string_lossy();
-                    if name.starts_with('.')
-                        || protected_dirs.contains(&name.as_ref())
-                        || name == "package.json"
-                        || name == "README.md"
-                        || name == ".gitignore"
-                        || name == "Cargo.toml"
-                        || name == "tsconfig.json"
-                    {
-                        continue;
-                    }
-                    if path.is_dir() {
-                        let _ = fs::remove_dir_all(&path);
+        // Safe pruning: Only clean .json and .md files inside active collection directories being exported
+        let active_collections: std::collections::HashSet<String> = docs.iter().map(|d| d.collection.clone()).collect();
+        for col in &active_collections {
+            let col_dir = self.content_dir.join(col);
+            if col_dir.exists() && col_dir.is_dir() {
+                if let Ok(entries) = fs::read_dir(&col_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                            if ext == "json" || ext == "md" {
+                                let _ = fs::remove_file(&p);
+                            }
+                        }
                     }
                 }
             }
-        } else {
-            fs::create_dir_all(&self.content_dir)
-                .context("Failed to create content directory")?;
         }
 
         let mut count = 0;
@@ -113,6 +119,7 @@ impl SyncEngine {
                 created_at: doc.created_at,
                 updated_at: doc.updated_at,
                 data: custom_data,
+                site_id: if doc.site_id != "default" { Some(doc.site_id) } else { None },
             };
 
             let json_path = col_dir.join(format!("{}.json", doc.slug));
@@ -161,8 +168,11 @@ impl SyncEngine {
                             }
                         }
 
+                        let effective_site = meta.site_id.unwrap_or_else(|| self.site_id.clone());
+
                         let doc_record = DocumentRecord {
                             id: meta.id,
+                            site_id: effective_site,
                             collection: meta.collection,
                             slug: meta.slug,
                             title: meta.title,

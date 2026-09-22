@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::git::GitDriver;
-use crate::sync::SyncEngine;
 
 pub struct BridgeServer {
     pub port: u16,
@@ -205,6 +204,9 @@ Connection: close\r\n\
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("chore(content): release snapshot {}", tag));
         let push = parsed.get("push").and_then(|v| v.as_bool()).unwrap_or(true);
+        let req_url = parsed.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("content");
         let req_repo = parsed
             .get("repoPath")
             .and_then(|v| v.as_str())
@@ -216,38 +218,30 @@ Connection: close\r\n\
             logs,
             secondary,
             format!(
-                "🔌 [Git Bridge] Release request received for tag '{}' in {:?}",
-                tag, target_repo
+                "🔌 [Git Bridge] Release request received for tag '{}' (remote: {:?}, subpath: '{}')",
+                tag, req_url, req_content_path
             ),
         );
 
-        // Step A: Export database records to disk
-        let sync_engine = SyncEngine::new(db_path.to_path_buf(), target_repo.clone());
-        let export_result = sync_engine.export_to_disk();
-        let export_count = match export_result {
-            Ok(count) => {
-                log_msg(
-                    logs,
-                    secondary,
-                    format!("📦 [Git Bridge] Exported {} documents to disk.", count),
-                );
-                count
-            }
-            Err(e) => {
-                log_msg(logs, secondary, format!("⚠️ [Git Bridge] Export notice: {}", e));
-                0
-            }
-        };
+        let req_site_id = parsed
+            .get("siteId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-        // Step B: Commit, Tag, and Push via GitDriver
-        let git = GitDriver::new(target_repo.clone());
-        match git.release(&tag, &message, push) {
+        let mut git = GitDriver::new(target_repo.clone())
+            .with_branch(req_branch.to_string())
+            .with_content_subpath(req_content_path.to_string())
+            .with_site_id(req_site_id);
+        if req_url.is_some() {
+            git = git.with_remote(req_url);
+        }
+
+        match git.release_via_temp(db_path, &tag, &message, push) {
             Ok(sha) => {
                 let success_msg =
-                    format!("Successfully created and pushed release '{}' via host Git!", tag);
+                    format!("Successfully created and pushed release '{}' via isolated temp clone!", tag);
                 let output = format!(
-                    "Database snapshot exported: {} documents.\nCreated commit: {}\nCreated tag: {}{}",
-                    export_count,
+                    "Database snapshot exported to temp clone.\nCreated commit: {}\nCreated tag: {}{}",
                     sha,
                     tag,
                     if push {
@@ -264,19 +258,20 @@ Connection: close\r\n\
                     "sha": sha,
                 });
                 send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+                return Ok(());
             }
-            Err(err) => {
-                let err_msg = format!("Git operation failed: {}", err);
+            Err(e) => {
+                let err_msg = format!("Failed to create release: {}", e);
                 log_msg(logs, secondary, format!("❌ [Git Bridge] {}", err_msg));
                 let resp = json!({
                     "success": false,
                     "error": err_msg,
-                    "output": format!("{}", err)
+                    "message": e.to_string(),
                 });
                 send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+                return Ok(());
             }
         }
-        return Ok(());
     }
 
     // 4. Fetch Remote Tags
@@ -334,6 +329,43 @@ Connection: close\r\n\
                     "success": false,
                     "error": format!("Diff failed: {}", e),
                     "output": format!("{}", e)
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // 6. Load Tag Content
+    if method == "POST" && path == "/exec/load" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let tag = parsed.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let req_url = parsed.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("content");
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+
+        let mut git = GitDriver::new(target_repo).with_content_subpath(req_content_path.to_string());
+        if req_url.is_some() {
+            git = git.with_remote(req_url);
+        }
+
+        match git.load_tag_items(tag) {
+            Ok(items) => {
+                let resp = json!({
+                    "success": true,
+                    "items": items,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Failed to load tag content: {}", e),
+                    "items": [],
                 });
                 send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
             }
@@ -467,6 +499,20 @@ mod tests {
         let body = r#"{"tag":""}"#;
         let req = format!(
             "POST /exec/diff HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/1.1 500"));
+
+        // Test POST /exec/fetch endpoint
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Failed to connect for fetch test");
+        let body = r#"{"repoPath":"/tmp"}"#;
+        let req = format!(
+            "POST /exec/fetch HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
             body
         );
