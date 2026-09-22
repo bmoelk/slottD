@@ -28,6 +28,7 @@ export * from './sync/git-sync.js';
 export * from './auth/guard.js';
 export * from './auth/site.js';
 export * from './checks/index.js';
+export * from './admin/sites.js';
 
 export * from './config.js';
 export * from './hooks/index.js';
