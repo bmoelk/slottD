@@ -41,9 +41,25 @@ struct Cli {
     #[arg(long, env = "SITE_DIR")]
     site_dir: Option<String>,
 
+    /// Active website ID / domain (defaults to "default")
+    #[arg(long, env = "SITE_ID", default_value = "default")]
+    site_id: String,
+
     /// Disable running the Astro website dev server
     #[arg(long, default_value_t = false)]
     no_site: bool,
+
+    /// Remote Git repository URL (e.g. git@github.com:owner/repo.git)
+    #[arg(short = 'r', long = "remote", env = "GIT_REMOTE_URL")]
+    remote_url: Option<String>,
+
+    /// Target Git branch
+    #[arg(short = 'b', long, env = "GIT_BRANCH", default_value = "main")]
+    branch: String,
+
+    /// Target content path within the remote repository (e.g. "content" or "subpath/content")
+    #[arg(short = 'p', long = "content-path", env = "GIT_CONTENT_PATH", default_value = "content")]
+    content_subpath: String,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -233,8 +249,8 @@ fn main() -> Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             Commands::Export => {
-                println!("🚀 Exporting SlottD D1 database to: {:?}", content_path);
-                let engine = SyncEngine::new(db_path, content_path);
+                println!("🚀 Exporting SlottD D1 database (site: {}) to: {:?}", cli.site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
                 let count = engine.export_to_disk()?;
                 println!("✅ Exported {} documents successfully!", count);
             }
@@ -244,8 +260,8 @@ fn main() -> Result<()> {
                     println!("🏷️ Checking out tag '{}' in content repository...", t);
                     git.checkout_ref(t)?;
                 }
-                println!("📥 Restoring and loading SlottD D1 database from: {:?}", content_path);
-                let engine = SyncEngine::new(db_path, content_path);
+                println!("📥 Restoring and loading SlottD D1 database (site: {}) from: {:?}", cli.site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
                 let count = engine.hydrate_from_disk()?;
                 println!("🎉 Successfully restored and loaded {} documents into D1!", count);
             }
@@ -254,13 +270,13 @@ fn main() -> Result<()> {
                     format!("release-{}", chrono::Local::now().format("%Y.%m.%d-%H%M"))
                 });
                 println!("🏷️ Creating release snapshot: {}", release_tag);
-                let engine = SyncEngine::new(db_path, content_path.clone());
-                let count = engine.export_to_disk()?;
-                println!("📦 Snapshot exported ({} documents).", count);
-
-                let git = GitDriver::new(content_path);
-                println!("🚀 Committing, tagging, and pushing via SSH...");
-                let commit_sha = git.release(&release_tag, &message, push)?;
+                let git = GitDriver::new(content_path)
+                    .with_remote(cli.remote_url)
+                    .with_branch(cli.branch)
+                    .with_content_subpath(cli.content_subpath)
+                    .with_site_id(Some(cli.site_id.clone()));
+                println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
+                let commit_sha = git.release_via_temp(&db_path, &release_tag, &message, push)?;
                 println!("✅ Successfully released! Commit SHA: {}", commit_sha);
             }
             Commands::Keyring { key, set } => {
@@ -281,7 +297,16 @@ fn main() -> Result<()> {
     }
 
     // Default: Launch Interactive TUI with Dual Process Supervision
-    run_tui(content_path, db_path, cms_path, site_path)
+    run_tui(
+        content_path,
+        db_path,
+        cms_path,
+        site_path,
+        cli.remote_url,
+        cli.branch,
+        cli.content_subpath,
+        cli.site_id,
+    )
 }
 
 fn run_tui(
@@ -289,6 +314,10 @@ fn run_tui(
     db_path: PathBuf,
     cms_path: PathBuf,
     site_path: Option<PathBuf>,
+    remote_url: Option<String>,
+    branch: String,
+    content_subpath: String,
+    site_id: String,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -296,8 +325,12 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let sync_engine = SyncEngine::new(db_path.clone(), content_path.clone());
-    let git_driver = GitDriver::new(content_path.clone());
+    let sync_engine = SyncEngine::new(db_path.clone(), content_path.clone(), Some(site_id.clone()));
+    let git_driver = GitDriver::new(content_path.clone())
+        .with_remote(remote_url)
+        .with_branch(branch)
+        .with_content_subpath(content_subpath)
+        .with_site_id(Some(site_id.clone()));
 
     // Boot Dual Process Supervisor (CMS + Astro site)
     let mut supervisor = DualSupervisor::new(cms_path.clone(), site_path.clone());
@@ -329,6 +362,8 @@ fn run_tui(
             Ok(db) => db.get_stats().unwrap_or((0, 0)),
             Err(_) => (0, 0),
         };
+
+        let (is_monorepo, _monorepo_root) = git_driver.detect_monorepo();
 
         let git_status = git_driver.status().unwrap_or_else(|_| slottd_briefcase::GitStatusInfo {
             branch: "unknown".into(),
@@ -472,7 +507,7 @@ fn run_tui(
                     ]),
                     Line::from(vec![
                         Span::styled("Content DB: ", Style::default().fg(Color::Yellow)),
-                        Span::raw(format!("{} documents ({} collections)", doc_count, col_count)),
+                        Span::raw(format!("{} documents ({} collections) | 🌐 Site: {}", doc_count, col_count, site_id)),
                         Span::raw(" | Git: "),
                         if git_status.is_dirty {
                             Span::styled(format!("⚠️ Dirty ({} uncommitted)", git_status.dirty_files.len()), Style::default().fg(Color::LightRed))
@@ -480,6 +515,11 @@ fn run_tui(
                             Span::styled("✅ Clean", Style::default().fg(Color::LightGreen))
                         },
                         Span::raw(format!(" (Branch: {})", git_status.branch)),
+                        if is_monorepo {
+                            Span::styled(" | 📁 Monorepo Scoped", Style::default().fg(Color::Magenta))
+                        } else {
+                            Span::raw("")
+                        },
                     ]),
                     Line::from(vec![
                         Span::styled("Quick Link: ", Style::default().fg(Color::Yellow)),
@@ -867,29 +907,20 @@ fn run_tui(
                     }
                     KeyCode::Char('r') => {
                         let release_tag = format!("release-{}", chrono::Local::now().format("%Y.%m.%d-%H%M"));
-                        log_message = match sync_engine.export_to_disk() {
-                            Ok(n) => {
-                                {
-                                    let mut g = git_logs.lock().unwrap();
-                                    g.push_back(format!("📦 [TUI Hotkey] Exported {} documents to disk.", n));
-                                }
-                                match git_driver.release(&release_tag, &format!("chore(content): release {}", release_tag), true) {
-                                    Ok(sha) => {
-                                        let msg = format!("🚀 Released and pushed! Commit: {} (Tag: {})", sha, release_tag);
-                                        let mut g = git_logs.lock().unwrap();
-                                        g.push_back(format!("✅ [TUI Hotkey] {}", msg));
-                                        msg
-                                    }
-                                    Err(err) => {
-                                        let msg = format!("❌ Git push error: {}", err);
-                                        let mut g = git_logs.lock().unwrap();
-                                        g.push_back(msg.clone());
-                                        msg
-                                    }
-                                }
+                        log_message = match git_driver.release_via_temp(
+                            &db_path,
+                            &release_tag,
+                            &format!("chore(content): release {}", release_tag),
+                            true,
+                        ) {
+                            Ok(sha) => {
+                                let msg = format!("🚀 Released and pushed via isolated temp clone! Commit: {} (Tag: {})", sha, release_tag);
+                                let mut g = git_logs.lock().unwrap();
+                                g.push_back(format!("✅ [TUI Hotkey] {}", msg));
+                                msg
                             }
                             Err(err) => {
-                                let msg = format!("❌ Export error: {}", err);
+                                let msg = format!("❌ Git release error: {}", err);
                                 let mut g = git_logs.lock().unwrap();
                                 g.push_back(msg.clone());
                                 msg

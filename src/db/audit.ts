@@ -28,6 +28,7 @@ export async function ensureActivityLogTable(db: Kysely<Database>): Promise<void
 }
 
 export interface LogActivityParams {
+  siteId?: string;
   actor?: string;
   action: 'create' | 'update' | 'update_draft' | 'delete' | 'release_tag' | 'hydrate' | 'version_create' | 'version_promote' | string;
   collection: string;
@@ -45,6 +46,7 @@ export async function logActivity(
     const id = crypto.randomUUID();
     const timestamp = Date.now();
     const actor = params.actor || 'admin@localhost';
+    const site_id = params.siteId || 'default';
     const detailsStr = params.details
       ? typeof params.details === 'string'
         ? params.details
@@ -55,6 +57,7 @@ export async function logActivity(
       .insertInto('activity_log')
       .values({
         id,
+        site_id,
         timestamp,
         actor,
         action: params.action,

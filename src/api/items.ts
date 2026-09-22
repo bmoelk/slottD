@@ -4,6 +4,7 @@ import { createDb } from '../db/client.js';
 import { compileDirectusQuery, parseQueryParams } from './query-compiler.js';
 import { syncCollectionView } from './views.js';
 import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
+import { resolveSiteId } from '../auth/site.js';
 import { logActivity } from '../db/audit.js';
 import { runItemHook, formatHookErrorResponse } from '../hooks/index.js';
 import type { Env, DocumentRow } from '../types.js';
@@ -98,6 +99,7 @@ async function applyVersionOverlay(
 // 1. Query items in collection (Directus AST Compatible)
 itemsRouter.get('/:collection', async (c) => {
   const collection = c.req.param('collection');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
   const url = new URL(c.req.url);
   const params = parseQueryParams(url);
@@ -129,6 +131,7 @@ itemsRouter.get('/:collection', async (c) => {
     if (version) {
       let query = db
         .selectFrom('documents')
+        .where('site_id', '=', siteId)
         .where('collection', '=', collection)
         .selectAll();
 
@@ -152,7 +155,11 @@ itemsRouter.get('/:collection', async (c) => {
 
     // Standard Directus AST view query
     let query = db.selectFrom(collection as any);
+    if (params.filter?.site_id) {
+      delete params.filter.site_id;
+    }
     query = compileDirectusQuery(query, params);
+    query = query.where('site_id', '=', siteId);
 
     const data = await query.execute();
 
@@ -167,6 +174,7 @@ itemsRouter.get('/:collection', async (c) => {
     if (err?.message?.includes('no such table') || err?.message?.includes('no such view')) {
       let query = db
         .selectFrom('documents')
+        .where('site_id', '=', siteId)
         .where('collection', '=', collection)
         .selectAll();
 
@@ -196,6 +204,7 @@ itemsRouter.get('/:collection', async (c) => {
 itemsRouter.get('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
   const url = new URL(c.req.url);
   const version = url.searchParams.get('version') || undefined;
@@ -214,6 +223,7 @@ itemsRouter.get('/:collection/:id', async (c) => {
   try {
     const row = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', collection)
       .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
@@ -238,6 +248,7 @@ itemsRouter.get('/:collection/:id', async (c) => {
 // 3. Create Item
 itemsRouter.post('/:collection', async (c) => {
   const collection = c.req.param('collection');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const body = await c.req.json();
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
@@ -252,12 +263,13 @@ itemsRouter.post('/:collection', async (c) => {
   const now = Date.now();
 
   // Extract core columns, everything else goes to JSON data
-  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...customData } = body;
+  const { id: _i, site_id: _si, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...customData } = body;
 
   const hookCtx = {
     collection,
     id,
-    data: { id, slug, title, status, ...customData },
+    siteId,
+    data: { id, site_id: siteId, slug, title, status, ...customData },
     db,
     env: c.env,
     user: user || undefined,
@@ -274,12 +286,13 @@ itemsRouter.post('/:collection', async (c) => {
   const finalSlug = finalData.slug || slug;
   const finalTitle = finalData.title || title;
   const finalStatus = isDraft ? 'draft' : (finalData.status || status);
-  const { id: _fId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
+  const { id: _fId, site_id: _fSiteId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
 
   await db
     .insertInto('documents')
     .values({
       id,
+      site_id: siteId,
       collection,
       slug: finalSlug,
       title: finalTitle,
@@ -301,6 +314,7 @@ itemsRouter.post('/:collection', async (c) => {
   }
 
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@localhost',
     action: 'create',
     collection,
@@ -315,6 +329,7 @@ itemsRouter.post('/:collection', async (c) => {
     {
       data: {
         id,
+        site_id: siteId,
         collection,
         slug: finalSlug,
         title: finalTitle,
@@ -332,6 +347,7 @@ itemsRouter.post('/:collection', async (c) => {
 // 4. Batch Update Items (Directus AST Compatible)
 itemsRouter.patch('/:collection', async (c) => {
   const collection = c.req.param('collection');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const body = await c.req.json().catch(() => null);
   const db = createDb(c.env.DB);
 
@@ -354,6 +370,7 @@ itemsRouter.patch('/:collection', async (c) => {
     if (!item.id) continue;
     const existing = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', collection)
       .where('id', '=', item.id)
       .selectAll()
@@ -366,7 +383,7 @@ itemsRouter.patch('/:collection', async (c) => {
       existingData = JSON.parse(existing.data || '{}');
     } catch {}
 
-    const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, ...newCustomData } = item;
+    const { id: _i, site_id: _si, slug: _s, title: _t, status: _st, draft: _dr, ...newCustomData } = item;
     const updatedSlug = item.slug || existing.slug;
     const updatedTitle = item.title || existing.title;
     const updatedStatus = item.status || existing.status;
@@ -384,10 +401,12 @@ itemsRouter.patch('/:collection', async (c) => {
         updated_at: now,
       })
       .where('id', '=', existing.id)
+      .where('site_id', '=', siteId)
       .execute();
 
     updatedResults.push({
       id: existing.id,
+      site_id: siteId,
       collection,
       slug: updatedSlug,
       title: updatedTitle,
@@ -398,6 +417,7 @@ itemsRouter.patch('/:collection', async (c) => {
 
   const user = await getAuthenticatedUser(c);
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@localhost',
     action: 'batch_update',
     collection,
@@ -413,12 +433,14 @@ itemsRouter.patch('/:collection', async (c) => {
 itemsRouter.patch('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const body = await c.req.json();
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
 
   const existing = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
     .selectAll()
@@ -436,7 +458,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   const isWorkingCopyUpdate = body.draft === true || c.req.query('draft') === 'true';
   const force = body.force === true || c.req.query('force') === 'true';
   const now = Date.now();
-  const { id: _i, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...newCustomData } = body;
+  const { id: _i, site_id: _si, slug: _s, title: _t, status: _st, draft: _dr, force: _fo, ...newCustomData } = body;
 
   const candidateSlug = body.slug || existing.slug;
   const candidateTitle = body.title || existing.title;
@@ -446,8 +468,10 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   const hookCtx = {
     collection,
     id: existing.id,
+    siteId,
     data: {
       id: existing.id,
+      site_id: siteId,
       slug: candidateSlug,
       title: candidateTitle,
       status: candidateStatus,
@@ -456,6 +480,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
     },
     existing: {
       id: existing.id,
+      site_id: siteId,
       slug: existing.slug,
       title: existing.title,
       status: existing.status,
@@ -477,7 +502,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   const finalData = hookResult.data || hookCtx.data;
   const updatedSlug = finalData.slug || candidateSlug;
   const updatedTitle = finalData.title || candidateTitle;
-  const { id: _fId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
+  const { id: _fId, site_id: _fSiteId, slug: _fSlug, title: _fTitle, status: _fStatus, ...finalCustomData } = finalData;
 
   if (isWorkingCopyUpdate) {
     // Update ONLY working copy (draft_data), preserving live published data
@@ -502,9 +527,11 @@ itemsRouter.patch('/:collection/:id', async (c) => {
         updated_at: now,
       })
       .where('id', '=', existing.id)
+      .where('site_id', '=', siteId)
       .execute();
 
     await logActivity(db, {
+      siteId,
       actor: user?.email || 'admin@localhost',
       action: 'update_draft',
       collection,
@@ -521,6 +548,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
     return c.json({
       data: {
         id: existing.id,
+        site_id: siteId,
         collection,
         slug: updatedSlug,
         title: updatedTitle,
@@ -548,12 +576,14 @@ itemsRouter.patch('/:collection/:id', async (c) => {
       updated_at: now,
     })
     .where('id', '=', existing.id)
+    .where('site_id', '=', siteId)
     .execute();
 
   // Sync view if new keys were introduced
   await syncCollectionView(db, collection, Object.keys(mergedData));
 
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@localhost',
     action: 'update',
     collection,
@@ -570,6 +600,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   return c.json({
     data: {
       id: existing.id,
+      site_id: siteId,
       collection,
       slug: updatedSlug,
       title: updatedTitle,
@@ -586,10 +617,12 @@ itemsRouter.patch('/:collection/:id', async (c) => {
 itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
 
   const existing = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
     .selectAll()
@@ -609,10 +642,12 @@ itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
       updated_at: now,
     })
     .where('id', '=', existing.id)
+    .where('site_id', '=', siteId)
     .execute();
 
   const user = await getAuthenticatedUser(c);
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@localhost',
     action: 'discard_draft',
     collection,
@@ -631,12 +666,14 @@ itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
 itemsRouter.delete('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
   const force = c.req.query('force') === 'true';
 
   const existing = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
     .selectAll()
@@ -651,9 +688,11 @@ itemsRouter.delete('/:collection/:id', async (c) => {
     const hookCtx = {
       collection,
       id: existing.id,
-      data: existingData,
+      siteId,
+      data: { ...existingData, site_id: siteId },
       existing: {
         id: existing.id,
+        site_id: siteId,
         slug: existing.slug,
         title: existing.title,
         status: existing.status,
@@ -674,12 +713,14 @@ itemsRouter.delete('/:collection/:id', async (c) => {
 
   await db
     .deleteFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
     .execute();
 
   if (existing) {
     await logActivity(db, {
+      siteId,
       actor: user?.email || 'admin@localhost',
       action: 'delete',
       collection,

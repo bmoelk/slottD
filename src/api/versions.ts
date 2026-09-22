@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createDb } from '../db/client.js';
 import { requireWriteAuth, getAuthenticatedUser } from '../auth/guard.js';
+import { resolveSiteId } from '../auth/site.js';
 import { logActivity } from '../db/audit.js';
 import type { Env, DirectusVersionRow } from '../types.js';
 
@@ -12,11 +13,12 @@ versionsRouter.use('*', requireWriteAuth);
 // 1. List versions
 versionsRouter.get('/', async (c) => {
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const collection = c.req.query('collection') || c.req.query('filter[collection][_eq]');
   const item = c.req.query('item') || c.req.query('filter[item][_eq]');
   const key = c.req.query('key') || c.req.query('filter[key][_eq]');
 
-  let query = db.selectFrom('directus_versions').selectAll();
+  let query = db.selectFrom('directus_versions').where('site_id', '=', siteId).selectAll();
 
   if (collection) {
     query = query.where('collection', '=', collection);
@@ -51,10 +53,12 @@ versionsRouter.get('/', async (c) => {
 versionsRouter.get('/:id', async (c) => {
   const id = c.req.param('id');
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
   const version = await db
     .selectFrom('directus_versions')
     .where('id', '=', id)
+    .where('site_id', '=', siteId)
     .selectAll()
     .executeTakeFirst();
 
@@ -79,6 +83,7 @@ versionsRouter.get('/:id', async (c) => {
 versionsRouter.post('/', async (c) => {
   const body = await c.req.json();
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const user = await getAuthenticatedUser(c);
 
   const { collection, item, key, name, delta } = body;
@@ -98,6 +103,7 @@ versionsRouter.post('/', async (c) => {
     .insertInto('directus_versions')
     .values({
       id,
+      site_id: siteId,
       key,
       name: name || key,
       collection,
@@ -111,6 +117,7 @@ versionsRouter.post('/', async (c) => {
     .execute();
 
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@edge',
     action: 'version_create',
     collection,
@@ -123,6 +130,7 @@ versionsRouter.post('/', async (c) => {
     {
       data: {
         id,
+        site_id: siteId,
         key,
         name: name || key,
         collection,
@@ -142,11 +150,13 @@ versionsRouter.post('/', async (c) => {
 versionsRouter.post('/:id/promote', async (c) => {
   const id = c.req.param('id');
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const user = await getAuthenticatedUser(c);
 
   const version = await db
     .selectFrom('directus_versions')
     .where('id', '=', id)
+    .where('site_id', '=', siteId)
     .selectAll()
     .executeTakeFirst();
 
@@ -156,6 +166,7 @@ versionsRouter.post('/:id/promote', async (c) => {
 
   const liveDoc = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', version.collection)
     .where('id', '=', version.item)
     .selectAll()
@@ -192,12 +203,14 @@ versionsRouter.post('/:id/promote', async (c) => {
       updated_at: now,
     })
     .where('id', '=', liveDoc.id)
+    .where('site_id', '=', siteId)
     .execute();
 
   // Remove or archive the promoted version
-  await db.deleteFrom('directus_versions').where('id', '=', id).execute();
+  await db.deleteFrom('directus_versions').where('id', '=', id).where('site_id', '=', siteId).execute();
 
   await logActivity(db, {
+    siteId,
     actor: user?.email || 'admin@edge',
     action: 'version_promote',
     collection: version.collection,
@@ -211,6 +224,7 @@ versionsRouter.post('/:id/promote', async (c) => {
     message: `Version '${version.key}' promoted into '${version.collection}/${liveDoc.slug}'`,
     data: {
       id: liveDoc.id,
+      site_id: siteId,
       collection: liveDoc.collection,
       slug: liveDoc.slug,
       title: liveDoc.title,
@@ -224,7 +238,8 @@ versionsRouter.post('/:id/promote', async (c) => {
 versionsRouter.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
-  await db.deleteFrom('directus_versions').where('id', '=', id).execute();
+  await db.deleteFrom('directus_versions').where('id', '=', id).where('site_id', '=', siteId).execute();
   return c.body(null, 204);
 });
