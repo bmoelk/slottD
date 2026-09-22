@@ -11,17 +11,18 @@ export interface SetupViewData {
   mediaCount: number;
   isDev: boolean;
   isPasswordProtected: boolean;
-  gitRemoteUrl: string;
-  gitBranch: string;
+  gitRemoteUrl?: string;
+  gitBranch?: string;
   gitProvider?: string;
-  hasToken: boolean;
+  hasToken?: boolean;
   editorFormat?: 'markdown' | 'richtext';
   editorTier?: 'light' | 'heavy';
 }
 
 export function renderSetupView(
   data: SetupViewData,
-  user: { email: string; name?: string; authMethod?: string }
+  user: { email: string; name?: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const clientScript = `
     async function updatePassword(remove = false) {
@@ -66,39 +67,6 @@ export function renderSetupView(
       }
     }
 
-    async function saveRemoteSettings() {
-      const remoteUrl = document.getElementById('remoteUrl')?.value || '';
-      const branch = document.getElementById('remoteBranch')?.value || 'main';
-      const token = document.getElementById('remoteToken')?.value || '';
-
-      const btn = document.getElementById('btnSaveRemote');
-      if (btn) {
-        btn.disabled = true;
-        btn.innerText = '⏳ Saving...';
-      }
-
-      try {
-        const res = await fetch('/admin/setup/remote', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ remoteUrl, branch, token })
-        });
-        const json = await res.json();
-        if (res.ok) {
-          alert('✅ Remote configuration saved successfully!');
-          window.location.reload();
-        } else {
-          alert('❌ Failed to save remote configuration: ' + (json.error || json.message));
-        }
-      } catch (err) {
-        alert('Network error: ' + err.message);
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.innerText = '💾 Save Remote Settings';
-        }
-      }
-    }
 
     async function saveEditorPreferences() {
       const format = document.querySelector('input[name="editorFormat"]:checked')?.value || 'markdown';
@@ -264,72 +232,7 @@ export function renderSetupView(
       </div>
     </div>
 
-    <!-- Universal Git Remote Repository Settings Card -->
-    <div class="card" style="margin-top: 20px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
-        <h2 style="font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px;">
-          <span>🌐</span> Git Remote Repository Configuration
-          ${renderInfoBubble('Configures remote repository. Passwords and tokens are AES-256 encrypted before D1 persistence.', 'git-releases')}
-        </h2>
-        <span style="font-size: 12px; color: #38bdf8;">Universal Git Sync</span>
-      </div>
-      <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 16px;">
-        Configure the central Git repository used for content snapshots, releases, and deployment hooks. Compatible with GitHub, GitLab, Gitea, or generic Git HTTPS servers.
-      </p>
 
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-bottom: 16px;">
-        <div>
-          <label style="display: flex; align-items: center; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600;">
-            Git Remote URL
-            ${renderInfoBubble('Standard HTTPS or SSH URL. Automatically normalized to HTTPS on Cloudflare Workers.', 'git-releases')}
-          </label>
-          <input
-            type="text"
-            id="remoteUrl"
-            class="input-search"
-            placeholder="git@github.com:org/repo.git or https://gitlab.com/..."
-            value="${data.gitRemoteUrl || ''}"
-            style="width: 100%; box-sizing: border-box;"
-          />
-        </div>
-
-        <div>
-          <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600;">Target Branch</label>
-          <input
-            type="text"
-            id="remoteBranch"
-            class="input-search"
-            placeholder="main"
-            value="${data.gitBranch || 'main'}"
-            style="width: 100%; box-sizing: border-box;"
-          />
-        </div>
-
-        <div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <label style="display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600;">Access Token (Required for Private Repos)</label>
-            ${data.hasToken ? html`
-              <span style="font-size: 10px; color: #34d399; font-weight: 600;">● Token Configured (Encrypted)</span>
-            ` : html`
-              <span style="font-size: 10px; color: #94a3b8;">Not set</span>
-            `}
-          </div>
-          <input
-            type="password"
-            id="remoteToken"
-            class="input-search"
-            placeholder="${data.hasToken ? '•••••••••••• (leave blank to keep current)' : 'Personal Access Token / Deploy Token'}"
-            style="width: 100%; box-sizing: border-box;"
-          />
-        </div>
-      </div>
-
-      <div style="display: flex; justify-content: flex-end; gap: 10px;">
-        <button type="button" id="btnSaveRemote" class="btn btn-primary" onclick="saveRemoteSettings()">
-          💾 Save Remote Settings
-        </button>
-      </div>
-    </div>
 
     <!-- Editor & Authoring Suite Card -->
     <div class="card" style="margin-top: 20px;">
@@ -462,5 +365,5 @@ export function renderSetupView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

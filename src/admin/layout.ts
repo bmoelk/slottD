@@ -45,36 +45,35 @@ export function renderLayout(
     </head>
     <body>
       <div class="topbar">
-        <a href="/admin/home" class="brand" style="text-decoration: none; color: inherit;">
-          <svg viewBox="0 0 512 512" width="28" height="28">
-            <rect width="512" height="512" rx="96" fill="#1e293b"/>
-            <path d="M 160 128 H 210 V 384 H 160 Z" fill="#FFD043"/>
-            <path d="M 218 128 H 304 C 364 128 408 172 408 232 H 344 C 344 198 320 184 296 184 H 218 Z" fill="#FF8A00"/>
-            <path d="M 218 328 H 296 C 320 328 344 314 344 280 H 408 C 408 340 364 384 304 384 H 218 Z" fill="#FFD043"/>
-            <rect x="200" y="244" width="112" height="24" rx="4" fill="#FFE082"/>
-          </svg>
-          <h1>SlottD Studio</h1>
-        </a>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <a href="/admin/sites" class="brand" style="text-decoration: none; color: inherit;">
+            <svg viewBox="0 0 512 512" width="28" height="28">
+              <rect width="512" height="512" rx="96" fill="#1e293b"/>
+              <path d="M 160 128 H 210 V 384 H 160 Z" fill="#FFD043"/>
+              <path d="M 218 128 H 304 C 364 128 408 172 408 232 H 344 C 344 198 320 184 296 184 H 218 Z" fill="#FF8A00"/>
+              <path d="M 218 328 H 296 C 320 328 344 314 344 280 H 408 C 408 340 364 384 304 384 H 218 Z" fill="#FFD043"/>
+              <rect x="200" y="244" width="112" height="24" rx="4" fill="#FFE082"/>
+            </svg>
+            <h1>SlottD Studio</h1>
+          </a>
+          <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context">
+            <span style="font-size: 13px;">🌐</span>
+            <select onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
+              ${(siteContext?.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext?.activeSite || 'default']).map(s => html`<option value="${s}" ${s === (siteContext?.activeSite || 'default') ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
+            </select>
+          </div>
+        </div>
         <div class="nav-tabs">
-          <a href="/admin/home" class="nav-tab ${activeTab === 'home' ? 'active' : ''}">Home</a>
-          <a href="/admin" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
+          <a href="/admin/sites" class="nav-tab ${activeTab === 'sites' || activeTab === 'home' ? 'active' : ''}">Sites</a>
+          <a href="/admin/content" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
           <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
-          <a href="/admin/sites" class="nav-tab ${activeTab === 'sites' ? 'active' : ''}">Sites</a>
           <a href="/admin/logs" class="nav-tab ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs</a>
-          <a href="/admin/git" class="nav-tab ${activeTab === 'git' ? 'active' : ''}">Git</a>
+          <a href="/admin/git" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
           <a href="/admin/setup" class="nav-tab ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
           <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
-          ${siteContext?.activeSite ? html`
-            <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context (Single-Site Mode)">
-              <span style="font-size: 13px;">🌐</span>
-              <select onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
-                ${(siteContext.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext.activeSite]).map(s => html`<option value="${s}" ${s === siteContext.activeSite ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
-              </select>
-            </div>
-          ` : ''}
           <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
             <span style="color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
             <span>${user?.name || user?.email || 'dev@localhost'}</span>

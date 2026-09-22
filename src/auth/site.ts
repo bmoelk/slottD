@@ -119,6 +119,18 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     return normalizeSiteId(candidateDomain);
   }
 
-  // 9. Generic Fallback for localhost / local dev / test suites
+  // 9. Check if any site exists in system_site_settings before falling back to 'default'
+  if (c.env?.DB) {
+    try {
+      const firstSite = (await c.env.DB.prepare(
+        'SELECT site_id FROM system_site_settings ORDER BY id ASC LIMIT 1'
+      ).first()) as { site_id: string } | null;
+      if (firstSite?.site_id) {
+        return normalizeSiteId(firstSite.site_id);
+      }
+    } catch {}
+  }
+
+  // 10. Generic Fallback for localhost / local dev / test suites
   return 'default';
 }

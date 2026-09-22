@@ -1,7 +1,10 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
 
-export function renderDocsView(user: { email: string; authMethod?: string }) {
+export function renderDocsView(
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
+) {
   const clientScript = `
     function copySnippet(btn, codeId) {
       const el = document.getElementById(codeId);
@@ -610,5 +613,5 @@ npx wrangler secret put GIT_TOKEN</code></pre>
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

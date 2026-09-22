@@ -14,6 +14,7 @@ export interface SiteInfo {
   git_remote_url?: string;
   git_branch?: string;
   content_path?: string;
+  repo_path?: string;
   deploy_hook?: string;
   updated_at: number;
 }
@@ -147,6 +148,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
       if (row.key === 'git_remote_url') entry.git_remote_url = row.value;
       if (row.key === 'git_branch') entry.git_branch = row.value;
       if (row.key === 'content_path') entry.content_path = row.value;
+      if (row.key === 'repo_path' || row.key === 'local_repo_path') entry.repo_path = row.value;
       if (row.key === 'deploy_hook' || row.key === 'deploy_hook_url') entry.deploy_hook = row.value;
       if (row.updated_at > (entry.updated_at || 0)) entry.updated_at = row.updated_at;
     }
@@ -177,6 +179,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     git_remote_url: s.git_remote_url,
     git_branch: s.git_branch || 'main',
     content_path: s.content_path !== undefined ? s.content_path : 'content',
+    repo_path: s.repo_path,
     deploy_hook: s.deploy_hook,
     updated_at: s.updated_at || Date.now(),
   }));

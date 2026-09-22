@@ -4,7 +4,8 @@ import { renderInfoBubble } from '../ui.js';
 
 export function renderLogsView(
   logs: any[],
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const clientScript = `
     let activeActionFilter = 'all';
@@ -368,5 +369,5 @@ export function renderLogsView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

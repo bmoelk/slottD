@@ -4,7 +4,8 @@ import { renderInfoBubble } from '../ui.js';
 
 export function renderModelsView(
   modelsWithFields: any[],
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const clientScript = `
     let highlightedModelIndex = -1;
@@ -289,5 +290,5 @@ export function renderModelsView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }
