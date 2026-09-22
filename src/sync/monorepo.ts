@@ -12,14 +12,14 @@ export interface MonorepoContext {
 /**
  * Validates the remote content path to ensure content is never placed in the repository root.
  */
-export function validateContentPath(contentPath: string): string {
-  const trimmed = (contentPath || 'content').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
-  if (!trimmed || trimmed === '.' || trimmed === '/') {
+export function validateContentPath(contentPath: string, requireSubdir: boolean = false): string {
+  const trimmed = (contentPath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  if (requireSubdir && (!trimmed || trimmed === '.' || trimmed === '/')) {
     throw new Error(
-      "Invalid Git content path: refusing to use root repository directory. Please specify a dedicated subdirectory (e.g. 'content' or 'brainendeavor-slottd-cms/content')."
+      "Invalid Git content path: refusing to use root repository directory in monorepo context. Please specify a dedicated subdirectory (e.g. 'content')."
     );
   }
-  return trimmed;
+  return trimmed === '.' ? '' : trimmed;
 }
 
 const dynamicImport = (modName: string): Promise<any> => {
@@ -37,7 +37,7 @@ const dynamicImport = (modName: string): Promise<any> => {
  */
 export async function detectMonorepo(projectDir: string, explicitContentPath?: string): Promise<MonorepoContext> {
   const resolvedProjectDir = path.resolve(projectDir || (typeof process !== 'undefined' && process.cwd ? process.cwd() : '.'));
-  const finalExplicitPath = explicitContentPath ? validateContentPath(explicitContentPath) : undefined;
+  const finalExplicitPath = explicitContentPath !== undefined ? validateContentPath(explicitContentPath, false) : undefined;
   
   const defaultCtx: MonorepoContext = {
     isMonorepo: false,
@@ -131,7 +131,7 @@ export async function detectMonorepo(projectDir: string, explicitContentPath?: s
     gitTopLevel,
     projectDir: resolvedProjectDir,
     relativeSubpath: '',
-    contentPath: finalExplicitPath || 'content',
+    contentPath: finalExplicitPath !== undefined ? finalExplicitPath : '',
     originRemoteUrl: originRemoteUrl || undefined,
   };
 }

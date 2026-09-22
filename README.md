@@ -356,6 +356,58 @@ cargo run --manifest-path briefcase/Cargo.toml -- release --tag release-v1.2.0 -
 
 ---
 
+## 🔄 Upgrading Installed CMS Instances (Tier 2 Upgrade Protocol)
+
+When SlottD releases new features, bug fixes, or database migrations, downstream CMS instances (e.g. `websites-cms`) upgrade cleanly using a disciplined **3-Step Protocol**:
+
+```
+Step 1: Code Upgrade ──► Step 2: D1 Migration ──► Step 3: Verification & Deploy
+  npm update slottd        npm run db:migrate        npm test && npm run deploy:prod
+```
+
+### 1. Update the Dependency (`package.json`)
+Depending on your release tracking method:
+* **Via Tagged Release (Recommended)**:
+  ```bash
+  npm install github:bmoelk/slottD#v0.3.0
+  ```
+* **Via Active Branch**:
+  ```bash
+  npm update slottd
+  # Or force re-resolving latest commit:
+  npm install github:bmoelk/slottD#feature/multisite
+  ```
+
+### 2. Apply Database Migrations (`db:migrate`)
+If the release includes schema additions (such as `0004_multisite.sql`):
+```bash
+# Local Miniflare / Briefcase D1
+npm run db:migrate:local
+# Runs: wrangler d1 migrations apply DB --local
+
+# Production Remote D1 (Cloudflare)
+npm run db:migrate:remote
+# Runs: wrangler d1 migrations apply DB --remote -c wrangler.overrides.toml
+```
+
+> **Zero Content Loss Guarantee**: SlottD migrations are strictly additive (Rule 5 schema versioning). Existing documents, media, and versions are never overwritten or deleted.
+
+### 3. Verify & Deploy
+```bash
+# Run local verification
+npm run type-check
+npm test
+
+# Deploy to Cloudflare Workers
+npm run deploy:prod
+```
+
+### Safety Net & Rollback
+* **Instant Revert**: Downgrade anytime via `npm install github:bmoelk/slottD#<previous-tag>`.
+* **Disaster Recovery**: Content is perpetually stored in your Git content repositories (`/websites-git-repos/*`). If a database is ever corrupted, `npm run sync:hydrate` re-populates D1 in seconds.
+
+---
+
 ## 📜 License
 
 MIT License. Developed for the SlotWire and Astro communities.
