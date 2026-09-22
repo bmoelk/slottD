@@ -14,6 +14,7 @@ export interface GitViewData {
   mediaCount: number;
   tags: string[];
   isMonorepo?: boolean;
+  contentPath?: string;
   contentSubpath?: string;
   gitTopLevel?: string;
 }

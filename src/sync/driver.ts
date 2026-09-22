@@ -7,6 +7,7 @@ export interface GitDriverOptions {
   repoPath?: string;
   isProduction?: boolean;
   contentPath?: string; // Path within the remote repository to place content files (e.g. 'content' or 'brainendeavor-slottd-cms/content')
+  contentSubpath?: string;
   isMonorepo?: boolean;
   gitTopLevel?: string;
   siteId?: string;
@@ -19,6 +20,7 @@ export interface GitReleaseResult {
   message: string;
   pushed: boolean;
   contentPath?: string;
+  contentSubpath?: string;
   isMonorepo?: boolean;
 }
 

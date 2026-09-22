@@ -88,9 +88,9 @@ describe('NativeShellGitDriver: Briefcase Bridge Delegation & Fallback', () => {
     let fetchCalled = false;
     let loadCalled = false;
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer((req: any, res: any) => {
       let body = '';
-      req.on('data', (chunk) => { body += chunk; });
+      req.on('data', (chunk: any) => { body += chunk; });
       req.on('end', () => {
         const parsed = body ? JSON.parse(body) : {};
         if (req.url === '/exec/release') {
