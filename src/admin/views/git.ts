@@ -270,7 +270,10 @@ export function renderGitView(
 
     async function executeRestore() {
       const tag = document.getElementById('tagSelect')?.value;
-      if (!tag) return;
+      if (!tag) {
+        alert('Please select a Git release tag to import (or click Fetch Remote Tags first).');
+        return;
+      }
 
       const confirmed = confirm('Are you sure you want to load and restore D1 database content from Git tag "' + tag + '"?');
       if (!confirmed) return;
@@ -359,51 +362,28 @@ export function renderGitView(
       </div>
     </div>
 
-    <!-- Sub-Tabs: Export vs Import (Alpine.js zero-build toggle) -->
+    <!-- Sub-Tabs: Export vs Import (Segmented Navigation) -->
     <div x-data="{ gitTab: 'export' }" style="margin-bottom: 24px;">
       
-      <!-- Sub-Tab Navigation Header -->
-      <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,0.12); padding-bottom: 12px; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
-        <div style="display: flex; gap: 8px;">
+      <!-- Segmented Tab Bar -->
+      <div style="display: flex; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+        <div style="display: inline-flex; background: #0b1120; padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
           <button
             type="button"
-            class="btn"
-            :class="gitTab === 'export' ? 'btn-primary' : 'btn-secondary'"
             @click="gitTab = 'export'"
-            style="font-size: 13px; padding: 6px 16px;"
+            :style="gitTab === 'export' ? 'background: #1e293b; color: #f8fafc; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15);' : 'background: transparent; color: #94a3b8; border: 1px solid transparent;'"
+            style="padding: 8px 20px; font-size: 13px; border-radius: 6px; cursor: pointer; transition: 0.15s; display: inline-flex; align-items: center; gap: 8px;"
           >
-            ⬆️ Export & Releases
+            <span>⬆️</span> Export & Releases
           </button>
           <button
             type="button"
-            class="btn"
-            :class="gitTab === 'import' ? 'btn-primary' : 'btn-secondary'"
             @click="gitTab = 'import'"
-            style="font-size: 13px; padding: 6px 16px;"
+            :style="gitTab === 'import' ? 'background: #1e293b; color: #f8fafc; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15);' : 'background: transparent; color: #94a3b8; border: 1px solid transparent;'"
+            style="padding: 8px 20px; font-size: 13px; border-radius: 6px; cursor: pointer; transition: 0.15s; display: inline-flex; align-items: center; gap: 8px;"
           >
-            ⬇️ Import & Restore
+            <span>⬇️</span> Import & Restore
           </button>
-        </div>
-
-        <!-- Dynamic Secondary Actions depending on active tab -->
-        <div>
-          <template x-if="gitTab === 'export'">
-            <div style="display: flex; gap: 8px;">
-              <button type="button" class="btn btn-secondary" style="font-size: 12px;" onclick="exportFilesZip()" title="Download complete collection directory structure as a ZIP archive">
-                📦 Export Files as ZIP
-              </button>
-              <button type="button" class="btn btn-secondary" style="font-size: 12px;" onclick="downloadBackupJson()" title="Download raw JSON D1 database dump for active site">
-                ⬇️ Export JSON
-              </button>
-            </div>
-          </template>
-          <template x-if="gitTab === 'import'">
-            <div style="display: flex; gap: 8px;">
-              <button type="button" class="btn btn-secondary" style="font-size: 12px;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
-                🔄 Fetch Remote Tags
-              </button>
-            </div>
-          </template>
         </div>
       </div>
 
@@ -462,6 +442,24 @@ export function renderGitView(
               🔍 Dry Run (Preview)
             </button>
           </div>
+
+          <!-- À La Carte Downloads Card -->
+          <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 16px; margin-top: 24px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+              <div>
+                <span style="font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; display: block;">À La Carte Downloads</span>
+                <span style="font-size: 12px; color: #94a3b8;">Standalone single-click asset downloads without Git commits or remote pushes.</span>
+              </div>
+              <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 7px 14px; display: inline-flex; align-items: center; gap: 6px;" onclick="exportFilesZip()" title="Download entire collection directory tree as a ZIP archive">
+                  📦 Export Files as ZIP
+                </button>
+                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 7px 14px; display: inline-flex; align-items: center; gap: 6px;" onclick="downloadBackupJson()" title="Download full JSON database dump for active site">
+                  ⬇️ Export JSON Dump
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -482,14 +480,19 @@ export function renderGitView(
 
           <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px;">
             <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Select Git Release Tag</label>
-              <select id="tagSelect" class="select-control" style="width: 100%; height: 38px; box-sizing: border-box;">
-                ${data.tags.length === 0 ? html`
-                  <option value="">No Git tags found (click Fetch Remote Tags or create one)</option>
-                ` : data.tags.map((t, idx) => html`
-                  <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
-                `)}
-              </select>
+              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Select Git Release Tag</label>
+              <div style="display: flex; gap: 8px;">
+                <select id="tagSelect" class="select-control" style="flex: 1; height: 38px; box-sizing: border-box; background: #0b1120; border: 1px solid #334155; color: #f8fafc; border-radius: 6px; padding: 0 10px;">
+                  ${data.tags.length === 0 ? html`
+                    <option value="">No Git tags found (click Fetch Remote Tags or create one)</option>
+                  ` : data.tags.map((t, idx) => html`
+                    <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
+                  `)}
+                </select>
+                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
+                  🔄 Fetch Remote Tags
+                </button>
+              </div>
             </div>
 
             <div id="diffSummaryCard" style="display: none; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px;">
@@ -498,12 +501,12 @@ export function renderGitView(
             </div>
           </div>
 
-          <div style="display: flex; gap: 12px;">
-            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px;" onclick="previewGitDiff()">
-              🔍 Preview Diff (Dry Run)
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px; background: #10b981; border-color: #10b981; color: #0f172a; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;" onclick="executeRestore()">
+              📥 Execute Import (Restore D1)
             </button>
-            <button type="button" id="btnConfirmRestore" class="btn btn-primary" style="flex: 1; justify-content: center; display: none; background: #10b981; font-size: 13px; padding: 10px;" onclick="executeRestore()">
-              ✓ Confirm & Restore into D1
+            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 6px;" onclick="previewGitDiff()">
+              🔍 Preview Diff (Dry Run)
             </button>
           </div>
         </div>

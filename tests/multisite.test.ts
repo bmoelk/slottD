@@ -236,7 +236,26 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(html).toContain('Websites & Domains');
       expect(html).toContain('alpha.dev');
       expect(html).toContain('/admin/sites');
+      expect(html).toContain('System');
       expect(html).toContain('Atomic Domain Rename');
+      expect(html).toContain('Delete / Unregister Site');
+    });
+
+    it('renders Git view with segmented tabs, inline fetch tags button, and execute import button', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/git?site=alpha.dev', {
+          headers: { host: 'localhost:8787' },
+        }),
+        mockEnv
+      );
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('Export & Releases');
+      expect(html).toContain('Import & Restore');
+      expect(html).toContain('Fetch Remote Tags');
+      expect(html).toContain('Execute Import (Restore D1)');
+      expect(html).toContain('Export Files as ZIP');
     });
 
     it('handles switching active site via cookie set on redirect', async () => {
@@ -251,6 +270,58 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       const setCookie = res.headers.get('set-cookie');
       expect(setCookie).toContain('slottd_site=beta.dev');
       expect(res.headers.get('location')).toBe('/admin');
+    });
+  });
+
+  describe('Site Deletion & Lifecycle Safeguards', () => {
+    it('unregisters site configuration without purging content by default', async () => {
+      const executed: string[] = [];
+      const mockDb: any = {
+        DB: {},
+      };
+      // Test deleteSite with purgeData = false
+      const { deleteSite } = await import('../src/admin/sites.js');
+      const mockD1: any = {
+        prepare: vi.fn().mockImplementation((sql: string) => {
+          executed.push(sql);
+          return {
+            bind: vi.fn().mockReturnThis(),
+            all: vi.fn().mockResolvedValue({ results: [], meta: {} }),
+            first: vi.fn().mockResolvedValue(null),
+            raw: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      };
+      const db = createDb(mockD1);
+      const res = await deleteSite(db, 'old-site.com', false);
+      expect(res.success).toBe(true);
+      expect(res.siteId).toBe('old-site.com');
+      expect(res.purged).toBe(false);
+      expect(executed.some((s) => s.includes('DELETE FROM system_site_settings'))).toBe(true);
+      expect(executed.some((s) => s.includes('DELETE FROM "documents"'))).toBe(false);
+    });
+
+    it('purges all documents, media, and versions when purgeData is true', async () => {
+      const executed: string[] = [];
+      const { deleteSite } = await import('../src/admin/sites.js');
+      const mockD1: any = {
+        prepare: vi.fn().mockImplementation((sql: string) => {
+          executed.push(sql);
+          return {
+            bind: vi.fn().mockReturnThis(),
+            all: vi.fn().mockResolvedValue({ results: [], meta: {} }),
+            first: vi.fn().mockResolvedValue(null),
+            raw: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      };
+      const db = createDb(mockD1);
+      const res = await deleteSite(db, 'obsolete.dev', true);
+      expect(res.success).toBe(true);
+      expect(res.purged).toBe(true);
+      expect(executed.some((s) => s.includes('DELETE FROM system_site_settings'))).toBe(true);
+      expect(executed.some((s) => s.includes('DELETE FROM "documents" WHERE site_id = \'obsolete.dev\''))).toBe(true);
+      expect(executed.some((s) => s.includes('DELETE FROM "media" WHERE site_id = \'obsolete.dev\''))).toBe(true);
     });
   });
 });

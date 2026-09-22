@@ -16,6 +16,7 @@ export interface SiteInfo {
   content_path?: string;
   repo_path?: string;
   deploy_hook?: string;
+  has_token?: boolean;
   updated_at: number;
 }
 
@@ -150,6 +151,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
       if (row.key === 'content_path') entry.content_path = row.value;
       if (row.key === 'repo_path' || row.key === 'local_repo_path') entry.repo_path = row.value;
       if (row.key === 'deploy_hook' || row.key === 'deploy_hook_url') entry.deploy_hook = row.value;
+      if (row.key === 'git_token_enc' && row.value) entry.has_token = true;
       if (row.updated_at > (entry.updated_at || 0)) entry.updated_at = row.updated_at;
     }
   } catch {}
@@ -181,6 +183,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     content_path: s.content_path !== undefined ? s.content_path : 'content',
     repo_path: s.repo_path,
     deploy_hook: s.deploy_hook,
+    has_token: !!s.has_token,
     updated_at: s.updated_at || Date.now(),
   }));
 }
@@ -207,3 +210,65 @@ export async function registerSite(
     `).execute(db);
   }
 }
+
+/**
+ * Deletes or unregisters a site from SlottD.
+ * If purgeData is true, also removes all documents, media records,
+ * directus versions, domain referrals, and physical content tables for this site.
+ */
+export async function deleteSite(
+  db: Kysely<Database>,
+  siteId: string,
+  purgeData: boolean = false
+): Promise<{ success: boolean; siteId: string; purged: boolean }> {
+  const cleanId = siteId.toLowerCase().trim();
+  if (!cleanId) throw new Error('Site ID is required.');
+
+  // 1. Delete from system_site_settings
+  await sql.raw(`DELETE FROM system_site_settings WHERE site_id = '${cleanId}'`).execute(db);
+
+  // 2. If purgeData is true, purge from all system & content tables
+  if (purgeData) {
+    for (const tbl of ['documents', 'media', 'directus_versions', 'bundles', 'activity_log']) {
+      try {
+        await sql.raw(`DELETE FROM "${tbl}" WHERE site_id = '${cleanId}'`).execute(db);
+      } catch {}
+    }
+    try {
+      await sql.raw(`DELETE FROM site_domain_referrals WHERE source_domain = '${cleanId}' OR target_site_id = '${cleanId}'`).execute(db);
+    } catch {}
+
+    // Check all physical content tables discovered dynamically
+    try {
+      const physicalTables = await sql<{ name: string }>`
+        SELECT name FROM sqlite_master 
+        WHERE type = 'table' 
+          AND name NOT IN (
+            'system_site_settings',
+            'site_domain_referrals',
+            'media',
+            'directus_versions',
+            'system_settings',
+            'collections',
+            'd1_migrations'
+          )
+          AND name NOT LIKE 'sqlite_%' 
+          AND name NOT LIKE '_cf_%'
+      `.execute(db);
+
+      for (const row of physicalTables.rows) {
+        const cols = await sql<{ name: string }>`
+          PRAGMA table_info(${sql.raw(`"${row.name}"`)})
+        `.execute(db);
+
+        const hasSiteId = cols.rows.some((c) => c.name === 'site_id');
+        if (hasSiteId) {
+          await sql.raw(`DELETE FROM "${row.name}" WHERE site_id = '${cleanId}'`).execute(db);
+        }
+      }
+    } catch {}
+  }
+
+  return { success: true, siteId: cleanId, purged: purgeData };
+}
+

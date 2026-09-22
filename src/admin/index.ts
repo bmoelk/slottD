@@ -22,7 +22,7 @@ import { renderSitesView } from './views/sites.js';
 import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
-import { renameSite, listSites, registerSite } from './sites.js';
+import { renameSite, listSites, registerSite, deleteSite } from './sites.js';
 import { resolveSiteId, normalizeSiteId } from '../auth/site.js';
 import { syncCollectionView } from '../api/views.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
@@ -86,12 +86,12 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
         .all<{ key: string; value: string }>();
       let encToken = '';
       for (const r of rows.results || []) {
-        if (r.key === 'git_remote_url' && r.value && !remoteUrl) remoteUrl = r.value;
+        if (r.key === 'git_remote_url' && r.value) remoteUrl = r.value;
         if (r.key === 'repo_path' && r.value) chosenPath = r.value;
         if (r.key === 'git_branch' && r.value) branch = r.value;
         if (r.key === 'git_token_enc' && r.value) encToken = r.value;
       }
-      if (encToken && !token) {
+      if (encToken) {
         const secret = env.JWT_SECRET || 'briefcase-local-secret';
         const dec = await decryptSecret(encToken, secret);
         if (dec) token = dec;
@@ -1495,21 +1495,86 @@ adminRouter.post('/sites/rename', async (c) => {
 
 adminRouter.post('/sites/create', async (c) => {
   const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
-  const siteId = ((body.siteId as string) || '').trim();
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
   if (!siteId) {
     return c.redirect('/admin/sites?error=Site+ID+is+required');
   }
 
   const db = createDb(c.env.DB);
   try {
-    await registerSite(db, siteId, {
+    const settings: Record<string, string> = {
       git_remote_url: ((body.git_remote_url as string) || '').trim(),
       git_branch: ((body.git_branch as string) || 'main').trim(),
       content_path: typeof body.content_path === 'string' ? body.content_path.trim() : '',
       repo_path: ((body.repo_path as string) || '').trim(),
       deploy_hook: ((body.deploy_hook as string) || '').trim(),
-    });
+    };
+    const gitToken = ((body.git_token as string) || '').trim();
+    if (gitToken) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      settings.git_token_enc = await encryptSecret(gitToken, secret);
+    }
+    await registerSite(db, siteId, settings);
     return c.redirect('/admin/sites?created=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/update', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    const settings: Record<string, string> = {
+      git_remote_url: ((body.git_remote_url as string) || '').trim(),
+      git_branch: ((body.git_branch as string) || 'main').trim(),
+      content_path: typeof body.content_path === 'string' ? body.content_path.trim() : '',
+      repo_path: ((body.repo_path as string) || '').trim(),
+      deploy_hook: ((body.deploy_hook as string) || '').trim(),
+    };
+    const gitToken = ((body.git_token as string) || '').trim();
+    if (gitToken) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      settings.git_token_enc = await encryptSecret(gitToken, secret);
+    }
+    await registerSite(db, siteId, settings);
+    return c.redirect('/admin/sites?updated=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/delete', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  const confirmSiteId = ((body.confirmSiteId as string) || '').trim().toLowerCase();
+  const purgeData = body.purgeData === 'true' || body.purgeData === '1' || body.purgeData === true;
+
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+  if (confirmSiteId !== siteId) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(`Confirmation failed: typed '${confirmSiteId}' does not match '${siteId}'`)}`);
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    await deleteSite(db, siteId, purgeData);
+
+    // If the active site was deleted, find the next available site and switch session cookie
+    const activeSite = c.get('siteId') || (await resolveSiteId(c));
+    if (activeSite === siteId) {
+      const remainingSites = await listSites(db);
+      const nextSite = remainingSites.find((s) => s.site_id !== siteId)?.site_id || 'default';
+      c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(nextSite)}; Path=/; Max-Age=31536000`);
+    }
+
+    return c.redirect(`/admin/sites?deleted=${encodeURIComponent(siteId)}`);
   } catch (err: any) {
     return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
   }
@@ -1517,7 +1582,7 @@ adminRouter.post('/sites/create', async (c) => {
 
 adminRouter.post('/sites/pull', async (c) => {
   const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
-  const siteId = ((body.siteId as string) || '').trim();
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
   if (!siteId) {
     return c.redirect('/admin/sites?error=Missing+site+ID');
   }
@@ -1537,10 +1602,19 @@ adminRouter.post('/sites/pull', async (c) => {
       return c.redirect(`/admin/sites?error=${encodeURIComponent(`No Git remote configured for site '${siteId}'. Please edit repository settings first.`)}`);
     }
 
+    let token = c.env.GIT_TOKEN || c.env.GITHUB_TOKEN;
+    if (siteSettings.git_token_enc) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      const dec = await decryptSecret(siteSettings.git_token_enc, secret);
+      if (dec) token = dec;
+    } else if (siteSettings.git_token) {
+      token = siteSettings.git_token;
+    }
+
     const driver = await getGitDriver({
       url: remoteUrl,
       branch: siteSettings.git_branch || 'main',
-      token: siteSettings.git_token || c.env.GIT_TOKEN || c.env.GITHUB_TOKEN,
+      token,
       repoPath: siteSettings.repo_path || c.env.REPO_PATH,
       isProduction: c.env.ENVIRONMENT === 'production',
     });

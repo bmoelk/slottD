@@ -19,11 +19,53 @@ export const adminStyles = `
   .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--surface-border); padding-bottom: 16px; }
   .brand { display: flex; align-items: center; gap: 12px; }
   .brand h1 { font-size: 18px; font-weight: 700; color: #fff; }
-  .nav-tabs { display: flex; gap: 8px; }
+  .nav-tabs { display: flex; align-items: center; gap: 8px; }
   .nav-tab { padding: 6px 14px; border-radius: 6px; text-decoration: none; color: var(--text-muted); font-size: 13px; font-weight: 600; transition: 0.2s; }
   .nav-tab:hover { color: #fff; background: var(--surface-border); }
   .nav-tab.active { color: #000; background: var(--accent); }
-  .user-badge { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); background: #1e293b; padding: 4px 10px; border-radius: 99px; }
+  .nav-dropdown { position: relative; display: inline-flex; align-items: center; }
+  .nav-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 170px;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 8px;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.6);
+    padding: 6px;
+    z-index: 1000;
+  }
+  .nav-dropdown:hover .nav-dropdown-menu,
+  .nav-dropdown:focus-within .nav-dropdown-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nav-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    transition: 0.15s;
+    white-space: nowrap;
+  }
+  .nav-dropdown-item:hover {
+    color: #fff;
+    background: #1e293b;
+  }
+  .nav-dropdown-item.active {
+    color: #FF8A00;
+    background: rgba(255, 138, 0, 0.12);
+    font-weight: 600;
+  }
+  .user-badge { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); background: #1e293b; padding: 3px 8px; border-radius: 99px; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
   .header-stats { display: flex; gap: 8px; }
   .stat-pill { background: #1e293b; color: var(--accent); font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 99px; border: 1px solid #334155; }

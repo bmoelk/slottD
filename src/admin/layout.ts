@@ -14,6 +14,8 @@ export function renderLayout(
   const tier = editorConfig?.tier || 'light';
   const format = editorConfig?.format || 'markdown';
 
+  const isSystemActive = ['models', 'logs', 'activity', 'setup', 'docs', 'help'].includes(activeTab);
+
   return html`
     <!DOCTYPE html>
     <html lang="en">
@@ -45,7 +47,7 @@ export function renderLayout(
     </head>
     <body>
       <div class="topbar">
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-right: 28px;">
           <a href="/admin/sites" class="brand" style="text-decoration: none; color: inherit;">
             <svg viewBox="0 0 512 512" width="28" height="28">
               <rect width="512" height="512" rx="96" fill="#1e293b"/>
@@ -67,20 +69,28 @@ export function renderLayout(
           <a href="/admin/sites" class="nav-tab ${activeTab === 'sites' || activeTab === 'home' ? 'active' : ''}">Sites</a>
           <a href="/admin/content" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
-          <a href="/admin/models" class="nav-tab ${activeTab === 'models' ? 'active' : ''}">Models</a>
-          <a href="/admin/logs" class="nav-tab ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs</a>
           <a href="/admin/git" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
-          <a href="/admin/setup" class="nav-tab ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
-          <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
-        </div>
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
-            <span style="color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
-            <span>${user?.name || user?.email || 'dev@localhost'}</span>
-            ${user?.authMethod === 'local-briefcase' ? html`<span style="font-size: 10px; color: #38bdf8; margin-left: 4px; font-weight: 700;">[Briefcase]</span>` : ''}
+          <div class="nav-dropdown">
+            <a href="/admin/setup" class="nav-tab ${isSystemActive ? 'active' : ''}" style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer;">
+              <span>System</span>
+              <span style="font-size: 9px; opacity: 0.7;">▼</span>
+            </a>
+            <div class="nav-dropdown-menu">
+              <a href="/admin/models" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">🧩 Models</a>
+              <a href="/admin/logs" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">📜 Logs & Activity</a>
+              <a href="/admin/setup" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">⚙️ Setup</a>
+              <a href="/admin/docs" class="nav-dropdown-item ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">📖 Docs & Help</a>
+            </div>
           </div>
-          <a href="/admin/logout" class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; text-decoration: none; color: #94a3b8; display: inline-flex; align-items: center; gap: 4px; border-color: rgba(255,255,255,0.12);" title="Lock Studio Session & Sign Out">
-            <span>🔒</span> Lock
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
+            <span style="font-size: 8px; color: ${user?.authMethod === 'cloudflare-access' ? '#10b981' : '#38bdf8'};">●</span>
+            <span style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${user?.name || user?.email || 'dev@localhost'}</span>
+            ${user?.authMethod === 'local-briefcase' ? html`<span style="font-size: 9px; color: #38bdf8; font-weight: 700;">[Briefcase]</span>` : ''}
+          </div>
+          <a href="/admin/logout" class="btn btn-secondary" style="font-size: 11px; padding: 4px 6px; text-decoration: none; color: #94a3b8; display: inline-flex; align-items: center; border-color: rgba(255,255,255,0.12); line-height: 1;" title="Lock Session & Sign Out">
+            <span style="font-size: 11px;">🔒</span>
           </a>
         </div>
       </div>
