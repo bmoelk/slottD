@@ -129,7 +129,7 @@ export function renderSitesView({
                 </div>
                 <div style="display: flex; justify-content: space-between;">
                   <span style="color: #64748b;">Branch / Path:</span>
-                  <span style="font-family: monospace;">${site.git_branch || 'main'} / ${site.content_path || 'content'}</span>
+                  <span style="font-family: monospace;">${site.git_branch || 'main'} / ${site.content_path ? site.content_path : 'root (/)'}</span>
                 </div>
                 <div style="display: flex; justify-content: space-between;">
                   <span style="color: #64748b;">Deploy Hook:</span>

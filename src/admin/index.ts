@@ -1452,7 +1452,7 @@ adminRouter.post('/sites/create', async (c) => {
     await registerSite(db, siteId, {
       git_remote_url: ((body.git_remote_url as string) || '').trim(),
       git_branch: ((body.git_branch as string) || 'main').trim(),
-      content_path: ((body.content_path as string) || 'content').trim(),
+      content_path: typeof body.content_path === 'string' ? body.content_path.trim() : 'content',
       deploy_hook: ((body.deploy_hook as string) || '').trim(),
     });
     return c.redirect('/admin/sites?created=1');

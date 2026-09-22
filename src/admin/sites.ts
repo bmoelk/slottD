@@ -176,7 +176,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     site_id: s.site_id!,
     git_remote_url: s.git_remote_url,
     git_branch: s.git_branch || 'main',
-    content_path: s.content_path || 'content',
+    content_path: s.content_path !== undefined ? s.content_path : 'content',
     deploy_hook: s.deploy_hook,
     updated_at: s.updated_at || Date.now(),
   }));
