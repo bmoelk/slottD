@@ -6,6 +6,7 @@ import type { SiteInfo } from '../sites.js';
 export interface SitesViewProps {
   sites: SiteInfo[];
   activeSite: string;
+  activeFavicon?: string;
   user: { email: string; authMethod?: string };
   message?: string;
   error?: string;
@@ -22,6 +23,7 @@ export interface SitesViewProps {
 export function renderSitesView({
   sites,
   activeSite,
+  activeFavicon,
   user,
   message,
   error,
@@ -74,7 +76,7 @@ export function renderSitesView({
             <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; font-weight: 600;">Current Studio Context</span>
             <div style="font-size: 22px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px; margin-top: 2px;">
               <span style="display: inline-flex; align-items: center; gap: 8px;">
-                ${renderFavicon(activeSite, 22)}
+                ${renderFavicon(activeSite, 22, activeFavicon)}
                 <span>${activeSite}</span>
               </span>
               <span style="font-size: 11px; background: rgba(56,189,248,0.15); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-weight: 500;">Active Partition</span>
@@ -168,7 +170,7 @@ export function renderSitesView({
               <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 12px;">
                 <div>
                   <div style="font-size: 16px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
-                    ${renderFavicon(site.site_id, 18)}
+                    ${renderFavicon(site.site_id, 18, site.favicon)}
                     <span>${site.site_id}</span>
                     ${isActive ? html`<span style="font-size: 10px; background: #38bdf8; color: #0284c7; padding: 1px 6px; border-radius: 10px; font-weight: 700; color: #0f172a;">ACTIVE</span>` : ''}
                   </div>
@@ -249,6 +251,23 @@ export function renderSitesView({
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="color: #64748b;">Branch / Path:</span>
                   <span style="font-family: monospace; font-size: 11px;">${site.git_branch || 'main'} / ${site.content_path ? site.content_path : 'root (/)'}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="color: #64748b;">Favicon:</span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span id="faviconStatus_${site.site_id}" style="font-size: 11px; color: ${site.favicon ? '#34d399' : '#94a3b8'};">
+                      ${site.favicon ? '✓ Cached (Offline Ready)' : '— Not cached'}
+                    </span>
+                    <button
+                      type="button"
+                      class="btn-copy"
+                      style="padding: 1px 8px; font-size: 10px; height: 20px;"
+                      onclick="fetchFavicon('${site.site_id}', this)"
+                      title="Fetch favicon directly from site URL and cache in D1"
+                    >
+                      ${site.favicon ? 'Refresh' : 'Fetch'}
+                    </button>
+                  </div>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="color: #64748b;">Deploy Hook:</span>
@@ -437,6 +456,22 @@ export function renderSitesView({
                 <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Production Deploy Hook URL</label>
                 <input type="url" name="deploy_hook" id="settingsDeployHook" placeholder="https://api.cloudflare.com/..." style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
               </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Site Favicon (Direct / Cached)</label>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <div id="settingsFaviconPreview" style="width: 32px; height: 32px; background: #0b1120; border: 1px solid #334155; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 16px;">
+                    🌐
+                  </div>
+                  <input type="text" name="favicon" id="settingsFavicon" placeholder="data:image/... or leave blank" style="flex: 1; min-width: 0; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 11px; font-family: monospace;" />
+                  <button type="button" id="btnSettingsFetchFavicon" onclick="fetchFaviconInModal()" class="btn btn-secondary" style="font-size: 11px; padding: 8px 12px; white-space: nowrap;">
+                    Fetch from Site
+                  </button>
+                </div>
+                <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
+                  Directly fetched from <code>https://&lt;domain&gt;/favicon.ico</code> and cached in D1 for 100% offline Briefcase mode.
+                </span>
+              </div>
             </div>
             <div style="padding: 16px 24px; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: flex-end; gap: 10px; background: rgba(0,0,0,0.2);">
               <button type="button" onclick="closeSettingsModal()" class="btn btn-secondary">Cancel</button>
@@ -566,6 +601,15 @@ export function renderSitesView({
           document.getElementById('settingsBranch').value = site.git_branch || 'main';
           document.getElementById('settingsContentPath').value = site.content_path || '';
           document.getElementById('settingsDeployHook').value = site.deploy_hook || '';
+          document.getElementById('settingsFavicon').value = site.favicon || '';
+          const preview = document.getElementById('settingsFaviconPreview');
+          if (preview) {
+            if (site.favicon) {
+              preview.innerHTML = '<img src="' + site.favicon + '" style="width:20px;height:20px;object-fit:contain;" />';
+            } else {
+              preview.innerHTML = '🌐';
+            }
+          }
           const tokenInput = document.getElementById('settingsGitToken');
           if (tokenInput) {
             tokenInput.value = '';
@@ -578,6 +622,75 @@ export function renderSitesView({
           const modal = document.getElementById('settingsSiteModal');
           if (modal) modal.style.display = 'none';
         }
+
+        async function fetchFaviconInModal() {
+          const siteId = document.getElementById('settingsSiteId').value;
+          const btn = document.getElementById('btnSettingsFetchFavicon');
+          if (btn) btn.textContent = 'Fetching...';
+          try {
+            const res = await fetch('/admin/sites/fetch-favicon', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ siteId })
+            });
+            const data = await res.json();
+            if (data.favicon) {
+              document.getElementById('settingsFavicon').value = data.favicon;
+              const preview = document.getElementById('settingsFaviconPreview');
+              if (preview) preview.innerHTML = '<img src="' + data.favicon + '" style="width:20px;height:20px;object-fit:contain;" />';
+              if (btn) btn.textContent = '✓ Updated';
+              setTimeout(() => { if (btn) btn.textContent = 'Fetch from Site'; }, 1500);
+            } else {
+              if (btn) btn.textContent = 'Not Found';
+              setTimeout(() => { if (btn) btn.textContent = 'Fetch from Site'; }, 2000);
+            }
+          } catch {
+            if (btn) btn.textContent = 'Error';
+            setTimeout(() => { if (btn) btn.textContent = 'Fetch from Site'; }, 2000);
+          }
+        }
+
+        async function fetchFavicon(siteId, btn) {
+          const origText = btn ? btn.textContent : '';
+          if (btn) btn.textContent = '...';
+          try {
+            const res = await fetch('/admin/sites/fetch-favicon', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ siteId })
+            });
+            const data = await res.json();
+            if (data.favicon) {
+              if (btn) btn.textContent = '✓';
+              const status = document.getElementById('faviconStatus_' + siteId);
+              if (status) {
+                status.textContent = '✓ Cached (Offline Ready)';
+                status.style.color = '#34d399';
+              }
+              const imgs = document.querySelectorAll('[data-site-favicon="' + encodeURIComponent(siteId) + '"]');
+              imgs.forEach(img => {
+                img.src = data.favicon;
+                img.style.display = 'inline-block';
+                if (img.nextElementSibling) img.nextElementSibling.style.display = 'none';
+              });
+              setTimeout(() => { if (btn) btn.textContent = 'Refresh'; }, 1500);
+            } else {
+              if (btn) btn.textContent = 'Failed';
+              setTimeout(() => { if (btn) btn.textContent = origText; }, 2000);
+            }
+          } catch (e) {
+            if (btn) btn.textContent = 'Error';
+            setTimeout(() => { if (btn) btn.textContent = origText; }, 2000);
+          }
+        }
+
+        // Auto-fetch for any sites missing cached favicon on page load
+        window.addEventListener('DOMContentLoaded', () => {
+          const missing = ${JSON.stringify(sites.filter((s) => !s.favicon).map((s) => s.site_id))};
+          missing.forEach((id) => {
+            fetchFavicon(id, null);
+          });
+        });
 
         function openDeleteModal(siteId) {
           document.getElementById('deleteSiteId').value = siteId;
@@ -619,6 +732,6 @@ export function renderSitesView({
       </script>
     `,
     undefined,
-    { activeSite, availableSites: availableSiteIds }
+    { activeSite, availableSites: availableSiteIds, activeFavicon }
   );
 }

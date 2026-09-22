@@ -10,7 +10,7 @@ export function renderLayout(
   user: { email: string; name?: string; authMethod?: string },
   content: any,
   editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' },
-  siteContext?: { activeSite?: string; availableSites?: string[] }
+  siteContext?: { activeSite?: string; availableSites?: string[]; activeFavicon?: string; siteFavicons?: Record<string, string> }
 ) {
   const tier = editorConfig?.tier || 'light';
   const format = editorConfig?.format || 'markdown';
@@ -60,7 +60,7 @@ export function renderLayout(
             <h1>SlottD Studio</h1>
           </a>
           <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context">
-            ${renderFavicon(siteContext?.activeSite || '', 14)}
+            ${renderFavicon(siteContext?.activeSite || '', 14, siteContext?.activeFavicon)}
             <select onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
               ${(siteContext?.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext?.activeSite || 'default']).map(s => html`<option value="${s}" ${s === (siteContext?.activeSite || 'default') ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
             </select>

@@ -17,6 +17,7 @@ export interface SiteInfo {
   repo_path?: string;
   deploy_hook?: string;
   has_token?: boolean;
+  favicon?: string;
   updated_at: number;
 }
 
@@ -152,6 +153,7 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
       if (row.key === 'repo_path' || row.key === 'local_repo_path') entry.repo_path = row.value;
       if (row.key === 'deploy_hook' || row.key === 'deploy_hook_url') entry.deploy_hook = row.value;
       if (row.key === 'git_token_enc' && row.value) entry.has_token = true;
+      if (row.key === 'favicon' && row.value) entry.favicon = row.value;
       if (row.updated_at > (entry.updated_at || 0)) entry.updated_at = row.updated_at;
     }
   } catch {}
@@ -184,8 +186,82 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     repo_path: s.repo_path,
     deploy_hook: s.deploy_hook,
     has_token: !!s.has_token,
+    favicon: s.favicon,
     updated_at: s.updated_at || Date.now(),
   }));
+}
+
+/**
+ * Directly fetches the favicon from the site's live URL and converts it to a Base64 data URI.
+ * Tries https://${siteId}/favicon.ico, /favicon.png, /favicon.svg with a 3.5s timeout.
+ */
+export async function fetchSiteFavicon(siteId: string): Promise<string | null> {
+  const domain = siteId.trim().toLowerCase();
+  if (!domain || domain === 'default' || domain.endsWith('.local') || domain.endsWith('.test')) {
+    return null;
+  }
+
+  const urlsToTry = [
+    `https://${domain}/favicon.ico`,
+    `https://${domain}/favicon.png`,
+    `https://${domain}/favicon.svg`,
+    `http://${domain}/favicon.ico`,
+  ];
+
+  for (const url of urlsToTry) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; SlottD-Studio/1.0; +https://slottd.io)',
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        },
+        redirect: 'follow',
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || 'image/x-icon';
+        if (contentType.startsWith('text/') || contentType.includes('html')) {
+          continue;
+        }
+        const buffer = await res.arrayBuffer();
+        if (buffer.byteLength > 0 && buffer.byteLength < 256 * 1024) {
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          const base64 = btoa(binary);
+          const mime = contentType.split(';')[0].trim() || 'image/x-icon';
+          return `data:${mime};base64,${base64}`;
+        }
+      }
+    } catch {
+      // Ignore network timeout / unreachable errors
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Retrieves the favicon for a site directly from its URL and caches it in system_site_settings.
+ */
+export async function cacheSiteFavicon(
+  db: Kysely<Database>,
+  siteId: string,
+  faviconDataUri?: string
+): Promise<string | null> {
+  const cleanSiteId = siteId.toLowerCase().trim();
+  const dataUri = faviconDataUri || (await fetchSiteFavicon(cleanSiteId));
+  if (dataUri) {
+    await registerSite(db, cleanSiteId, { favicon: dataUri });
+    return dataUri;
+  }
+  return null;
 }
 
 /**

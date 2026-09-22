@@ -22,7 +22,7 @@ export interface GitViewData {
 export function renderGitView(
   data: GitViewData,
   user: { email: string; authMethod?: string },
-  siteContext?: { activeSite?: string; availableSites?: string[] }
+  siteContext?: { activeSite?: string; availableSites?: string[]; activeFavicon?: string }
 ) {
   const defaultTag = `release-${new Date().toISOString().slice(0, 10).replace(/-/g, '.')}-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
   const activeSite = siteContext?.activeSite || 'default';
@@ -340,7 +340,7 @@ export function renderGitView(
         <div>
           <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Active Site</span>
           <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #38bdf8; font-size: 14px;">
-            ${renderFavicon(activeSite, 16)}
+            ${renderFavicon(activeSite, 16, siteContext?.activeFavicon)}
             <span>${activeSite}</span>
           </span>
         </div>

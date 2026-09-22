@@ -24,17 +24,28 @@ export function renderInfoBubble(
 }
 
 /**
- * Renders site favicon with automatic fallback to globe emoji
+ * Renders site favicon with automatic fallback to globe emoji.
+ * If cachedFavicon (Base64 data URI) is provided, uses it directly (0 network requests, Briefcase offline ready).
+ * Otherwise falls back to fetching directly from https://${siteId}/favicon.ico.
+ * Zero reliance on Google CDN.
  */
-export function renderFavicon(siteId: string, size = 16) {
+export function renderFavicon(siteId: string, size = 16, cachedFavicon?: string) {
   const enc = encodeURIComponent(siteId || '');
+  const cleanId = (siteId || '').trim().toLowerCase();
+  const src = cachedFavicon || (cleanId && cleanId !== 'default' ? `https://${cleanId}/favicon.ico` : '');
+
+  if (!src) {
+    return html`<span style="font-size: ${size}px; line-height: 1; vertical-align: middle;">🌐</span>`;
+  }
+
   return html`<img
-    src="https://www.google.com/s2/favicons?domain=${enc}&sz=${size * 2}"
+    src="${src}"
+    data-site-favicon="${enc}"
     alt=""
     width="${size}"
     height="${size}"
     loading="lazy"
     style="width: ${size}px; height: ${size}px; border-radius: 3px; object-fit: contain; vertical-align: middle; flex-shrink: 0;"
     onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='inline-block';"
-  /><span style="display: none; font-size: ${size}px; line-height: 1;">🌐</span>`;
+  /><span style="display: none; font-size: ${size}px; line-height: 1; vertical-align: middle;">🌐</span>`;
 }

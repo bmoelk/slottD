@@ -22,7 +22,7 @@ import { renderSitesView } from './views/sites.js';
 import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
-import { renameSite, listSites, registerSite, deleteSite } from './sites.js';
+import { renameSite, listSites, registerSite, deleteSite, cacheSiteFavicon } from './sites.js';
 import { resolveSiteId, normalizeSiteId } from '../auth/site.js';
 import { syncCollectionView } from '../api/views.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
@@ -159,9 +159,14 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
 
 export async function getSiteContext(c: any, db: any) {
   let availableSites: string[] = [];
+  const siteFavicons: Record<string, string> = {};
+  let activeFavicon: string | undefined;
   try {
     const sites = await listSites(db);
     availableSites = sites.map((s) => s.site_id);
+    for (const s of sites) {
+      if (s.favicon) siteFavicons[s.site_id] = s.favicon;
+    }
   } catch {}
 
   let activeSite = (c.get('siteId') as string);
@@ -174,7 +179,9 @@ export async function getSiteContext(c: any, db: any) {
   } else if (availableSites.length === 0) {
     availableSites = [activeSite || 'default'];
   }
-  return { activeSite, availableSites };
+  activeFavicon = siteFavicons[activeSite];
+
+  return { activeSite, availableSites, activeFavicon, siteFavicons };
 }
 
 export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
@@ -1459,6 +1466,7 @@ adminRouter.get('/sites', async (c) => {
     renderSitesView({
       sites,
       activeSite: siteContext.activeSite,
+      activeFavicon: siteContext.activeFavicon,
       user,
       message,
       error,
@@ -1515,6 +1523,10 @@ adminRouter.post('/sites/create', async (c) => {
       settings.git_token_enc = await encryptSecret(gitToken, secret);
     }
     await registerSite(db, siteId, settings);
+    // Automatically attempt caching the site's favicon
+    try {
+      await cacheSiteFavicon(db, siteId);
+    } catch {}
     return c.redirect('/admin/sites?created=1');
   } catch (err: any) {
     return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
@@ -1537,15 +1549,37 @@ adminRouter.post('/sites/update', async (c) => {
       repo_path: ((body.repo_path as string) || '').trim(),
       deploy_hook: ((body.deploy_hook as string) || '').trim(),
     };
+    if (typeof body.favicon === 'string' && body.favicon.trim()) {
+      settings.favicon = body.favicon.trim();
+    }
     const gitToken = ((body.git_token as string) || '').trim();
     if (gitToken) {
       const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
       settings.git_token_enc = await encryptSecret(gitToken, secret);
     }
     await registerSite(db, siteId, settings);
+    if (body.refresh_favicon === '1') {
+      try {
+        await cacheSiteFavicon(db, siteId);
+      } catch {}
+    }
     return c.redirect('/admin/sites?updated=1');
   } catch (err: any) {
     return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/fetch-favicon', async (c) => {
+  const db = createDb(c.env.DB);
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+    const siteId = ((body.siteId || body.site_id || '') as string).trim().toLowerCase();
+    if (!siteId) return c.json({ ok: false, error: 'siteId is required' }, 400);
+    const dataUri = await cacheSiteFavicon(db, siteId);
+    if (!dataUri) return c.json({ ok: false, error: 'Favicon not found or fetch failed' }, 404);
+    return c.json({ ok: true, siteId, favicon: dataUri });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message || 'Failed to fetch favicon' }, 500);
   }
 });
 
