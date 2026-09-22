@@ -53,8 +53,10 @@ SELECT
   data, draft_data, draft_updated_at, draft_status, created_at, updated_at
 FROM documents;
 
+PRAGMA legacy_alter_table = ON;
 DROP TABLE documents;
 ALTER TABLE documents_multisite RENAME TO documents;
+PRAGMA legacy_alter_table = OFF;
 
 CREATE INDEX IF NOT EXISTS idx_docs_site_col_slug ON documents(site_id, collection, slug);
 CREATE INDEX IF NOT EXISTS idx_docs_site_col_status ON documents(site_id, collection, status);
@@ -79,8 +81,10 @@ INSERT INTO media_multisite (id, site_id, key, filename, mime_type, size, width,
 SELECT id, 'default', key, filename, mime_type, size, width, height, created_at
 FROM media;
 
+PRAGMA legacy_alter_table = ON;
 DROP TABLE media;
 ALTER TABLE media_multisite RENAME TO media;
+PRAGMA legacy_alter_table = OFF;
 
 CREATE INDEX IF NOT EXISTS idx_media_site_key ON media(site_id, key);
 
