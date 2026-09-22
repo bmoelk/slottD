@@ -156,7 +156,7 @@ export class IsomorphicGitDriver implements GitDriver {
    * Commits files to in-memory Volume and pushes commit & tag over Git Smart HTTP.
    */
   async createRelease(options: {
-    tag: string;
+    tag?: string;
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
@@ -166,7 +166,7 @@ export class IsomorphicGitDriver implements GitDriver {
       throw new Error('No Git remote URL configured.');
     }
 
-    const scopedTag = scopeReleaseTag(options.tag, this.siteId, this.isMonorepo);
+    const scopedTag = options.tag ? scopeReleaseTag(options.tag, this.siteId, this.isMonorepo) : undefined;
     const vol = new Volume();
     const fs = createFsFromVolume(vol);
     const onAuth = this.getAuthCallback();
@@ -220,11 +220,15 @@ export class IsomorphicGitDriver implements GitDriver {
     });
 
     // 4. Tag
-    await git.tag({
-      fs: fs as any,
-      dir: '/',
-      ref: scopedTag,
-    });
+    let tagCreated = false;
+    if (scopedTag) {
+      await git.tag({
+        fs: fs as any,
+        dir: '/',
+        ref: scopedTag,
+      });
+      tagCreated = true;
+    }
 
     // 5. Push if requested
     let pushed = false;
@@ -239,22 +243,26 @@ export class IsomorphicGitDriver implements GitDriver {
         onAuth,
       });
 
-      // Push release tag
-      await git.push({
-        fs: fs as any,
-        http,
-        dir: '/',
-        url: this.url,
-        ref: scopedTag,
-        onAuth,
-      });
+      // Push release tag if created
+      if (scopedTag) {
+        await git.push({
+          fs: fs as any,
+          http,
+          dir: '/',
+          url: this.url,
+          ref: scopedTag,
+          onAuth,
+        });
+      }
       pushed = true;
     }
 
     return {
       commitSha,
-      tagCreated: true,
-      message: `Release '${scopedTag}' committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`,
+      tagCreated,
+      message: scopedTag
+        ? `Release '${scopedTag}' committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`
+        : `Changes committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`,
       pushed,
       contentSubpath: this.contentSubpath || 'content',
       isMonorepo: this.isMonorepo,

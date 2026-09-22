@@ -29,7 +29,7 @@ export interface GitDriver {
   listTags(): Promise<string[]>;
   loadTagContent(tag: string): Promise<GitContentItem[]>;
   createRelease(options: {
-    tag: string;
+    tag?: string;
     message: string;
     files: SerializedGitFile[];
     push?: boolean;

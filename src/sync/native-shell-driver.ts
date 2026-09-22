@@ -88,7 +88,7 @@ export class NativeShellGitDriver implements GitDriver {
   }
 
   async createRelease(options: {
-    tag: string;
+    tag?: string;
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
