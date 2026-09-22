@@ -48,7 +48,7 @@ export function renderSitesView({
           </p>
         </div>
         <div class="header-actions">
-          <a href="#add-site" class="btn btn-primary">+ Register New Website</a>
+          <button type="button" onclick="openRegisterModal()" class="btn btn-primary">+ Register New Website</button>
         </div>
       </div>
 
@@ -210,8 +210,8 @@ export function renderSitesView({
                 </div>
               </div>
 
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <form action="/admin/sites/pull" method="POST" style="flex: 1; min-width: 100px;">
+              <div style="display: flex; gap: 8px;">
+                <form action="/admin/sites/pull" method="POST" style="flex: 1;">
                   <input type="hidden" name="siteId" value="${site.site_id}" />
                   <button type="submit" class="btn btn-secondary" style="width: 100%; font-size: 12px; padding: 6px;" title="Pull and hydrate content from Git repository into D1">
                     ⬇ Pull Content
@@ -221,28 +221,10 @@ export function renderSitesView({
                   type="button"
                   onclick="openSettingsModal('${site.site_id}')"
                   class="btn btn-secondary"
-                  style="font-size: 12px; padding: 6px 10px;"
+                  style="font-size: 12px; padding: 6px 12px;"
                   title="Configure Git repository, tokens, and build hooks"
                 >
                   ⚙ Settings
-                </button>
-                <button
-                  type="button"
-                  onclick="openRenameModal('${site.site_id}')"
-                  class="btn btn-secondary"
-                  style="font-size: 12px; padding: 6px 10px;"
-                  title="Rename domain atomically"
-                >
-                  ✏ Rename
-                </button>
-                <button
-                  type="button"
-                  onclick="openDeleteModal('${site.site_id}')"
-                  class="btn btn-secondary"
-                  style="font-size: 12px; padding: 6px 10px; color: #ef4444; border-color: rgba(239,68,68,0.3);"
-                  title="Delete or unregister this website"
-                >
-                  🗑️
                 </button>
               </div>
             </div>
@@ -250,107 +232,109 @@ export function renderSitesView({
         })}
       </div>
 
-      <!-- Register New Website Panel -->
-      <div class="card" id="add-site" style="padding: 24px; max-width: 720px; margin-bottom: 32px;">
-        <h3 style="font-size: 16px; font-weight: 700; color: #f8fafc; margin-bottom: 4px;">
-          + Register / Configure Website
-        </h3>
-        <p style="font-size: 12px; color: #94a3b8; margin-bottom: 16px;">
-          Add a new domain partition and configure its dedicated Git repository, access token, local Briefcase path, and build deploy hook.
-        </p>
-
-        <form action="/admin/sites/create" method="POST">
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Website Domain / Site ID</label>
-            <input
-              type="text"
-              name="siteId"
-              placeholder="e.g. spectragql.dev"
-              required
-              style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-            />
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Git Remote Repository URL</label>
-            <input
-              type="text"
-              name="git_remote_url"
-              placeholder="e.g. git@github.com:brainendeavor/spectragql.dev.git"
-              style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-            />
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">
-              Git Personal Access Token (PAT) (Optional)
-            </label>
-            <input
-              type="password"
-              name="git_token"
-              placeholder="e.g. ghp_xxxxxxxxxxxx"
-              autocomplete="off"
-              style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-            />
-            <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
-              Encrypted at rest with AES-GCM in D1. Dedicated token for this website repository; overrides global token.
-            </span>
-          </div>
-
-          <div style="margin-bottom: 12px;">
-            <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">
-              Local Repository Path (Optional — Briefcase / Native Git Only)
-            </label>
-            <input
-              type="text"
-              name="repo_path"
-              placeholder="e.g. /Users/bmo/code/websites-git-repos/spectragql.dev"
-              style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-            />
-            <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
-              <strong>Optional:</strong> Only used in local workstation / Briefcase mode. Cloudflare Workers remote execution operates purely in-memory via Smart HTTP and ignores this field.
-            </span>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Branch</label>
-              <input
-                type="text"
-                name="git_branch"
-                value="main"
-                style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-              />
+      <!-- Register New Website Modal Dialog (Popup) -->
+      <div id="registerSiteModal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.75); backdrop-filter: blur(4px); z-index: 99999; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box;">
+        <div style="background: #1e293b; border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; max-width: 540px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); display: flex; flex-direction: column; color: #f8fafc;">
+          <div style="padding: 18px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 18px;">🌐</span>
+              <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">Register New Website</h3>
             </div>
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Content Path</label>
-              <input
-                type="text"
-                name="content_path"
-                value=""
-                placeholder="Leave blank for dedicated repository root"
-                style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-              />
-              <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
-                Use blank / empty string for dedicated repositories with root-level collections.
-              </span>
+            <button type="button" onclick="closeRegisterModal()" style="background: none; border: none; color: #94a3b8; font-size: 20px; cursor: pointer; padding: 4px;">✕</button>
+          </div>
+          <form action="/admin/sites/create" method="POST">
+            <div style="padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Website Domain / Site ID</label>
+                <input
+                  type="text"
+                  name="siteId"
+                  id="registerSiteIdInput"
+                  placeholder="e.g. spectragql.dev"
+                  required
+                  style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                />
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Git Remote Repository URL</label>
+                <input
+                  type="text"
+                  name="git_remote_url"
+                  placeholder="e.g. git@github.com:brainendeavor/spectragql.dev.git"
+                  style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                />
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">
+                  Git Personal Access Token (PAT) (Optional)
+                </label>
+                <input
+                  type="password"
+                  name="git_token"
+                  placeholder="e.g. ghp_xxxxxxxxxxxx"
+                  autocomplete="off"
+                  style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                />
+                <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
+                  Encrypted at rest with AES-GCM in D1. Dedicated token for this website repository; overrides global token.
+                </span>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">
+                  Local Repository Path (Optional — Briefcase / Native Git Only)
+                </label>
+                <input
+                  type="text"
+                  name="repo_path"
+                  placeholder="e.g. /Users/bmo/code/websites-git-repos/spectragql.dev"
+                  style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                />
+                <span style="font-size: 11px; color: #64748b; margin-top: 2px; display: block;">
+                  <strong>Optional:</strong> Only used in local Briefcase mode. Cloudflare Workers remote execution operates purely in-memory via Smart HTTP and ignores this field.
+                </span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Branch</label>
+                  <input
+                    type="text"
+                    name="git_branch"
+                    value="main"
+                    style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                  />
+                </div>
+                <div>
+                  <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Content Path</label>
+                  <input
+                    type="text"
+                    name="content_path"
+                    value=""
+                    placeholder="Leave blank for dedicated root"
+                    style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Production Deploy Hook URL (Optional)</label>
+                <input
+                  type="url"
+                  name="deploy_hook"
+                  placeholder="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/..."
+                  style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
+                />
+              </div>
             </div>
-          </div>
-
-          <div style="margin-bottom: 16px;">
-            <label style="display: block; font-size: 12px; font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Production Deploy Hook URL (Optional)</label>
-            <input
-              type="url"
-              name="deploy_hook"
-              placeholder="https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/..."
-              style="width: 100%; background: #0b1120; border: 1px solid #334155; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 13px;"
-            />
-          </div>
-
-          <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">
-            Save & Register Website
-          </button>
-        </form>
+            <div style="padding: 16px 24px; border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: flex-end; gap: 10px; background: rgba(0,0,0,0.2);">
+              <button type="button" onclick="closeRegisterModal()" class="btn btn-secondary">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save & Register Website</button>
+            </div>
+          </form>
+        </div>
       </div>
 
       <!-- Edit Site Settings Modal Dialog -->
@@ -493,6 +477,21 @@ export function renderSitesView({
       <script>
         const sitesData = ${raw(JSON.stringify(sites))};
 
+        function openRegisterModal() {
+          const modal = document.getElementById('registerSiteModal');
+          const input = document.getElementById('registerSiteIdInput');
+          if (input) {
+            input.value = '';
+            setTimeout(() => input.focus(), 50);
+          }
+          if (modal) modal.style.display = 'flex';
+        }
+
+        function closeRegisterModal() {
+          const modal = document.getElementById('registerSiteModal');
+          if (modal) modal.style.display = 'none';
+        }
+
         function openRenameModal(siteId) {
           const modal = document.getElementById('renameSiteModal');
           const oldInput = document.getElementById('renameOldSiteId');
@@ -565,6 +564,7 @@ export function renderSitesView({
 
         document.addEventListener('keydown', function(e) {
           if (e.key === 'Escape') {
+            closeRegisterModal();
             closeRenameModal();
             closeSettingsModal();
             closeDeleteModal();

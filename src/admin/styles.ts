@@ -27,15 +27,24 @@ export const adminStyles = `
   .nav-dropdown-menu {
     display: none;
     position: absolute;
-    top: calc(100% + 4px);
+    top: 100%;
     right: 0;
-    min-width: 170px;
+    min-width: 160px;
     background: #0f172a;
     border: 1px solid #1e293b;
     border-radius: 8px;
     box-shadow: 0 12px 28px rgba(0,0,0,0.6);
     padding: 6px;
     z-index: 1000;
+    margin-top: 2px;
+  }
+  .nav-dropdown-menu::before {
+    content: '';
+    position: absolute;
+    top: -8px;
+    left: 0;
+    right: 0;
+    height: 8px;
   }
   .nav-dropdown:hover .nav-dropdown-menu,
   .nav-dropdown:focus-within .nav-dropdown-menu {

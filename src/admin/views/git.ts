@@ -362,104 +362,119 @@ export function renderGitView(
       </div>
     </div>
 
-    <!-- Sub-Tabs: Export vs Import (Segmented Navigation) -->
+    <!-- Sub-Tabs: Export vs Import (Authentic Browser Tabs) -->
     <div x-data="{ gitTab: 'export' }" style="margin-bottom: 24px;">
       
-      <!-- Segmented Tab Bar -->
-      <div style="display: flex; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
-        <div style="display: inline-flex; background: #0b1120; padding: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
-          <button
-            type="button"
-            @click="gitTab = 'export'"
-            :style="gitTab === 'export' ? 'background: #1e293b; color: #f8fafc; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15);' : 'background: transparent; color: #94a3b8; border: 1px solid transparent;'"
-            style="padding: 8px 20px; font-size: 13px; border-radius: 6px; cursor: pointer; transition: 0.15s; display: inline-flex; align-items: center; gap: 8px;"
-          >
-            <span>⬆️</span> Export & Releases
-          </button>
-          <button
-            type="button"
-            @click="gitTab = 'import'"
-            :style="gitTab === 'import' ? 'background: #1e293b; color: #f8fafc; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.15);' : 'background: transparent; color: #94a3b8; border: 1px solid transparent;'"
-            style="padding: 8px 20px; font-size: 13px; border-radius: 6px; cursor: pointer; transition: 0.15s; display: inline-flex; align-items: center; gap: 8px;"
-          >
-            <span>⬇️</span> Import & Restore
-          </button>
-        </div>
+      <!-- Tab Navigation -->
+      <div style="display: flex; gap: 6px; border-bottom: 2px solid #1e293b; margin-bottom: 24px;">
+        <button
+          type="button"
+          @click="gitTab = 'export'"
+          :style="gitTab === 'export' ? 'background: #0f172a; color: #f8fafc; border-color: #38bdf8 #1e293b #0f172a #1e293b; border-bottom-color: #0f172a; margin-bottom: -2px; font-weight: 700;' : 'background: rgba(15, 23, 42, 0.4); color: #94a3b8; border-color: transparent; font-weight: 500;'"
+          style="padding: 12px 28px; font-size: 14px; border-radius: 8px 8px 0 0; border-width: 2px 1px 1px 1px; border-style: solid; cursor: pointer; transition: 0.15s; outline: none;"
+        >
+          Export & Releases
+        </button>
+        <button
+          type="button"
+          @click="gitTab = 'import'"
+          :style="gitTab === 'import' ? 'background: #0f172a; color: #f8fafc; border-color: #38bdf8 #1e293b #0f172a #1e293b; border-bottom-color: #0f172a; margin-bottom: -2px; font-weight: 700;' : 'background: rgba(15, 23, 42, 0.4); color: #94a3b8; border-color: transparent; font-weight: 500;'"
+          style="padding: 12px 28px; font-size: 14px; border-radius: 8px 8px 0 0; border-width: 2px 1px 1px 1px; border-style: solid; cursor: pointer; transition: 0.15s; outline: none;"
+        >
+          Import & Restore
+        </button>
       </div>
 
       <!-- TAB 1: EXPORT & RELEASES -->
       <div x-show="gitTab === 'export'" x-cloak>
-        <div class="card" style="padding: 24px; max-width: 800px;">
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-            <span style="font-size: 26px;">🏷️</span>
-            <div>
-              <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
-                Content Export & Release Pipeline
-              </h3>
-              <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">
-                Select operations to execute. Dry Run lets you inspect planned changes safely before modifying disk or remote state.
-              </p>
-            </div>
-          </div>
-
-          <!-- Decoupled Pipeline Checkboxes -->
-          <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
-              <input type="checkbox" id="opExportFiles" checked style="cursor: pointer; width: 16px; height: 16px;" />
-              <span>Export Files to Repository (<code>${data.contentSubpath || 'root (/)'}</code>) + Auto-Generate <code>README.md</code></span>
-            </label>
-
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
-              <input type="checkbox" id="opCreateTag" checked onchange="toggleTagInputs(this.checked)" style="cursor: pointer; width: 16px; height: 16px;" />
-              <span>Create Annotated Git Release Tag</span>
-            </label>
-
-            <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
-              <input type="checkbox" id="opPushRemote" ${data.hasRemote ? 'checked' : ''} ${!data.hasRemote ? 'disabled' : ''} style="cursor: pointer; width: 16px; height: 16px;" />
-              <span>Push to Remote Repository (<code>${data.hasRemote ? data.remoteUrl : 'Remote not configured'}</code>)</span>
-            </label>
-          </div>
-
-          <!-- Tag & Commit Message Inputs -->
-          <div id="tagInputsGroup" style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; transition: opacity 0.2s;">
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Release Tag Name</label>
-              <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" style="width: 100%; box-sizing: border-box;" />
-            </div>
-
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Commit Message</label>
-              <input type="text" id="releaseCommitMsg" class="input-search" value="chore(content): release snapshot ${defaultTag}" style="width: 100%; box-sizing: border-box;" />
-            </div>
-          </div>
-
-          <!-- Action Buttons: Execute vs Dry Run -->
-          <div style="display: flex; gap: 12px; align-items: center;">
-            <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(false)">
-              🚀 Execute Operations
-            </button>
-            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(true)">
-              🔍 Dry Run (Preview)
-            </button>
-          </div>
-
-          <!-- À La Carte Downloads Card -->
-          <div style="background: rgba(15, 23, 42, 0.6); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 16px; margin-top: 24px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+          
+          <!-- Primary Focus: Content Export & Release Pipeline -->
+          <div class="card" style="flex: 1; min-width: 320px; padding: 24px; margin-bottom: 0;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
               <div>
-                <span style="font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; display: block;">À La Carte Downloads</span>
-                <span style="font-size: 12px; color: #94a3b8;">Standalone single-click asset downloads without Git commits or remote pushes.</span>
-              </div>
-              <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 7px 14px; display: inline-flex; align-items: center; gap: 6px;" onclick="exportFilesZip()" title="Download entire collection directory tree as a ZIP archive">
-                  📦 Export Files as ZIP
-                </button>
-                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 7px 14px; display: inline-flex; align-items: center; gap: 6px;" onclick="downloadBackupJson()" title="Download full JSON database dump for active site">
-                  ⬇️ Export JSON Dump
-                </button>
+                <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
+                  Content Export & Release Pipeline
+                </h3>
+                <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">
+                  Select operations to execute. Dry Run lets you inspect planned changes safely before modifying disk or remote state.
+                </p>
               </div>
             </div>
+
+            <!-- Decoupled Pipeline Checkboxes -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opExportFiles" checked style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Export Files to Repository (<code>${data.contentSubpath || 'root (/)'}</code>) + Auto-Generate <code>README.md</code></span>
+              </label>
+
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opCreateTag" checked onchange="toggleTagInputs(this.checked)" style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Create Annotated Git Release Tag</span>
+              </label>
+
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opPushRemote" ${data.hasRemote ? 'checked' : ''} ${!data.hasRemote ? 'disabled' : ''} style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Push to Remote Repository (<code>${data.hasRemote ? data.remoteUrl : 'Remote not configured'}</code>)</span>
+              </label>
+            </div>
+
+            <!-- Tag & Commit Message Inputs -->
+            <div id="tagInputsGroup" style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; transition: opacity 0.2s;">
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Release Tag Name</label>
+                <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Commit Message</label>
+                <input type="text" id="releaseCommitMsg" class="input-search" value="chore(content): release snapshot ${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+              </div>
+            </div>
+
+            <!-- Action Buttons: Execute vs Dry Run -->
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(false)">
+                Execute Operations
+              </button>
+              <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(true)">
+                Dry Run (Preview)
+              </button>
+            </div>
           </div>
+
+          <!-- Vertical Action Bar: À La Carte Downloads -->
+          <div class="card" style="width: 260px; padding: 20px; background: #0c1322; border: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 14px; flex-shrink: 0; margin-bottom: 0;">
+            <div>
+              <span style="font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; display: block;">À La Carte Downloads</span>
+              <span style="font-size: 12px; color: #64748b; margin-top: 4px; display: block; line-height: 1.4;">
+                Instant asset exports without Git commits or remote pushes.
+              </span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="exportFilesZip()"
+                style="width: 100%; justify-content: flex-start; padding: 10px 14px; font-size: 13px;"
+                title="Download entire collection directory tree as a ZIP archive"
+              >
+                Export Files as ZIP
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="downloadBackupJson()"
+                style="width: 100%; justify-content: flex-start; padding: 10px 14px; font-size: 13px;"
+                title="Download full JSON database dump for active site"
+              >
+                Export JSON Dump
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
 
@@ -467,7 +482,6 @@ export function renderGitView(
       <div x-show="gitTab === 'import'" x-cloak>
         <div class="card" style="padding: 24px; max-width: 800px;">
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
-            <span style="font-size: 26px;">🔄</span>
             <div>
               <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
                 Compare & Restore Content from Git Tag
@@ -490,7 +504,7 @@ export function renderGitView(
                   `)}
                 </select>
                 <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
-                  🔄 Fetch Remote Tags
+                  Fetch Remote Tags
                 </button>
               </div>
             </div>
@@ -503,10 +517,10 @@ export function renderGitView(
 
           <div style="display: flex; gap: 12px; align-items: center;">
             <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px; background: #10b981; border-color: #10b981; color: #0f172a; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;" onclick="executeRestore()">
-              📥 Execute Import (Restore D1)
+              Execute Import (Restore D1)
             </button>
             <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 6px;" onclick="previewGitDiff()">
-              🔍 Preview Diff (Dry Run)
+              Preview Diff (Dry Run)
             </button>
           </div>
         </div>

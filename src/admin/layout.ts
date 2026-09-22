@@ -14,7 +14,7 @@ export function renderLayout(
   const tier = editorConfig?.tier || 'light';
   const format = editorConfig?.format || 'markdown';
 
-  const isSystemActive = ['models', 'logs', 'activity', 'setup', 'docs', 'help'].includes(activeTab);
+  const isSystemActive = ['models', 'logs', 'activity', 'setup'].includes(activeTab);
 
   return html`
     <!DOCTYPE html>
@@ -70,18 +70,23 @@ export function renderLayout(
           <a href="/admin/content" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
           <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
           <a href="/admin/git" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
-          <div class="nav-dropdown">
-            <a href="/admin/setup" class="nav-tab ${isSystemActive ? 'active' : ''}" style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer;">
+          <div class="nav-dropdown" x-data="{ open: false }" @click.outside="open = false">
+            <button
+              type="button"
+              class="nav-tab ${isSystemActive ? 'active' : ''}"
+              @click="open = !open"
+              style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer; background: ${isSystemActive ? 'var(--accent)' : 'transparent'}; border: none; font-family: inherit; font-size: 13px;"
+            >
               <span>System</span>
               <span style="font-size: 9px; opacity: 0.7;">▼</span>
-            </a>
-            <div class="nav-dropdown-menu">
-              <a href="/admin/models" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">🧩 Models</a>
-              <a href="/admin/logs" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">📜 Logs & Activity</a>
-              <a href="/admin/setup" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">⚙️ Setup</a>
-              <a href="/admin/docs" class="nav-dropdown-item ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">📖 Docs & Help</a>
+            </button>
+            <div class="nav-dropdown-menu" :style="open ? 'display: flex;' : ''">
+              <a href="/admin/models" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">Models</a>
+              <a href="/admin/logs" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs & Activity</a>
+              <a href="/admin/setup" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
             </div>
           </div>
+          <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
         <div style="display: flex; align-items: center; gap: 6px;">
           <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">
