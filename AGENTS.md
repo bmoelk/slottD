@@ -91,4 +91,9 @@ This file defines coding standards, repository policies, and architectural guard
    - Code and build artifacts (`.git`, `node_modules`, `dist`, `src`, `public`, `scripts`, `tests`, `docs`, `packages`) must be strictly ignored.
 5. **D1 Hydration Integrity (`hydrateFromGit`)**:
    - When restoring records from Git, always reconcile against D1 by `(collection, slug)` before insert/update. This guarantees SQLite `UNIQUE(collection, slug)` integrity and preserves existing record UUIDs.
+6. **Monorepo Guardrails vs. Dedicated Repositories**:
+   - When operating inside a monorepo (`isMonorepo === true`), content paths MUST be constrained to dedicated subdirectories (`content/`) to prevent clobbering root workspace files (`package.json`, `wrangler.toml`).
+   - For dedicated content repositories (`isMonorepo === false`), root-level collections are first-class citizens (`content_subpath = ""` or root). SlottD safely scans root directories while strictly ignoring repository metadata (`README.md`, `.gitignore`, `.git`).
+7. **Tier 2 Downstream CMS Upgrade Protocol**:
+   - Downstream instance repositories (e.g. `websites-cms`) upgrade in three disciplined steps: (1) update dependency (`npm install github:bmoelk/slottD#...`), (2) apply additive SQLite D1 migrations (`npm run db:migrate:local` and `:remote`), and (3) verify with tests and deploy (`npm run deploy:prod`). Existing content records are preserved with zero loss.
 

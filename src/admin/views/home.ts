@@ -17,7 +17,8 @@ export interface HomeDashboardData {
 
 export function renderHomeView(
   data: HomeDashboardData,
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const mediaMb = (data.mediaSizeBytes / (1024 * 1024)).toFixed(2);
 
@@ -213,5 +214,5 @@ export function renderHomeView(
         </div>
       `}
     </div>
-  `);
+  `, undefined, siteContext);
 }

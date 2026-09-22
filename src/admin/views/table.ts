@@ -22,7 +22,8 @@ export function renderTableView(
   user: { email: string; authMethod?: string },
   contextFilter?: { pageSlug?: string; sectionKey?: string },
   orderField?: string,
-  scopeOptions?: TableViewScopeOptions
+  scopeOptions?: TableViewScopeOptions,
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const pageSlug = contextFilter?.pageSlug?.toLowerCase();
   const sectionKey = contextFilter?.sectionKey?.toLowerCase();
@@ -844,5 +845,5 @@ export function renderTableView(
         }
       }
     </script>
-  `);
+  `, undefined, siteContext);
 }

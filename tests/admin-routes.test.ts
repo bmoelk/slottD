@@ -57,9 +57,21 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(html).toContain('New page_sections');
   });
 
-  it('handles /admin dashboard route', async () => {
+  it('handles /admin dashboard route redirecting to /admin/sites', async () => {
     const res = await app.fetch(
       new Request('http://localhost:8787/admin', {
+        headers: { host: 'localhost:8787' },
+      }),
+      mockEnv
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/admin/sites');
+  });
+
+  it('handles /admin/sites unified sites hub route', async () => {
+    const res = await app.fetch(
+      new Request('http://localhost:8787/admin/sites', {
         headers: { host: 'localhost:8787' },
       }),
       mockEnv
@@ -68,7 +80,7 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('SlottD Studio');
-    expect(html).toContain('Content Collections');
+    expect(html).toContain('Websites & Domains');
   });
 
   it('handles /admin/models schema registry route', async () => {

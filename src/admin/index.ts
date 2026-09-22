@@ -18,9 +18,13 @@ import { renderSyncView } from './views/sync.js';
 import { renderGitView } from './views/git.js';
 import { renderLogsView } from './views/logs.js';
 import { renderHomeView } from './views/home.js';
+import { renderSitesView } from './views/sites.js';
 import { renderDocsView } from './views/docs.js';
 import { renderSetupView } from './views/setup.js';
 import { renderLoginView } from './views/login.js';
+import { renameSite, listSites, registerSite, deleteSite, cacheSiteFavicon } from './sites.js';
+import { resolveSiteId, normalizeSiteId } from '../auth/site.js';
+import { syncCollectionView } from '../api/views.js';
 import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
 import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
 import { computeContentDiff } from '../sync/diff.js';
@@ -29,10 +33,10 @@ import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
 import { MARKDOWN_TOOLBAR_VENDOR_JS } from './vendor/markdown-toolbar.js';
 import { PELL_VENDOR_JS } from './vendor/pell.js';
 import { MARKED_VENDOR_JS } from './vendor/marked.js';
-import type { Env } from '../types.js';
+import type { Env, AppVariables } from '../types.js';
 import { getSlottdConfig } from '../index.js';
 
-export const adminRouter = new Hono<{ Bindings: Env }>();
+export const adminRouter = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 const dynamicImport = (modName: string): Promise<any> => {
   try {
@@ -43,12 +47,15 @@ const dynamicImport = (modName: string): Promise<any> => {
   }
 };
 
-async function resolveDeploymentRepo(env?: Env): Promise<{
+async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
   path: string;
   hasRemote: boolean;
   remoteUrl: string;
   branch: string;
   token?: string;
+  isMonorepo?: boolean;
+  contentPath?: string;
+  gitTopLevel?: string;
 }> {
   const fs = await dynamicImport('fs');
   const cp = await dynamicImport('child_process');
@@ -62,11 +69,20 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
   let branch = (env as any)?.GIT_BRANCH || 'main';
   let token = (env as any)?.GIT_TOKEN || (env as any)?.GITHUB_TOKEN || '';
 
-  // Check system_settings in D1 if available
-  if (env?.DB) {
+  // 1. Check slottd.config.ts if available
+  const appConfig = getSlottdConfig();
+  if (appConfig?.git?.repo && !remoteUrl) {
+    remoteUrl = appConfig.git.repo;
+  }
+  if (appConfig?.git?.branch && branch === 'main') {
+    branch = appConfig.git.branch;
+  }
+
+  // 2. Check system_site_settings in D1 if siteId provided
+  if (siteId && env?.DB) {
     try {
-      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
-        .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
+      const rows = await env.DB.prepare('SELECT key, value FROM system_site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?)')
+        .bind(siteId, 'git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
         .all<{ key: string; value: string }>();
       let encToken = '';
       for (const r of rows.results || []) {
@@ -83,19 +99,40 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     } catch {}
   }
 
+  // 3. Check system_settings in D1 as global fallback
+  if (!remoteUrl && env?.DB) {
+    try {
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
+        .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
+        .all<{ key: string; value: string }>();
+      let encToken = '';
+      for (const r of rows.results || []) {
+        if (r.key === 'git_remote_url' && r.value && !remoteUrl) remoteUrl = r.value;
+        if (r.key === 'repo_path' && r.value) chosenPath = r.value;
+        if (r.key === 'git_branch' && r.value) branch = r.value;
+        if (r.key === 'git_token_enc' && r.value) encToken = r.value;
+      }
+      if (encToken && !token) {
+        const secret = env.JWT_SECRET || 'briefcase-local-secret';
+        const dec = await decryptSecret(encToken, secret);
+        if (dec) token = dec;
+      }
+    } catch {}
+  }
+
   if (!chosenPath || chosenPath === '/') {
     chosenPath = (env as any)?.REPO_PATH || './';
   }
 
-  if (remoteUrl) {
-    hasRemote = true;
-  }
+  // 3. Detect Monorepo Context & Remote Content Path
+  const explicitPath = appConfig?.git?.path || (env as any)?.GIT_CONTENT_PATH;
+  const { detectMonorepo } = await import('../sync/monorepo.js');
+  const monorepo = await detectMonorepo(chosenPath, explicitPath);
 
   if (cp && (cp as any).execSync && chosenPath && chosenPath !== '/' && chosenPath !== './') {
     try {
       const remotes = (cp as any).execSync(`git -C "${chosenPath}" remote -v`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
       if (remotes && remotes.trim()) {
-        hasRemote = true;
         const match = remotes.match(/origin\s+([^\s]+)/);
         if (!remoteUrl) {
           remoteUrl = match ? match[1] : remotes.split('\n')[0];
@@ -104,7 +141,47 @@ async function resolveDeploymentRepo(env?: Env): Promise<{
     } catch {}
   }
 
-  return { path: chosenPath, hasRemote, remoteUrl, branch, token };
+  if (remoteUrl) {
+    hasRemote = true;
+  }
+
+  return {
+    path: chosenPath,
+    hasRemote,
+    remoteUrl,
+    branch,
+    token,
+    isMonorepo: monorepo.isMonorepo,
+    contentPath: monorepo.contentPath,
+    gitTopLevel: monorepo.gitTopLevel,
+  };
+}
+
+export async function getSiteContext(c: any, db: any) {
+  let availableSites: string[] = [];
+  const siteFavicons: Record<string, string> = {};
+  let activeFavicon: string | undefined;
+  try {
+    const sites = await listSites(db);
+    availableSites = sites.map((s) => s.site_id);
+    for (const s of sites) {
+      if (s.favicon) siteFavicons[s.site_id] = s.favicon;
+    }
+  } catch {}
+
+  let activeSite = (c.get('siteId') as string);
+  if (!activeSite) {
+    activeSite = await resolveSiteId(c);
+  }
+
+  if (availableSites.length > 0 && !availableSites.includes(activeSite)) {
+    activeSite = availableSites[0];
+  } else if (availableSites.length === 0) {
+    availableSites = [activeSite || 'default'];
+  }
+  activeFavicon = siteFavicons[activeSite];
+
+  return { activeSite, availableSites, activeFavicon, siteFavicons };
 }
 
 export async function getEditorConfig(env?: Env): Promise<{ format: 'markdown' | 'richtext'; tier: 'light' | 'heavy' }> {
@@ -272,89 +349,20 @@ adminRouter.get('/logout', (c) => {
   return c.redirect('/admin/login');
 });
 
-// ── 1. Studio Home & Metrics Overview (/admin/home & /admin/dashboard) ────────
-adminRouter.get('/home', async (c) => {
-  const db = createDb(c.env.DB);
-  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const repoInfo = await resolveDeploymentRepo(c.env);
+// ── 1. Studio Home & Dashboard Redirects (/admin/home & /admin/dashboard & /admin) ──
+adminRouter.get('/home', (c) => c.redirect('/admin/sites'));
+adminRouter.get('/dashboard', (c) => c.redirect('/admin/sites'));
+adminRouter.get('/', (c) => c.redirect('/admin/sites'));
 
-  let docCount = 0;
-  let publishedCount = 0;
-  let draftCount = 0;
-  let collectionCount = 0;
-  let mediaCount = 0;
-  let mediaSizeBytes = 0;
-  let modelCount = 0;
-  let tagCount = 0;
-  let recentActivity: any[] = [];
-
-  try {
-    const docRows = await db.selectFrom('documents').select(['collection', 'status', db.fn.count('id').as('count')]).groupBy(['collection', 'status']).execute();
-    const cols = new Set<string>();
-    docRows.forEach((r: any) => {
-      const count = Number(r.count) || 0;
-      docCount += count;
-      cols.add(r.collection);
-      if (r.status === 'published') publishedCount += count;
-      else draftCount += count;
-    });
-    collectionCount = cols.size;
-  } catch {}
-
-  try {
-    const mediaRows = await db.selectFrom('media').select([db.fn.count('id').as('count'), db.fn.sum('size').as('total_size')]).executeTakeFirst();
-    mediaCount = Number(mediaRows?.count) || 0;
-    mediaSizeBytes = Number(mediaRows?.total_size) || 0;
-  } catch {}
-
-  try {
-    const modelRows = await db.selectFrom('collections').select(db.fn.count('name').as('count')).executeTakeFirst();
-    modelCount = Number(modelRows?.count) || 0;
-  } catch {}
-
-  try {
-    const cp = await dynamicImport('child_process');
-    if (cp && (cp as any).execSync) {
-      const rawTags = (cp as any).execSync(`git -C "${repoInfo.path}" tag -l`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-      tagCount = rawTags.split('\n').filter(Boolean).length;
-    }
-  } catch {}
-
-  try {
-    recentActivity = await db.selectFrom('activity_log').selectAll().orderBy('timestamp', 'desc').limit(5).execute();
-  } catch {}
-
-  return c.html(
-    renderHomeView(
-      {
-        environment: c.env.ENVIRONMENT || 'development',
-        docCount,
-        collectionCount,
-        publishedCount,
-        draftCount,
-        mediaCount,
-        mediaSizeBytes,
-        modelCount,
-        tagCount,
-        recentActivity,
-      },
-      user
-    )
-  );
-});
-
-adminRouter.get('/dashboard', (c) => c.redirect('/admin/home'));
-
-// ── 2. Content Index Redirects ───────────────────────────────────────────────
-adminRouter.get('/content', (c) => c.redirect('/admin'));
-
-// ── 3. Universal In-Situ Deep Link Editor (/admin/edit/:idOrSlug) ─────────────
+// ── 2. Universal In-Situ Deep Link Editor (/admin/edit/:idOrSlug) ─────────────
 adminRouter.get('/edit/:idOrSlug', async (c) => {
   const idOrSlug = c.req.param('idOrSlug');
   const queryCol = c.req.query('collection');
   const isNew = idOrSlug === '+' || idOrSlug === 'new';
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const siteId = siteContext.activeSite;
 
   let targetCollection = queryCol || '';
   let doc: any = null;
@@ -362,6 +370,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   if (targetCollection && !isNew) {
     doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', targetCollection)
       .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
@@ -371,6 +380,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
   if (!doc && !isNew) {
     doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
       .executeTakeFirst();
@@ -384,6 +394,7 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
     targetCollection = targetCollection || 'pages';
     doc = {
       id: idOrSlug === '+' || idOrSlug === 'new' ? crypto.randomUUID() : idOrSlug,
+      site_id: siteId,
       collection: targetCollection,
       slug: isNew ? '' : idOrSlug,
       title: isNew ? '' : idOrSlug,
@@ -408,13 +419,15 @@ adminRouter.get('/edit/:idOrSlug', async (c) => {
 
   const fields = await introspectCollectionFields(db, targetCollection);
   const editorConfig = await getEditorConfig(c.env);
-  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon, editorConfig));
+  return c.html(renderEditorView(targetCollection, doc, fields, isNew, user, modelIcon, editorConfig, siteContext));
 });
 
-// ── 3. Collections Dashboard (/admin) ─────────────────────────────────────────
-adminRouter.get('/', async (c) => {
+// ── 3. Collections Dashboard (/admin/content) ─────────────────────────────────
+adminRouter.get('/content', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const siteId = siteContext.activeSite;
 
   // 1. Fetch registered collections with metadata
   let collectionsList: any[] = [];
@@ -426,11 +439,12 @@ adminRouter.get('/', async (c) => {
       .execute();
   } catch {}
 
-  // 2. Count active documents per collection
+  // 2. Count active documents per collection scoped to siteId
   let countsMap: Record<string, number> = {};
   try {
     const countRows = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .select(['collection', db.fn.count('id').as('count')])
       .groupBy('collection')
       .execute();
@@ -447,7 +461,7 @@ adminRouter.get('/', async (c) => {
 
   const packs = Array.from(new Set(collectionsList.map((c) => c.pack_name || 'custom'))).filter(Boolean);
 
-  return c.html(renderDashboardView(enhancedList, packs, user));
+  return c.html(renderDashboardView(enhancedList, packs, user, [], siteContext));
 });
 
 // ── 4. Scope Discriminator Auto-Discovery & Collection Document Table ────────
@@ -571,6 +585,8 @@ adminRouter.get('/content/:collection', async (c) => {
   const sectionKey = c.req.query('sectionKey') || c.req.query('galleryKey');
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const siteId = siteContext.activeSite;
 
   const fields = await introspectCollectionFields(db, collection);
   const orderFieldDef = fields.find(
@@ -585,6 +601,7 @@ adminRouter.get('/content/:collection', async (c) => {
 
   const rawDocuments = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('collection', '=', collection)
     .selectAll()
     .orderBy('updated_at', 'desc')
@@ -643,18 +660,10 @@ adminRouter.get('/content/:collection', async (c) => {
   const effectiveSectionKey = (isDirectCollectionLink || !hasSectionKeyField) ? undefined : sectionKey;
   const effectivePageSlug = (isDirectCollectionLink || !hasPageSlugField) ? undefined : pageSlug;
 
-  // 1. Detect candidate scope key from query params or auto-discovery
-  const explicitScopeKey = CANDIDATE_SCOPE_KEYS.find((k) => {
-    const val = c.req.query(k);
-    if (val === undefined) return false;
-    if (k === 'sectionKey' && !effectiveSectionKey) return false;
-    if (k === 'pageSlug' && !effectivePageSlug) return false;
-    return true;
-  });
-  const scopeFilterDef = discoverScopeFilter(rawDocuments, explicitScopeKey);
+  // 1. Discover scope discriminator filter definitions across items
+  const scopeFilterDef = discoverScopeFilter(rawDocuments, sectionKey);
 
-  // 2. Determine active scope if selected in query
-  let activeScope: { key: string; value: string; label: string } | null = null;
+  let activeScope: TableViewScopeOptions['activeScope'] = null;
   if (scopeFilterDef && c.req.query(scopeFilterDef.key)) {
     const isSuppressed = (scopeFilterDef.key === 'sectionKey' && !effectiveSectionKey) ||
                          (scopeFilterDef.key === 'pageSlug' && !effectivePageSlug);
@@ -736,7 +745,8 @@ adminRouter.get('/content/:collection', async (c) => {
         activeScope,
         totalCount: rawDocuments.length,
         autoReorder,
-      }
+      },
+      siteContext
     )
   );
 });
@@ -750,6 +760,7 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
   };
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
 
   const items = body.items || [];
   if (!Array.isArray(items) || items.length === 0) {
@@ -764,6 +775,7 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
     if (!item.id) continue;
     const doc = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteId)
       .where('collection', '=', collection)
       .where('id', '=', item.id)
       .select(['id', 'title', 'data', 'draft_data'])
@@ -799,12 +811,14 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
         updated_at: now,
       })
       .where('id', '=', doc.id)
+      .where('site_id', '=', siteId)
       .execute();
 
     updatedCount++;
   }
 
   await logActivity(db, {
+    siteId,
     actor: user.email,
     action: 'reorder',
     collection,
@@ -862,13 +876,15 @@ adminRouter.get('/content/:collection/:id', async (c) => {
 
   const fields = await introspectCollectionFields(db, collection);
   const editorConfig = await getEditorConfig(c.env);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon, editorConfig));
+  const siteContext = await getSiteContext(c, db);
+  return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon, editorConfig, siteContext));
 });
 
 // ── 6. Models & Schema Overview (/admin/models) ──────────────────────────────
 adminRouter.get('/models', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   const collections = await db.selectFrom('collections').selectAll().orderBy('name', 'asc').execute();
   const modelsWithFields = await Promise.all(
@@ -881,24 +897,26 @@ adminRouter.get('/models', async (c) => {
     })
   );
 
-  return c.html(renderModelsView(modelsWithFields, user));
+  return c.html(renderModelsView(modelsWithFields, user, siteContext));
 });
 
 // ── 7. Media Library & Cloudflare R2 Browser (/admin/media) ───────────────────
 adminRouter.get('/media', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   let mediaFiles: any[] = [];
   try {
     mediaFiles = await db
       .selectFrom('media')
+      .where('site_id', '=', siteContext.activeSite)
       .selectAll()
       .orderBy('created_at', 'desc')
       .execute();
   } catch {}
 
-  return c.html(renderMediaView(mediaFiles, user));
+  return c.html(renderMediaView(mediaFiles, user, siteContext));
 });
 
 // ── 8. Activity & Audit Logs (/admin/logs & /admin/activity) ──────────────────
@@ -907,18 +925,20 @@ adminRouter.get('/activity', (c) => c.redirect('/admin/logs'));
 adminRouter.get('/logs', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   let logs: any[] = [];
   try {
     logs = await db
       .selectFrom('activity_log')
+      .where('site_id', '=', siteContext.activeSite)
       .selectAll()
       .orderBy('timestamp', 'desc')
       .limit(200)
       .execute();
   } catch {}
 
-  return c.html(renderLogsView(logs, user));
+  return c.html(renderLogsView(logs, user, siteContext));
 });
 
 // ── 9. Git Operations Center (/admin/git) ────────────────────────────────────
@@ -927,7 +947,9 @@ adminRouter.get('/sync', (c) => c.redirect('/admin/git'));
 adminRouter.get('/git', async (c) => {
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const repoInfo = await resolveDeploymentRepo(c.env);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   let docCount = 0;
   let mediaCount = 0;
@@ -935,13 +957,22 @@ adminRouter.get('/git', async (c) => {
   let tags: string[] = [];
 
   try {
-    const docRows = await db.selectFrom('documents').select(['collection', db.fn.count('id').as('count')]).groupBy('collection').execute();
+    const docRows = await db
+      .selectFrom('documents')
+      .where('site_id', '=', activeSite)
+      .select(['collection', db.fn.count('id').as('count')])
+      .groupBy('collection')
+      .execute();
     collectionCount = docRows.length;
     docCount = docRows.reduce((sum, c: any) => sum + (Number(c.count) || 0), 0);
   } catch {}
 
   try {
-    const mediaRows = await db.selectFrom('media').select(db.fn.count('id').as('count')).executeTakeFirst();
+    const mediaRows = await db
+      .selectFrom('media')
+      .where('site_id', '=', activeSite)
+      .select(db.fn.count('id').as('count'))
+      .executeTakeFirst();
     mediaCount = Number(mediaRows?.count) || 0;
   } catch {}
 
@@ -977,6 +1008,9 @@ adminRouter.get('/git', async (c) => {
           token: repoInfo.token,
           repoPath: repoInfo.path,
           isProduction: c.env.ENVIRONMENT === 'production',
+          isMonorepo: repoInfo.isMonorepo,
+          contentPath: repoInfo.contentPath,
+          gitTopLevel: repoInfo.gitTopLevel,
         });
         engineName = driver.engineName;
         tags = await driver.listTags();
@@ -999,20 +1033,26 @@ adminRouter.get('/git', async (c) => {
         collectionCount,
         mediaCount,
         tags,
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
       },
-      user
+      user,
+      siteContext
     )
   );
 });
 
 // ── 10. Fetch Remote Tags (/admin/git/fetch) ──────────────────────────────────
 adminRouter.post('/git/fetch', async (c) => {
-  const repoInfo = await resolveDeploymentRepo(c.env);
+  const db = createDb(c.env.DB);
+  const siteContext = await getSiteContext(c, db);
+  const repoInfo = await resolveDeploymentRepo(c.env, siteContext.activeSite);
 
   if (!repoInfo.hasRemote) {
     return c.json(
       {
-        error: 'No Git remote configured. Configure a remote URL in Setup first.',
+        error: 'No Git remote configured for this site. Configure a remote URL in Sites Hub first.',
         output: 'Fatal: No remote repository configured.',
       },
       400
@@ -1064,23 +1104,31 @@ adminRouter.post('/git/fetch', async (c) => {
   }
 });
 
-// ── 11. Create Git Release & Export (/admin/git/release) ───────────────────────
+// ── 11. Create Git Release & Export Pipeline (/admin/git/release) ─────────────
 adminRouter.post('/git/release', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const exportFiles = body.exportFiles !== false;
+  const createTag = body.createTag !== false;
+  const push = body.pushToRemote === true || body.push === true;
+  const dryRun = body.dryRun === true;
+  const forcePublish = body.forcePublish === true;
+
   const tag = (body.tag as string) || `release-${Date.now()}`;
   const message = (body.message as string) || `chore(content): release snapshot ${tag}`;
-  const push = body.push === true;
-  const repoInfo = await resolveDeploymentRepo(c.env);
+
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   try {
-    const items = await exportToGitFormat(db);
-    const files = serializeToFiles(items, 'content');
-    const forcePublish = body.forcePublish === true;
+    const items = await exportToGitFormat(db, undefined, activeSite);
+    const contentPath = repoInfo.contentPath !== undefined ? repoInfo.contentPath : '';
+    const files = serializeToFiles(items, contentPath, activeSite, repoInfo.isMonorepo, true);
 
-    // Execute onBeforePublish pre-release verification if configured
+    // Execute onBeforePublish pre-release verification if configured and tagging/publishing
     const appConfig = getSlottdConfig();
-    if (appConfig?.hooks?.onBeforePublish) {
+    if ((createTag || push) && appConfig?.hooks?.onBeforePublish) {
       const user = await getAuthenticatedUser(c);
       const hookCtx = {
         bundle: { id: `release-${tag}`, slug: tag, name: tag },
@@ -1107,6 +1155,30 @@ adminRouter.post('/git/release', async (c) => {
       }
     }
 
+    if (dryRun) {
+      const steps: string[] = [];
+      if (exportFiles) steps.push(`1. Serialize ${items.length} records into ${files.length} JSON/MD companion files (+ auto-generated README.md) into target path: ${repoInfo.path || 'scratch'}`);
+      if (createTag) steps.push(`2. Git stage all files, create commit "${message}", and annotated tag "${tag}"`);
+      if (push) steps.push(`3. Push branch HEAD and tag "${tag}" to remote repository: ${repoInfo.remoteUrl || 'origin'}`);
+
+      const plan = [
+        `[Dry Run Simulation for ${activeSite}]`,
+        `Repository: ${repoInfo.path || 'Scratch/Temp'} (${repoInfo.isMonorepo ? 'Monorepo' : 'Dedicated Repo'})`,
+        `Remote URL: ${repoInfo.hasRemote ? repoInfo.remoteUrl : 'None configured'} (Branch: ${repoInfo.branch || 'main'})`,
+        `Selected Operations (${steps.length}):`,
+        ...steps.map((s) => `  ${s}`),
+        `Verification Status: Passed (0 blocking errors)`,
+        `Execution Ready.`,
+      ].join('\n');
+
+      return c.json({
+        success: true,
+        message: `Dry run simulation completed successfully for '${activeSite}'.`,
+        plan,
+        output: `Verified ${items.length} records across ${files.length} content files. Zero files, commits, or remote branches modified.`,
+      });
+    }
+
     if (repoInfo.hasRemote) {
       const driver = await getGitDriver({
         url: repoInfo.remoteUrl,
@@ -1114,6 +1186,9 @@ adminRouter.post('/git/release', async (c) => {
         token: repoInfo.token,
         repoPath: repoInfo.path,
         isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
       });
 
       const user = await getAuthenticatedUser(c);
@@ -1123,25 +1198,25 @@ adminRouter.post('/git/release', async (c) => {
       };
 
       const result = await driver.createRelease({
-        tag,
+        tag: createTag ? tag : undefined,
         message,
-        files,
+        files: exportFiles ? files : [],
         push,
         author,
       });
 
       return c.json({
         success: true,
-        message: `Exported ${items.length} records and tagged release '${tag}' (${driver.engineName})!`,
+        message: `Pipeline executed for '${activeSite}': exported ${items.length} records (${driver.engineName})!`,
         output: result.message,
       });
     }
 
-    const releaseCmd = `npm run sync:git -- --export --tag=${tag}${push ? ' --push' : ''}`;
+    const releaseCmd = `npm run sync:git -- --site=${activeSite}${exportFiles ? ' --export' : ''}${createTag ? ` --tag=${tag}` : ''}${push ? ' --push' : ''}`;
     return c.json({
       success: true,
-      message: `Database snapshot exported: ${items.length} records in ${files.length} content files.`,
-      output: `To commit, tag, and push from your workstation, configure a remote URL in Setup or run:\n\n${releaseCmd}\n`,
+      message: `Database snapshot prepared for '${activeSite}': ${items.length} records in ${files.length} content files.`,
+      output: `To commit, tag, and push from your workstation, configure a remote URL or run:\n\n${releaseCmd}\n`,
       command: releaseCmd,
     });
   } catch (err: any) {
@@ -1154,7 +1229,9 @@ adminRouter.post('/git/diff', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
-  const repoInfo = await resolveDeploymentRepo(c.env);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   if (!tag) {
     return c.json({ error: 'Tag is required for diff preview.' }, 400);
@@ -1178,7 +1255,7 @@ adminRouter.post('/git/diff', async (c) => {
     }
 
     if (!repoInfo.hasRemote && !repoInfo.path) {
-      return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Setup first.' }, 400);
+      return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Sites Hub first.' }, 400);
     }
 
     const driver = await getGitDriver({
@@ -1187,9 +1264,12 @@ adminRouter.post('/git/diff', async (c) => {
       token: repoInfo.token,
       repoPath: repoInfo.path,
       isProduction: c.env.ENVIRONMENT === 'production',
+      isMonorepo: repoInfo.isMonorepo,
+      contentPath: repoInfo.contentPath,
+      gitTopLevel: repoInfo.gitTopLevel,
     });
 
-    const activeItems = await exportToGitFormat(db);
+    const activeItems = await exportToGitFormat(db, undefined, activeSite);
     const tagItems = await driver.loadTagContent(tag);
     const diffReport = computeContentDiff(activeItems, tagItems, tag);
 
@@ -1204,20 +1284,22 @@ adminRouter.post('/git/diff', async (c) => {
   }
 });
 
-// ── 13. Load Content from Git Tag (/admin/git/load) ───────────────────────────
+// ── 13. Load / Checkout Content from Git Tag (/admin/git/load) ────────────────
 adminRouter.post('/git/load', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
-  const repoInfo = await resolveDeploymentRepo(c.env);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   if (!tag) {
     return c.json({ error: 'Tag is required to load content.' }, 400);
   }
 
   try {
-    if (!repoInfo.hasRemote) {
-      return c.json({ error: 'No Git remote configured. Configure a remote URL in Setup first.' }, 400);
+    if (!repoInfo.hasRemote && !repoInfo.path) {
+      return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Sites Hub first.' }, 400);
     }
 
     const driver = await getGitDriver({
@@ -1226,14 +1308,17 @@ adminRouter.post('/git/load', async (c) => {
       token: repoInfo.token,
       repoPath: repoInfo.path,
       isProduction: c.env.ENVIRONMENT === 'production',
+      isMonorepo: repoInfo.isMonorepo,
+      contentPath: repoInfo.contentPath,
+      gitTopLevel: repoInfo.gitTopLevel,
     });
 
     const items = await driver.loadTagContent(tag);
-    const { inserted, updated } = await hydrateFromGit(db, items);
+    const { inserted, updated } = await hydrateFromGit(db, items, 1, activeSite);
 
     return c.json({
       success: true,
-      message: `Successfully loaded and restored ${items.length} documents from Git tag '${tag}' into D1 (${driver.engineName})!`,
+      message: `Successfully loaded and restored ${items.length} documents from Git tag '${tag}' into D1 for site '${activeSite}' (${driver.engineName})!`,
       data: { count: items.length, inserted, updated },
     });
   } catch (err: any) {
@@ -1241,13 +1326,39 @@ adminRouter.post('/git/load', async (c) => {
   }
 });
 
-// ── 14. Direct JSON Backup Download (/admin/git/backup) ───────────────────────
+// ── 14. Direct ZIP Archive Export (/admin/git/export-zip) ──────────────────────
+adminRouter.get('/git/export-zip', async (c) => {
+  const db = createDb(c.env.DB);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const items = await exportToGitFormat(db, undefined, activeSite);
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
+  const contentPath = repoInfo.contentPath !== undefined ? repoInfo.contentPath : '';
+  const files = serializeToFiles(items, contentPath, activeSite, repoInfo.isMonorepo, true);
+
+  const { createZipArchive } = await import('../sync/zip.js');
+  const zipBytes = createZipArchive(files);
+
+  const filename = `${activeSite}-content-${new Date().toISOString().slice(0, 10)}.zip`;
+  return new Response(zipBytes, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': zipBytes.length.toString(),
+    },
+  });
+});
+
+// ── 15. Direct JSON Backup Download (/admin/git/backup) ───────────────────────
 adminRouter.get('/git/backup', async (c) => {
   const db = createDb(c.env.DB);
-  const docs = await db.selectFrom('documents').selectAll().execute();
-  const media = await db.selectFrom('media').selectAll().execute();
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const docs = await db.selectFrom('documents').where('site_id', '=', activeSite).selectAll().execute();
+  const media = await db.selectFrom('media').where('site_id', '=', activeSite).selectAll().execute();
 
   const backupData = {
+    siteId: activeSite,
     exportedAt: new Date().toISOString(),
     version: '1.0.0',
     documentCount: docs.length,
@@ -1265,7 +1376,7 @@ adminRouter.get('/git/backup', async (c) => {
     media,
   };
 
-  const filename = `slottd-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  const filename = `slottd-backup-${activeSite}-${new Date().toISOString().slice(0, 10)}.json`;
   return new Response(JSON.stringify(backupData, null, 2), {
     headers: {
       'Content-Type': 'application/json',
@@ -1274,13 +1385,293 @@ adminRouter.get('/git/backup', async (c) => {
   });
 });
 
-// ── 15. User Documentation & Guides (/admin/docs & /admin/help) ───────────────
+// ── 16. User Documentation & Guides (/admin/docs & /admin/help) ───────────────
 adminRouter.get('/docs', async (c) => {
+  const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  return c.html(renderDocsView(user));
+  const siteContext = await getSiteContext(c, db);
+  return c.html(renderDocsView(user, siteContext));
 });
 
 adminRouter.get('/help', (c) => c.redirect('/admin/docs'));
+
+// ── 17. Multi-Website Management (/admin/sites) ──────────────────────────────
+adminRouter.get('/sites/switch', async (c) => {
+  const targetSite = normalizeSiteId(c.req.query('site') || 'default');
+  const redirect = (c.req.query('redirect') || '/admin').trim();
+  c.header('Set-Cookie', `slottd_site=${targetSite}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return c.redirect(redirect, 302);
+});
+
+adminRouter.get('/sites', async (c) => {
+  const db = createDb(c.env.DB);
+  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
+  const sites = await listSites(db);
+
+  let docCount = 0;
+  let publishedCount = 0;
+  let collectionCount = 0;
+  let mediaCount = 0;
+  let modelCount = 0;
+  let tagCount = 0;
+
+  try {
+    const docs = await db
+      .selectFrom('documents')
+      .where('site_id', '=', siteContext.activeSite)
+      .select(['id', 'status', 'collection'])
+      .execute();
+    docCount = docs.length;
+    publishedCount = docs.filter((d) => d.status === 'published').length;
+    collectionCount = new Set(docs.map((d) => d.collection)).size;
+
+    const mediaRes = await db
+      .selectFrom('media')
+      .where('site_id', '=', siteContext.activeSite)
+      .select(db.fn.count('id').as('count'))
+      .executeTakeFirst();
+    mediaCount = Number(mediaRes?.count || 0);
+
+    const appConfig = getSlottdConfig();
+    modelCount = appConfig?.collections ? Object.keys(appConfig.collections).length : collectionCount;
+
+    const repoInfo = await resolveDeploymentRepo(c.env, siteContext.activeSite);
+    if (repoInfo.hasRemote) {
+      try {
+        const driver = await getGitDriver({
+          url: repoInfo.remoteUrl,
+          branch: repoInfo.branch,
+          token: repoInfo.token,
+          repoPath: repoInfo.path,
+          isProduction: c.env.ENVIRONMENT === 'production',
+          isMonorepo: repoInfo.isMonorepo,
+          contentPath: repoInfo.contentPath,
+          gitTopLevel: repoInfo.gitTopLevel,
+        });
+        const tags = await driver.listTags();
+        tagCount = tags.length;
+      } catch {}
+    }
+  } catch {}
+
+  let message = '';
+  if (c.req.query('renamed')) message = 'Website domain successfully renamed across all partitioned database tables!';
+  if (c.req.query('created')) message = 'New website successfully registered and configured!';
+  if (c.req.query('pulled')) message = 'Git content successfully pulled and hydrated into D1!';
+
+  const error = c.req.query('error') || '';
+
+  return c.html(
+    renderSitesView({
+      sites,
+      activeSite: siteContext.activeSite,
+      activeFavicon: siteContext.activeFavicon,
+      user,
+      message,
+      error,
+      metrics: {
+        docCount,
+        publishedCount,
+        collectionCount,
+        mediaCount,
+        modelCount,
+        tagCount,
+      },
+    })
+  );
+});
+
+adminRouter.post('/sites/rename', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const oldSiteId = ((body.oldSiteId as string) || '').trim();
+  const newSiteId = ((body.newSiteId as string) || '').trim();
+  const db = createDb(c.env.DB);
+
+  try {
+    await renameSite(db, oldSiteId, newSiteId);
+    // If the renamed site was the active site, update the session cookie
+    const activeSite = c.get('siteId') || (await resolveSiteId(c));
+    if (activeSite === oldSiteId.toLowerCase()) {
+      c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(newSiteId.toLowerCase())}; Path=/; Max-Age=31536000`);
+    }
+    return c.redirect('/admin/sites?renamed=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/create', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    const settings: Record<string, string> = {
+      git_remote_url: ((body.git_remote_url as string) || '').trim(),
+      git_branch: ((body.git_branch as string) || 'main').trim(),
+      content_path: typeof body.content_path === 'string' ? body.content_path.trim() : '',
+      repo_path: ((body.repo_path as string) || '').trim(),
+      deploy_hook: ((body.deploy_hook as string) || '').trim(),
+    };
+    const gitToken = ((body.git_token as string) || '').trim();
+    if (gitToken) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      settings.git_token_enc = await encryptSecret(gitToken, secret);
+    }
+    await registerSite(db, siteId, settings);
+    // Automatically attempt caching the site's favicon
+    try {
+      await cacheSiteFavicon(db, siteId);
+    } catch {}
+    return c.redirect('/admin/sites?created=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/update', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    const settings: Record<string, string> = {
+      git_remote_url: ((body.git_remote_url as string) || '').trim(),
+      git_branch: ((body.git_branch as string) || 'main').trim(),
+      content_path: typeof body.content_path === 'string' ? body.content_path.trim() : '',
+      repo_path: ((body.repo_path as string) || '').trim(),
+      deploy_hook: ((body.deploy_hook as string) || '').trim(),
+    };
+    if (typeof body.favicon === 'string' && body.favicon.trim()) {
+      settings.favicon = body.favicon.trim();
+    }
+    const gitToken = ((body.git_token as string) || '').trim();
+    if (gitToken) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      settings.git_token_enc = await encryptSecret(gitToken, secret);
+    }
+    await registerSite(db, siteId, settings);
+    if (body.refresh_favicon === '1') {
+      try {
+        await cacheSiteFavicon(db, siteId);
+      } catch {}
+    }
+    return c.redirect('/admin/sites?updated=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/fetch-favicon', async (c) => {
+  const db = createDb(c.env.DB);
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+    const siteId = ((body.siteId || body.site_id || '') as string).trim().toLowerCase();
+    if (!siteId) return c.json({ ok: false, error: 'siteId is required' }, 400);
+    const dataUri = await cacheSiteFavicon(db, siteId);
+    if (!dataUri) return c.json({ ok: false, error: 'Favicon not found or fetch failed' }, 404);
+    return c.json({ ok: true, siteId, favicon: dataUri });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message || 'Failed to fetch favicon' }, 500);
+  }
+});
+
+adminRouter.post('/sites/delete', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  const confirmSiteId = ((body.confirmSiteId as string) || '').trim().toLowerCase();
+  const purgeData = body.purgeData === 'true' || body.purgeData === '1' || body.purgeData === true;
+
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Site+ID+is+required');
+  }
+  if (confirmSiteId !== siteId) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(`Confirmation failed: typed '${confirmSiteId}' does not match '${siteId}'`)}`);
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    await deleteSite(db, siteId, purgeData);
+
+    // If the active site was deleted, find the next available site and switch session cookie
+    const activeSite = c.get('siteId') || (await resolveSiteId(c));
+    if (activeSite === siteId) {
+      const remainingSites = await listSites(db);
+      const nextSite = remainingSites.find((s) => s.site_id !== siteId)?.site_id || 'default';
+      c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(nextSite)}; Path=/; Max-Age=31536000`);
+    }
+
+    return c.redirect(`/admin/sites?deleted=${encodeURIComponent(siteId)}`);
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+adminRouter.post('/sites/pull', async (c) => {
+  const body = (await c.req.parseBody().catch(() => ({}))) as Record<string, any>;
+  const siteId = ((body.siteId as string) || '').trim().toLowerCase();
+  if (!siteId) {
+    return c.redirect('/admin/sites?error=Missing+site+ID');
+  }
+
+  const db = createDb(c.env.DB);
+  try {
+    const siteSettingsRows = await db
+      .selectFrom('system_site_settings')
+      .where('site_id', '=', siteId)
+      .selectAll()
+      .execute();
+    const siteSettings: Record<string, string> = {};
+    for (const s of siteSettingsRows) siteSettings[s.key] = s.value;
+
+    const remoteUrl = siteSettings.git_remote_url || c.env.GIT_REMOTE_URL;
+    if (!remoteUrl) {
+      return c.redirect(`/admin/sites?error=${encodeURIComponent(`No Git remote configured for site '${siteId}'. Please edit repository settings first.`)}`);
+    }
+
+    let token = c.env.GIT_TOKEN || c.env.GITHUB_TOKEN;
+    if (siteSettings.git_token_enc) {
+      const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
+      const dec = await decryptSecret(siteSettings.git_token_enc, secret);
+      if (dec) token = dec;
+    } else if (siteSettings.git_token) {
+      token = siteSettings.git_token;
+    }
+
+    const driver = await getGitDriver({
+      url: remoteUrl,
+      branch: siteSettings.git_branch || 'main',
+      token,
+      repoPath: siteSettings.repo_path || c.env.REPO_PATH,
+      isProduction: c.env.ENVIRONMENT === 'production',
+    });
+
+    const tags = await driver.listTags();
+    const tag = tags.slice(-1)[0] || 'HEAD';
+    const items = await driver.loadTagContent(tag);
+    await hydrateFromGit(db, items, 1, siteId);
+
+    // Sync collection views
+    const collections = new Set<string>();
+    for (const it of items) if (it.collection) collections.add(it.collection);
+    for (const col of collections) {
+      try {
+        await syncCollectionView(db, col);
+      } catch {}
+    }
+
+    return c.redirect('/admin/sites?pulled=1');
+  } catch (err: any) {
+    return c.redirect(`/admin/sites?error=${encodeURIComponent(err.message)}`);
+  }
+});
 
 // ── 15b. Setup & Briefcase Operations (/admin/setup) ─────────────────────────
 adminRouter.get('/setup', async (c) => {
@@ -1327,6 +1718,7 @@ adminRouter.get('/setup', async (c) => {
   }
 
   const editorConfig = await getEditorConfig(c.env);
+  const siteContext = await getSiteContext(c, db);
 
   return c.html(renderSetupView({
     environment: c.env.ENVIRONMENT || 'development',
@@ -1342,7 +1734,7 @@ adminRouter.get('/setup', async (c) => {
     hasToken,
     editorFormat: editorConfig.format,
     editorTier: editorConfig.tier,
-  }, user));
+  }, user, siteContext));
 });
 
 // ── Password Management (/admin/setup/password) ──────────────────────────────

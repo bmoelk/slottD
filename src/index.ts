@@ -5,7 +5,10 @@ import { filesRouter } from './api/files.js';
 import { versionsRouter } from './api/versions.js';
 import { adminRouter } from './admin/ui.js';
 import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGitHub } from './sync/git-sync.js';
+import { getGitDriver } from './sync/driver.js';
 import { createDb } from './db/client.js';
+import { syncCollectionView } from './api/views.js';
+import { resolveSiteId } from './auth/site.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
 import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser, createBriefcaseSessionCookie } from './auth/guard.js';
@@ -13,7 +16,7 @@ import { ALPINE_VENDOR_JS } from './admin/vendor/alpine.js';
 import { MARKDOWN_TOOLBAR_VENDOR_JS } from './admin/vendor/markdown-toolbar.js';
 import { PELL_VENDOR_JS } from './admin/vendor/pell.js';
 import { MARKED_VENDOR_JS } from './admin/vendor/marked.js';
-import type { Env, SlottdConfig, PublishHookContext } from './types.js';
+import type { Env, SlottdConfig, PublishHookContext, AppVariables } from './types.js';
 
 export * from './types.js';
 export * from './packs/slotwire.js';
@@ -23,7 +26,9 @@ export * from './api/versions.js';
 export * from './db/client.js';
 export * from './sync/git-sync.js';
 export * from './auth/guard.js';
+export * from './auth/site.js';
 export * from './checks/index.js';
+export * from './admin/sites.js';
 
 export * from './config.js';
 export * from './hooks/index.js';
@@ -31,7 +36,7 @@ import { getSlottdConfig, setDefaultPacks } from './config.js';
 
 setDefaultPacks([slotwirePack, blogPack]);
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 // Live Telemetry Tracker
 let totalTelemetryRequests = 0;
@@ -89,12 +94,19 @@ function recordRequestTelemetry(path: string, durationMs: number) {
   }, 250);
 }
 
-// Canonical Host Redirect: slottd-cms.brainendeavor.com -> cms.brainendeavor.com
+// 0. Multi-Website Site Resolution Middleware
+app.use('*', async (c, next) => {
+  const siteId = await resolveSiteId(c);
+  c.set('siteId', siteId);
+  await next();
+});
+
+// Canonical Host Redirect (Generic, env-configurable)
 app.use('*', async (c, next) => {
   const host = c.req.header('host') || '';
-  if (host === 'slottd-cms.brainendeavor.com') {
+  if ((c.env as any)?.CANONICAL_HOST && host && host !== (c.env as any).CANONICAL_HOST) {
     const url = new URL(c.req.url);
-    url.hostname = 'cms.brainendeavor.com';
+    url.hostname = (c.env as any).CANONICAL_HOST;
     return c.redirect(url.toString(), 301);
   }
   await next();
@@ -154,9 +166,11 @@ app.route('/versions', versionsRouter);
 // Directus-Compliant Audit & Activity Log
 app.get('/activity', requireWriteAuth, async (c) => {
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const limit = Number(c.req.query('limit')) || 50;
   const logs = await db
     .selectFrom('activity_log')
+    .where('site_id', '=', siteId)
     .selectAll()
     .orderBy('timestamp', 'desc')
     .limit(limit)
@@ -170,9 +184,11 @@ app.get('/activity', requireWriteAuth, async (c) => {
 
 app.get('/revisions', requireWriteAuth, async (c) => {
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const limit = Number(c.req.query('limit')) || 50;
   const revisions = await db
     .selectFrom('activity_log')
+    .where('site_id', '=', siteId)
     .where('action', 'in', ['create', 'update', 'update_draft', 'delete', 'version_promote'])
     .selectAll()
     .orderBy('timestamp', 'desc')
@@ -187,28 +203,39 @@ app.get('/revisions', requireWriteAuth, async (c) => {
 
 // 4. Public /media/:key handler for direct R2 asset serving
 app.get('/media/:key', async (c) => {
-  const key = c.req.param('key');
+  const rawKey = c.req.param('key');
   const bucket = c.env.MEDIA;
-  let object = bucket ? await bucket.get(key) : null;
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+  const namespacedKey = `${siteId}/${rawKey}`;
+
+  let object = bucket ? await bucket.get(namespacedKey) : null;
+  let finalKey = namespacedKey;
+
+  if (!object && bucket) {
+    object = await bucket.get(rawKey);
+    if (object) finalKey = rawKey;
+  }
 
   if (!object) {
-    const remoteUrl = c.env.REMOTE_MEDIA_URL || 'https://cms.brainendeavor.com/media';
-    try {
-      const res = await fetch(`${remoteUrl}/${encodeURIComponent(key)}`);
-      if (res.ok) {
-        const body = await res.arrayBuffer();
-        if (bucket) {
-          c.executionCtx?.waitUntil?.(
-            bucket.put(key, body, {
-              httpMetadata: { contentType: res.headers.get('content-type') || 'image/jpeg' },
-            }).catch(() => {})
-          );
+    const remoteUrl = c.env.REMOTE_MEDIA_URL;
+    if (remoteUrl) {
+      try {
+        const res = await fetch(`${remoteUrl}/${encodeURIComponent(rawKey)}`);
+        if (res.ok) {
+          const body = await res.arrayBuffer();
+          if (bucket) {
+            c.executionCtx?.waitUntil?.(
+              bucket.put(namespacedKey, body, {
+                httpMetadata: { contentType: res.headers.get('content-type') || 'image/jpeg' },
+              }).catch(() => {})
+            );
+          }
+          const headers = new Headers(res.headers);
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          return new Response(body, { headers });
         }
-        const headers = new Headers(res.headers);
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(body, { headers });
-      }
-    } catch {}
+      } catch {}
+    }
     return c.text('Media object not found', 404);
   }
 
@@ -217,10 +244,10 @@ app.get('/media/:key', async (c) => {
   headers.set('etag', object.httpEtag);
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
   if (!headers.has('Content-Type')) {
-    if (key.endsWith('.jpg') || key.endsWith('.jpeg')) headers.set('Content-Type', 'image/jpeg');
-    else if (key.endsWith('.png')) headers.set('Content-Type', 'image/png');
-    else if (key.endsWith('.webp')) headers.set('Content-Type', 'image/webp');
-    else if (key.endsWith('.svg')) headers.set('Content-Type', 'image/svg+xml');
+    if (rawKey.endsWith('.jpg') || rawKey.endsWith('.jpeg')) headers.set('Content-Type', 'image/jpeg');
+    else if (rawKey.endsWith('.png')) headers.set('Content-Type', 'image/png');
+    else if (rawKey.endsWith('.webp')) headers.set('Content-Type', 'image/webp');
+    else if (rawKey.endsWith('.svg')) headers.set('Content-Type', 'image/svg+xml');
   }
 
   return new Response(object.body, { headers });
@@ -288,17 +315,34 @@ async function handlePublishRelease(c: any) {
   const db = createDb(env.DB);
   const body = await c.req.json().catch(() => ({}));
   const user = await getAuthenticatedUser(c);
+  const siteId = (c as any).get('siteId') || body.siteId || (await resolveSiteId(c));
 
-  const repoOwner = body.repoOwner || 'bmoelk';
-  const repoName = body.repoName || 'brainendeavor.com';
-  const branch = body.branch || 'main';
+  // Retrieve site-specific settings from site_settings if available
+  let siteSettings: Record<string, string> = {};
+  if (env.DB) {
+    try {
+      const rows = await db
+        .selectFrom('system_site_settings')
+        .where('site_id', '=', siteId)
+        .selectAll()
+        .execute();
+      for (const r of rows) {
+        siteSettings[r.key] = r.value;
+      }
+    } catch {}
+  }
+
+  const repoOwner = body.repoOwner || env.GITHUB_OWNER || siteSettings.repo_owner || 'default';
+  const repoName = body.repoName || env.GITHUB_REPO || siteSettings.repo_name || siteId;
+  const branch = body.branch || siteSettings.git_branch || 'main';
   const bundleSlug = body.bundleSlug || body.bundle;
   const forcePublish = Boolean(body.forcePublish);
   const now = Date.now();
 
-  // 1. Gather all working drafts / changed items
+  // 1. Gather all working drafts / changed items scoped to siteId
   let changedQuery = db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('draft_status', 'in', ['modified', 'new'])
     .selectAll();
 
@@ -329,10 +373,11 @@ async function handlePublishRelease(c: any) {
     };
   });
 
-  const allItems = await exportToGitFormat(db);
+  const allItems = await exportToGitFormat(db, undefined, siteId);
 
   // 2. Build PublishHookContext
   const hookCtx: PublishHookContext = {
+    siteId,
     bundle: bundleSlug ? { id: `bundle-${bundleSlug}`, slug: bundleSlug, name: bundleSlug } : undefined,
     items: allItems,
     changedItems,
@@ -362,6 +407,7 @@ async function handlePublishRelease(c: any) {
 
     auditReport = {
       timestamp: new Date(now).toISOString(),
+      siteId,
       actor: hookCtx.actor,
       bundle: hookCtx.bundle,
       status: hookResult.status,
@@ -370,7 +416,7 @@ async function handlePublishRelease(c: any) {
     };
   }
 
-  // 4. Promote working copies in D1
+  // 4. Promote working copies in D1 scoped to siteId
   for (const doc of changedDocs) {
     let baseData = {};
     let draftData = {};
@@ -388,17 +434,18 @@ async function handlePublishRelease(c: any) {
         updated_at: now,
       })
       .where('id', '=', doc.id)
+      .where('site_id', '=', siteId)
       .execute();
   }
 
   // 5. Serialize documents for Git release
-  const updatedItems = await exportToGitFormat(db);
-  const files = serializeToFiles(updatedItems, 'content');
+  const updatedItems = await exportToGitFormat(db, undefined, siteId);
+  const files = serializeToFiles(updatedItems, siteSettings.content_path || 'content');
 
   // Embed verification report in content/.audit/
   if (auditReport) {
     files.push({
-      path: 'content/.audit/verification-report.json',
+      path: `${siteSettings.content_path || 'content'}/.audit/verification-report.json`,
       content: JSON.stringify(auditReport, null, 2),
     });
   }
@@ -409,23 +456,25 @@ async function handlePublishRelease(c: any) {
   const tagName = body.tag || `release-${dateStr}-${timeStr}`;
 
   let gitResult: any = { commitSha: 'local', tagCreated: false };
-  if (env.GITHUB_TOKEN) {
+  const githubToken = env.GITHUB_TOKEN || siteSettings.git_token;
+  if (githubToken && repoOwner !== 'default') {
     gitResult = await publishReleaseToGitHub({
-      githubToken: env.GITHUB_TOKEN,
+      githubToken,
       repoOwner,
       repoName,
       branch,
       files,
       tagName,
-      commitMessage: body.message || `Production Content Release: ${tagName}`,
+      commitMessage: body.message || `Production Content Release (${siteId}): ${tagName}`,
     });
   }
 
   // 7. Trigger Production Deploy Hook if configured
   let deployHookResult: any = null;
-  if (env.PRODUCTION_DEPLOY_HOOK_URL) {
+  const deployHookUrl = siteSettings.deploy_hook || siteSettings.deploy_hook_url || env.PRODUCTION_DEPLOY_HOOK_URL;
+  if (deployHookUrl) {
     try {
-      const res = await fetch(env.PRODUCTION_DEPLOY_HOOK_URL, { method: 'POST' });
+      const res = await fetch(deployHookUrl, { method: 'POST' });
       deployHookResult = { status: res.status, ok: res.ok };
     } catch (e: any) {
       deployHookResult = { error: e.message };
@@ -444,6 +493,7 @@ async function handlePublishRelease(c: any) {
 
   return c.json({
     success: true,
+    siteId,
     tag: tagName,
     commitSha: gitResult.commitSha,
     tagCreated: gitResult.tagCreated,
@@ -517,31 +567,105 @@ app.post('/ext/release/publish', requireWriteAuth, handlePublishRelease);
 app.post('/ext/sync/hydrate', requireWriteAuth, async (c) => {
   const body = await c.req.json();
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || body.siteId || (await resolveSiteId(c));
   const items = Array.isArray(body) ? body : body.items || [];
-  const result = await hydrateFromGit(db, items);
-  return c.json({ success: true, result });
+  const result = await hydrateFromGit(db, items, 1, siteId);
+  return c.json({ success: true, siteId, result });
 });
 
 app.get('/ext/sync/export', async (c) => {
   const collection = c.req.query('collection');
+  const siteId = (c as any).get('siteId') || c.req.query('site') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
-  const items = await exportToGitFormat(db, collection);
-  return c.json({ items });
+  const items = await exportToGitFormat(db, collection, siteId);
+  return c.json({ siteId, items });
+});
+
+app.post('/ext/sync/pull', requireWriteAuth, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const siteId = body.siteId || (c as any).get('siteId') || (await resolveSiteId(c));
+  const db = createDb(c.env.DB);
+
+  let siteSettings: Record<string, string> = {};
+  if (c.env.DB) {
+    try {
+      const rows = await db
+        .selectFrom('system_site_settings')
+        .where('site_id', '=', siteId)
+        .selectAll()
+        .execute();
+      for (const r of rows) siteSettings[r.key] = r.value;
+    } catch {}
+  }
+
+  const remoteUrl = body.gitRemoteUrl || siteSettings.git_remote_url || c.env.GIT_REMOTE_URL;
+  if (!remoteUrl) {
+    return c.json({ error: `No Git remote repository configured for site '${siteId}'` }, 400);
+  }
+
+  const branch = body.branch || siteSettings.git_branch || 'main';
+  const token = body.token || siteSettings.git_token || c.env.GIT_TOKEN || c.env.GITHUB_TOKEN;
+
+  const driver = await getGitDriver({
+    url: remoteUrl,
+    branch,
+    token,
+    repoPath: siteSettings.repo_path || c.env.REPO_PATH,
+    isProduction: c.env.ENVIRONMENT === 'production',
+  });
+
+  const tag = body.tag || (await driver.listTags()).slice(-1)[0] || 'HEAD';
+  const items = await driver.loadTagContent(tag);
+  const { inserted, updated } = await hydrateFromGit(db, items, 1, siteId);
+
+  // Dynamically sync collection views for incoming collections
+  const collections = new Set<string>();
+  for (const it of items) {
+    if (it.collection) collections.add(it.collection);
+  }
+  for (const col of collections) {
+    try {
+      await syncCollectionView(db, col);
+    } catch {}
+  }
+
+  return c.json({
+    success: true,
+    siteId,
+    tag,
+    itemCount: items.length,
+    inserted,
+    updated,
+    collections: Array.from(collections),
+  });
 });
 
 app.get('/ext/briefcase/status', requireWriteAuth, async (c) => {
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+
   const dirtyDrafts = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('draft_status', 'in', ['modified', 'new'])
     .select(['id', 'collection', 'slug', 'title', 'draft_status'])
     .execute();
 
-  const totalDocs = await db.selectFrom('documents').select(db.fn.count('id').as('count')).executeTakeFirst();
-  const totalVersions = await db.selectFrom('directus_versions').select(db.fn.count('id').as('count')).executeTakeFirst();
+  const totalDocs = await db
+    .selectFrom('documents')
+    .where('site_id', '=', siteId)
+    .select(db.fn.count('id').as('count'))
+    .executeTakeFirst();
+
+  const totalVersions = await db
+    .selectFrom('directus_versions')
+    .where('site_id', '=', siteId)
+    .select(db.fn.count('id').as('count'))
+    .executeTakeFirst();
 
   return c.json({
     offline: false,
+    siteId,
     dirtyDraftCount: dirtyDrafts.length,
     dirtyDrafts,
     totalDocuments: Number((totalDocs as any)?.count || 0),
@@ -604,10 +728,12 @@ app.get('/ext/telemetry', (c) => {
 app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || body.siteId || (await resolveSiteId(c));
   const user = await getAuthenticatedUser(c);
 
   const changedDocs = await db
     .selectFrom('documents')
+    .where('site_id', '=', siteId)
     .where('draft_status', 'in', ['modified', 'new'])
     .selectAll()
     .execute();
@@ -625,8 +751,9 @@ app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
   });
 
   const ctx: PublishHookContext = {
+    siteId,
     bundle: body.bundleSlug ? { id: `bundle-${body.bundleSlug}`, slug: body.bundleSlug, name: body.bundleSlug } : undefined,
-    items: await exportToGitFormat(db),
+    items: await exportToGitFormat(db, undefined, siteId),
     changedItems,
     actor: { email: user?.email || 'admin@edge', authMethod: user?.authMethod || 'unknown' },
     timestamp: Date.now(),
@@ -644,11 +771,27 @@ app.post('/ext/bundle/validate', requireWriteAuth, async (c) => {
 });
 
 app.post('/ext/deploy/trigger', requireWriteAuth, async (c) => {
-  if (!c.env.PRODUCTION_DEPLOY_HOOK_URL) {
-    return c.json({ error: 'PRODUCTION_DEPLOY_HOOK_URL not configured' }, 400);
+  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+  let deployHookUrl = c.env.PRODUCTION_DEPLOY_HOOK_URL;
+
+  if (c.env.DB) {
+    try {
+      const db = createDb(c.env.DB);
+      const row = await db
+        .selectFrom('system_site_settings')
+        .where('site_id', '=', siteId)
+        .where('key', 'in', ['deploy_hook', 'deploy_hook_url'])
+        .select('value')
+        .executeTakeFirst();
+      if (row?.value) deployHookUrl = row.value;
+    } catch {}
+  }
+
+  if (!deployHookUrl) {
+    return c.json({ error: 'Deploy hook URL not configured for this site' }, 400);
   }
   try {
-    const res = await fetch(c.env.PRODUCTION_DEPLOY_HOOK_URL, { method: 'POST' });
+    const res = await fetch(deployHookUrl, { method: 'POST' });
     return c.json({ success: true, status: res.status, ok: res.ok });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
@@ -660,20 +803,22 @@ app.post('/api/release/publish', requireWriteAuth, handlePublishRelease);
 app.post('/api/sync/hydrate', requireWriteAuth, async (c) => {
   const body = await c.req.json();
   const db = createDb(c.env.DB);
+  const siteId = (c as any).get('siteId') || body.siteId || (await resolveSiteId(c));
   const items = Array.isArray(body) ? body : body.items || [];
-  const result = await hydrateFromGit(db, items);
-  return c.json({ success: true, result });
+  const result = await hydrateFromGit(db, items, 1, siteId);
+  return c.json({ success: true, siteId, result });
 });
 app.get('/api/sync/export', async (c) => {
   const collection = c.req.query('collection');
+  const siteId = (c as any).get('siteId') || c.req.query('site') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
-  const items = await exportToGitFormat(db, collection);
-  return c.json({ items });
+  const items = await exportToGitFormat(db, collection, siteId);
+  return c.json({ siteId, items });
 });
 
 export default {
   fetch: app.fetch,
-  // Scheduled Cron Handler for Scheduled Releases
+  // Scheduled Cron Handler for Scheduled Releases (Multi-Website Partitioned)
   async scheduled(event: any, env: Env, ctx: any) {
     const db = createDb(env.DB);
     const now = Date.now();
@@ -693,24 +838,52 @@ export default {
         .where('publish_at', '<=', now)
         .execute();
 
-      if (env.GITHUB_TOKEN && env.PRODUCTION_DEPLOY_HOOK_URL) {
-        const items = await exportToGitFormat(db);
-        const files = serializeToFiles(items, 'content');
-        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
-        const timeStr = new Date().toTimeString().slice(0, 5).replace(/:/g, '');
-        const tagName = `release-scheduled-${dateStr}-${timeStr}`;
+      // Group promoted documents by site_id
+      const docsBySite = new Map<string, typeof scheduledDocs>();
+      for (const doc of scheduledDocs) {
+        const site = (doc as any).site_id || 'default';
+        if (!docsBySite.has(site)) docsBySite.set(site, []);
+        docsBySite.get(site)!.push(doc);
+      }
 
-        await publishReleaseToGitHub({
-          githubToken: env.GITHUB_TOKEN,
-          repoOwner: 'bmoelk',
-          repoName: 'brainendeavor.com',
-          branch: 'main',
-          files,
-          tagName,
-          commitMessage: `Automated Scheduled Content Release: ${tagName}`,
-        });
+      for (const [siteId, _docs] of docsBySite.entries()) {
+        let siteSettings: Record<string, string> = {};
+        try {
+          const rows = await db
+            .selectFrom('system_site_settings')
+            .where('site_id', '=', siteId)
+            .selectAll()
+            .execute();
+          for (const r of rows) siteSettings[r.key] = r.value;
+        } catch {}
 
-        await fetch(env.PRODUCTION_DEPLOY_HOOK_URL, { method: 'POST' });
+        const githubToken = env.GITHUB_TOKEN || siteSettings.git_token;
+        const repoOwner = env.GITHUB_OWNER || siteSettings.repo_owner;
+        const repoName = env.GITHUB_REPO || siteSettings.repo_name || siteId;
+        const branch = siteSettings.git_branch || 'main';
+        const deployHookUrl = siteSettings.deploy_hook || siteSettings.deploy_hook_url || env.PRODUCTION_DEPLOY_HOOK_URL;
+
+        if (githubToken && repoOwner && repoOwner !== 'default') {
+          const items = await exportToGitFormat(db, undefined, siteId);
+          const files = serializeToFiles(items, siteSettings.content_path || 'content');
+          const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
+          const timeStr = new Date().toTimeString().slice(0, 5).replace(/:/g, '');
+          const tagName = `release-scheduled-${dateStr}-${timeStr}`;
+
+          await publishReleaseToGitHub({
+            githubToken,
+            repoOwner,
+            repoName,
+            branch,
+            files,
+            tagName,
+            commitMessage: `Automated Scheduled Content Release (${siteId}): ${tagName}`,
+          });
+
+          if (deployHookUrl) {
+            await fetch(deployHookUrl, { method: 'POST' }).catch(() => {});
+          }
+        }
       }
     }
   },

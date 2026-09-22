@@ -16,7 +16,8 @@ export function renderDashboardView(
   collectionsList: DashboardCollectionItem[],
   packs: string[],
   user: { email: string; authMethod?: string },
-  recentActivity: any[] = []
+  recentActivity: any[] = [],
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   return renderLayout('SlottD Studio', 'content', user, html`
     <div class="header">
@@ -340,6 +341,6 @@ export function renderDashboardView(
         }
       }
     </script>
-  `);
+  `, undefined, siteContext);
 }
 

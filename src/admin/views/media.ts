@@ -4,7 +4,8 @@ import { renderInfoBubble } from '../ui.js';
 
 export function renderMediaView(
   mediaFiles: any[],
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   const clientScript = `
     let activeTypeFilter = 'all';
@@ -504,5 +505,5 @@ export function renderMediaView(
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

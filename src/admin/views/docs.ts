@@ -1,7 +1,10 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
 
-export function renderDocsView(user: { email: string; authMethod?: string }) {
+export function renderDocsView(
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
+) {
   const clientScript = `
     function copySnippet(btn, codeId) {
       const el = document.getElementById(codeId);
@@ -125,6 +128,7 @@ export function renderDocsView(user: { email: string; authMethod?: string }) {
           <ul class="docs-nav-list">
             <li><a href="#git-releases" class="docs-nav-link"><span>📦</span> 6. Git Releases & D1 Sync</a></li>
             <li><a href="#production-security" class="docs-nav-link"><span>🔒</span> 7. Auth & Access Control</a></li>
+            <li><a href="#cms-upgrades" class="docs-nav-link"><span>🔄</span> 8. Engine Upgrade Protocol</a></li>
           </ul>
         </div>
 
@@ -444,7 +448,27 @@ npx wrangler secret put GIT_TOKEN</code></pre>
           </ul>
         </section>
 
-        <!-- Topic 8: REST Query Cheat Sheet -->
+        <!-- Topic 8: Engine Upgrade Protocol -->
+        <section class="card docs-section" id="cms-upgrades" style="padding: 28px;">
+          <h2 style="margin-top: 0; font-size: 20px; color: #38bdf8; display: flex; align-items: center; gap: 10px;">
+            <span>🔄</span> 8. How to Update Your Installed CMS (Tier 2 Protocol)
+          </h2>
+          <p style="color: var(--text-muted); font-size: 14px; line-height: 1.6;">
+            When SlottD releases new features, UI enhancements, bug fixes, or database migrations, downstream CMS instances upgrade cleanly using a disciplined <strong>3-Step Protocol</strong>:
+          </p>
+
+          <ol style="color: #cbd5e1; font-size: 13px; line-height: 1.8; margin-left: 20px;">
+            <li><strong>Step 1: Code Upgrade (<code>package.json</code>)</strong>: Update your <code>slottd</code> dependency via <code>npm install github:bmoelk/slottD#v0.3.0</code> or <code>npm update slottd</code>.</li>
+            <li><strong>Step 2: Database Migration (<code>db:migrate</code>)</strong>: Apply additive D1 migrations locally (<code>npm run db:migrate:local</code>) or to production (<code>npm run db:migrate:remote</code>). SlottD migrations are strictly additive (Rule 5 schema versioning) and preserve all existing documents and media.</li>
+            <li><strong>Step 3: Verification & Deploy</strong>: Run local type checks and test suites (<code>npm run type-check && npm test</code>), then deploy to Cloudflare (<code>npm run deploy:prod</code>).</li>
+          </ol>
+
+          <div class="docs-callout" style="background: rgba(56, 189, 248, 0.08); border-left: 3px solid #38bdf8; padding: 12px 16px; border-radius: 6px; margin-top: 14px; font-size: 13px; color: #94a3b8;">
+            <strong>💡 Zero Content Loss Safety Net:</strong> Content is permanently versioned in your Git content repositories. Even in the event of an unexpected database failure, running <code>npm run sync:hydrate</code> will re-populate D1 in seconds directly from the Git repository.
+          </div>
+        </section>
+
+        <!-- Topic 9: REST Query Cheat Sheet -->
         <section class="card docs-section" id="directus-api-cheat" style="padding: 28px;">
           <h2 style="margin-top: 0; font-size: 20px; color: #a5b4fc; display: flex; align-items: center; gap: 10px;">
             <span>📖</span> Directus REST Query Cheat Sheet
@@ -589,5 +613,5 @@ npx wrangler secret put GIT_TOKEN</code></pre>
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

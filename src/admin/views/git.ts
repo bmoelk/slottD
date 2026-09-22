@@ -1,6 +1,6 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
-import { renderInfoBubble } from '../ui.js';
+import { renderInfoBubble, renderFavicon } from '../ui.js';
 
 export interface GitViewData {
   environment: string;
@@ -13,13 +13,19 @@ export interface GitViewData {
   collectionCount: number;
   mediaCount: number;
   tags: string[];
+  isMonorepo?: boolean;
+  contentPath?: string;
+  contentSubpath?: string;
+  gitTopLevel?: string;
 }
 
 export function renderGitView(
   data: GitViewData,
-  user: { email: string; authMethod?: string }
+  user: { email: string; authMethod?: string },
+  siteContext?: { activeSite?: string; availableSites?: string[]; activeFavicon?: string }
 ) {
   const defaultTag = `release-${new Date().toISOString().slice(0, 10).replace(/-/g, '.')}-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
+  const activeSite = siteContext?.activeSite || 'default';
 
   const clientScript = `
     function appendLog(msg, type = 'info') {
@@ -44,12 +50,12 @@ export function renderGitView(
       if (box) box.innerHTML = '';
     }
 
-    function copyRemoteSetupSnippet(btn) {
-      const code = document.getElementById('remoteSetupSnippet')?.innerText || '';
-      navigator.clipboard.writeText(code);
-      const orig = btn.innerText;
-      btn.innerText = 'Copied!';
-      setTimeout(() => btn.innerText = orig, 1500);
+    function toggleTagInputs(checked) {
+      const group = document.getElementById('tagInputsGroup');
+      if (group) {
+        group.style.opacity = checked ? '1' : '0.45';
+        group.style.pointerEvents = checked ? 'auto' : 'none';
+      }
     }
 
     async function fetchRemoteTags() {
@@ -110,7 +116,7 @@ export function renderGitView(
 
           <div style="padding:24px;display:flex;flex-direction:column;gap:16px;font-size:13px;line-height:1.5;">
             <p style="margin:0;color:#cbd5e1;">
-              Verification completed across all configured checks. The following items require your attention before publishing:
+              Verification completed across all configured checks. The following items require your attention:
             </p>
 
             \${errors.length > 0 ? \`
@@ -146,7 +152,7 @@ export function renderGitView(
               Review & Fix
             </button>
             <button type="button" id="btnOverridePublish" style="padding:8px 16px;border-radius:6px;border:none;background:#f59e0b;color:#0f172a;cursor:pointer;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
-              ⚠️ Override & Publish Anyway
+              ⚠️ Override & Execute Anyway
             </button>
           </div>
         </div>
@@ -163,39 +169,66 @@ export function renderGitView(
       });
     }
 
-    async function createGitRelease(forcePublish = false) {
+    async function runGitPipeline(dryRun = false, forcePublish = false) {
+      const exportFiles = document.getElementById('opExportFiles')?.checked || false;
+      const createTag = document.getElementById('opCreateTag')?.checked || false;
+      const pushToRemote = document.getElementById('opPushRemote')?.checked || false;
+
+      if (!exportFiles && !createTag && !pushToRemote) {
+        alert('Please select at least one operation to execute.');
+        return;
+      }
+
       const tag = (document.getElementById('releaseTagName')?.value || '').trim();
       const msg = (document.getElementById('releaseCommitMsg')?.value || '').trim();
-      const push = document.getElementById('pushToRemoteCheckbox')?.checked || false;
 
-      if (!tag) {
+      if (createTag && !tag) {
         alert('Please specify a Git release tag name.');
         return;
       }
 
-      appendLog('$ git add -A content/ && git commit -m "' + msg + '" && git tag -a ' + tag + (push ? ' && git push origin HEAD --tags' : '') + (forcePublish ? ' [Force Override]' : ''), 'command');
+      const modeLabel = dryRun ? '[Dry Run / Preview]' : '[Execute]';
+      const steps = [];
+      if (exportFiles) steps.push('Export Files');
+      if (createTag) steps.push('Commit & Tag (' + tag + ')');
+      if (pushToRemote) steps.push('Push Remote');
+
+      appendLog('$ pipeline ' + modeLabel + ' ' + steps.join(' -> '), 'command');
+
       try {
         const res = await fetch('/admin/git/release', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tag, message: msg, push, forcePublish })
+          body: JSON.stringify({
+            exportFiles,
+            createTag,
+            pushToRemote,
+            dryRun,
+            tag,
+            message: msg,
+            forcePublish
+          })
         });
+
         const json = await res.json();
         if (res.ok) {
-          appendLog('✅ ' + json.message, 'success');
+          appendLog((dryRun ? '🔍 ' : '✅ ') + json.message, 'success');
           if (json.output) appendLog(json.output, 'info');
+          if (json.plan) {
+            appendLog('Execution Plan:\\n' + json.plan, 'info');
+          }
           if (json.command) {
-            appendLog('👉 To execute via terminal, run:\\n' + json.command, 'command');
+            appendLog('Terminal Equivalent:\\n' + json.command, 'command');
           }
         } else if (res.status === 422 && json.requiresConfirmation) {
           appendLog('⚠️ Pre-release verification reported findings: ' + (json.message || json.error), 'warn');
-          showVerificationSummaryModal(json.report, () => createGitRelease(true));
+          showVerificationSummaryModal(json.report, () => runGitPipeline(dryRun, true));
         } else {
-          appendLog('❌ Release failed: ' + (json.error || res.statusText), 'error');
+          appendLog('❌ Operation failed: ' + (json.error || res.statusText), 'error');
           if (json.output) appendLog(json.output, 'error');
         }
       } catch (e) {
-        appendLog('❌ Release error: ' + e.message, 'error');
+        appendLog('❌ Execution error: ' + e.message, 'error');
       }
     }
 
@@ -237,7 +270,10 @@ export function renderGitView(
 
     async function executeRestore() {
       const tag = document.getElementById('tagSelect')?.value;
-      if (!tag) return;
+      if (!tag) {
+        alert('Please select a Git release tag to import (or click Fetch Remote Tags first).');
+        return;
+      }
 
       const confirmed = confirm('Are you sure you want to load and restore D1 database content from Git tag "' + tag + '"?');
       if (!confirmed) return;
@@ -262,173 +298,234 @@ export function renderGitView(
       }
     }
 
-    function downloadBackupJson() {
-      appendLog('Generating direct JSON backup download attachment...', 'info');
-      const downloadUrl = '/admin/git/backup';
+    function exportFilesZip() {
+      appendLog('Generating ZIP archive with serialized collections and README...', 'info');
+      const downloadUrl = '/admin/git/export-zip';
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = 'slottd-backup-' + new Date().toISOString().slice(0,10) + '.json';
+      link.download = '${activeSite}-content-' + new Date().toISOString().slice(0,10) + '.zip';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      appendLog('Backup download initiated.', 'success');
+      appendLog('ZIP download initiated for ' + '${activeSite}' + '.', 'success');
+    }
+
+    function downloadBackupJson() {
+      appendLog('Generating JSON backup download for ' + '${activeSite}' + '...', 'info');
+      const downloadUrl = '/admin/git/backup';
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = 'slottd-backup-' + '${activeSite}' + '-' + new Date().toISOString().slice(0,10) + '.json';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      appendLog('JSON backup download initiated.', 'success');
     }
   `;
 
   return renderLayout('Git Center — SlottD Studio', 'git', user, html`
     <div class="header">
       <div>
-        <h1 style="display: flex; align-items: center;">
-          Git Operations & Releases
-          ${renderInfoBubble('Sync D1 records with Git releases using pure Git Smart HTTP wire protocol.', 'git-releases')}
+        <h1 style="display: flex; align-items: center; gap: 8px;">
+          Git Center & Releases
+          ${renderInfoBubble('Decoupled Git releases, dry-run simulations, and multi-format exports scoped to the active website.', 'git-releases')}
         </h1>
-        <p class="subtitle">Version-control your schema and content in Git, preview safe diffs, and deploy across environments.</p>
-      </div>
-      <div class="header-actions">
-        <button type="button" class="btn btn-secondary" onclick="fetchRemoteTags()">
-          🔄 Fetch Remote Tags
-        </button>
-        <button type="button" class="btn btn-secondary" onclick="downloadBackupJson()">
-          ⬇️ Download JSON Backup
-        </button>
+        <p class="subtitle">Decoupled export pipeline &bull; Dry-run simulation &bull; Cross-environment restore</p>
       </div>
     </div>
 
-    <!-- Remote Setup Warning Box (If No Remote) -->
-    ${!data.hasRemote ? html`
-      <div class="card" style="margin-bottom: 24px; padding: 18px 24px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 10px;">
-        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
-          <div>
-            <h4 style="margin: 0 0 6px; color: #fbbf24; font-size: 14px; display: flex; align-items: center; gap: 6px;">
-              <span>⚠️</span> No Git Remote Configured
-            </h4>
-            <p style="margin: 0; font-size: 13px; color: #fde68a;">
-              To fetch, diff, or push releases to a central repository, configure your Git Remote URL and Access Token:
-            </p>
-          </div>
-          <a href="/admin/setup" class="btn btn-primary" style="font-size: 12px; text-decoration: none;">
-            ⚙️ Configure Remote in Setup
-          </a>
-        </div>
-      </div>
-    ` : ''}
-
-    <!-- Environment & Database Status Header -->
-    <div class="card status-overview-card" style="margin-bottom: 24px; padding: 18px 24px; background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;">
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+    <!-- Environment & Tenancy Context Bar -->
+    <div class="card status-overview-card" style="margin-bottom: 20px; padding: 16px 20px; background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px;">
         <div>
-          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Environment</span>
-          <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: #38bdf8; font-size: 14px;">
-            <span style="width: 8px; height: 8px; border-radius: 50%; background: #38bdf8;"></span>
-            ${data.environment.toUpperCase()}
+          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Active Site</span>
+          <span style="display: inline-flex; align-items: center; gap: 6px; font-weight: 700; color: #38bdf8; font-size: 14px;">
+            ${renderFavicon(activeSite, 16, siteContext?.activeFavicon)}
+            <span>${activeSite}</span>
           </span>
         </div>
         <div>
-          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">D1 Database</span>
-          <code style="font-size: 12px; color: #cbd5e1; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">${data.d1DatabaseId}</code>
-        </div>
-        <div>
-          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Database Metrics</span>
+          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Database Records</span>
           <span style="font-size: 13px; color: #f8fafc;">
-            <strong>${data.docCount}</strong> Documents (${data.collectionCount} Collections) &bull; <strong>${data.mediaCount}</strong> R2 Assets
+            <strong>${data.docCount}</strong> Docs &bull; <strong>${data.collectionCount}</strong> Collections
           </span>
         </div>
         <div>
-          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; display: block; margin-bottom: 4px;">Git Remote & Engine</span>
-          ${data.hasRemote ? html`
-            <div style="font-size: 12px; color: #34d399; word-break: break-all;"><code>${data.remoteUrl}</code></div>
-            <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">Engine: <span style="color: #38bdf8; font-weight: 600;">${data.engineName || 'isomorphic-git'}</span></div>
-          ` : html`
-            <div style="font-size: 12px; color: #f59e0b;">Not configured</div>
-          `}
+          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Git Remote</span>
+          <span style="font-size: 12px; color: ${data.hasRemote ? '#34d399' : '#f59e0b'}; word-break: break-all; font-family: monospace;">
+            ${data.hasRemote ? data.remoteUrl : 'Not configured'}
+          </span>
+        </div>
+        <div>
+          <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Execution Strategy</span>
+          <span style="font-size: 12px; color: ${data.repoPath ? '#38bdf8' : '#94a3b8'};">
+            ${data.repoPath ? '📁 Direct Local Clone' : '📦 Isolated Temp Location'}
+          </span>
         </div>
       </div>
     </div>
 
-    <!-- Main Grid: Export/Commit vs Import/Diff -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; margin-bottom: 24px;">
+    <!-- Sub-Tabs: Export vs Import (Authentic Browser Tabs) -->
+    <div x-data="{ gitTab: 'export' }" style="margin-bottom: 24px;">
       
-      <!-- Card 1: Git Commit & Tag Release -->
-      <div class="card" style="padding: 24px; display: flex; flex-direction: column; justify-content: space-between;">
-        <div>
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
-            <span style="font-size: 24px;">🏷️</span>
-            <div>
-              <h3 style="margin: 0; font-size: 16px; display: flex; align-items: center;">
-                Git Commit & Tag Release
-                ${renderInfoBubble('Exports D1 records into content/ and tags release. Evaluates pre-publish verification pipeline before tagging.', 'validations-hooks')}
-              </h3>
-              <p style="margin: 0; font-size: 12px; color: #94a3b8;">Export active D1 database to <code>content/</code> and create an annotated Git tag.</p>
-            </div>
-          </div>
+      <!-- Tab Navigation -->
+      <div class="git-tab-bar">
+        <button
+          type="button"
+          class="git-tab-btn"
+          :class="gitTab === 'export' ? 'active' : ''"
+          @click="gitTab = 'export'"
+        >
+          Export & Releases
+        </button>
+        <button
+          type="button"
+          class="git-tab-btn"
+          :class="gitTab === 'import' ? 'active' : ''"
+          @click="gitTab = 'import'"
+        >
+          Import & Restore
+        </button>
+      </div>
 
-          <div style="margin-top: 18px; display: flex; flex-direction: column; gap: 12px;">
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; color: #cbd5e1;">Git Release Tag</label>
-              <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" style="width: 100%;" />
+      <!-- TAB 1: EXPORT & RELEASES -->
+      <div x-show="gitTab === 'export'" x-cloak>
+        <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+          
+          <!-- Primary Focus: Content Export & Release Pipeline -->
+          <div class="card" style="flex: 1; min-width: 320px; padding: 24px; margin-bottom: 0;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+              <div>
+                <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
+                  Content Export & Release Pipeline
+                </h3>
+                <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">
+                  Select operations to execute. Dry Run lets you inspect planned changes safely before modifying disk or remote state.
+                </p>
+              </div>
             </div>
 
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; color: #cbd5e1;">Commit Message</label>
-              <input type="text" id="releaseCommitMsg" class="input-search" placeholder="e.g. Content update release" value="chore(content): release snapshot ${defaultTag}" style="width: 100%;" />
-            </div>
+            <!-- Decoupled Pipeline Checkboxes -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opExportFiles" checked style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Export Files to Repository (<code>${data.contentSubpath || 'root (/)'}</code>) + Auto-Generate <code>README.md</code></span>
+              </label>
 
-            <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
-              <input type="checkbox" id="pushToRemoteCheckbox" style="cursor: pointer;" checked />
-              <label for="pushToRemoteCheckbox" style="font-size: 12px; color: #cbd5e1; cursor: pointer;">
-                Push commit & tag to Git remote (<code>origin</code>)
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opCreateTag" checked onchange="toggleTagInputs(this.checked)" style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Create Annotated Git Release Tag</span>
+              </label>
+
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; color: #f8fafc; font-size: 13px; font-weight: 500;">
+                <input type="checkbox" id="opPushRemote" ${data.hasRemote ? 'checked' : ''} ${!data.hasRemote ? 'disabled' : ''} style="cursor: pointer; width: 16px; height: 16px;" />
+                <span>Push to Remote Repository (<code>${data.hasRemote ? data.remoteUrl : 'Remote not configured'}</code>)</span>
               </label>
             </div>
-          </div>
-        </div>
 
-        <div style="margin-top: 24px;">
-          <button type="button" class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="createGitRelease()">
-            🚀 Create Release & Export to Git
-          </button>
+            <!-- Tag & Commit Message Inputs -->
+            <div id="tagInputsGroup" style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; transition: opacity 0.2s;">
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Release Tag Name</label>
+                <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Commit Message</label>
+                <input type="text" id="releaseCommitMsg" class="input-search" value="chore(content): release snapshot ${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+              </div>
+            </div>
+
+            <!-- Action Buttons: Execute vs Dry Run -->
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(false)">
+                Execute Operations
+              </button>
+              <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px;" onclick="runGitPipeline(true)">
+                Dry Run (Preview)
+              </button>
+            </div>
+          </div>
+
+          <!-- Vertical Action Bar: À La Carte Downloads -->
+          <div class="card" style="width: 260px; padding: 20px; background: #0c1322; border: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 14px; flex-shrink: 0; margin-bottom: 0;">
+            <div>
+              <span style="font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; letter-spacing: 0.5px; display: block;">À La Carte Downloads</span>
+              <span style="font-size: 12px; color: #64748b; margin-top: 4px; display: block; line-height: 1.4;">
+                Instant asset exports without Git commits or remote pushes.
+              </span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="exportFilesZip()"
+                style="width: 100%; justify-content: flex-start; padding: 10px 14px; font-size: 13px;"
+                title="Download entire collection directory tree as a ZIP archive"
+              >
+                Export Files as ZIP
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="downloadBackupJson()"
+                style="width: 100%; justify-content: flex-start; padding: 10px 14px; font-size: 13px;"
+                title="Download full JSON database dump for active site"
+              >
+                Export JSON Dump
+              </button>
+            </div>
+          </div>
+
         </div>
       </div>
 
-      <!-- Card 2: Compare & Load Content from Git Tag -->
-      <div class="card" style="padding: 24px; display: flex; flex-direction: column; justify-content: space-between;">
-        <div>
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
-            <span style="font-size: 24px;">🔄</span>
+      <!-- TAB 2: IMPORT & RESTORE -->
+      <div x-show="gitTab === 'import'" x-cloak>
+        <div class="card" style="padding: 24px; max-width: 800px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
             <div>
-              <h3 style="margin: 0; font-size: 16px; display: flex; align-items: center;">
-                Compare & Load Content from Git Tag
-                ${renderInfoBubble('Safely diffs in-memory against D1 before restoring records by (collection, slug).', 'git-releases')}
+              <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
+                Compare & Restore Content from Git Tag
               </h3>
-              <p style="margin: 0; font-size: 12px; color: #94a3b8;">Safe-by-default: preview file mutations before restoring records into D1.</p>
+              <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">
+                Safe-by-default: preview diffs against active D1 database records before restoring content into <code>${activeSite}</code>.
+              </p>
             </div>
           </div>
 
-          <div style="margin-top: 18px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px;">
             <div>
-              <label style="display: block; font-size: 12px; font-weight: 500; margin-bottom: 4px; color: #cbd5e1;">Select Git Tag to Restore</label>
-              <select id="tagSelect" class="select-control" style="width: 100%; height: 38px;">
-                ${data.tags.length === 0 ? html`
-                  <option value="">No Git tags found (create one first)</option>
-                ` : data.tags.map((t, idx) => html`
-                  <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
-                `)}
-              </select>
+              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Select Git Release Tag</label>
+              <div style="display: flex; gap: 8px;">
+                <select id="tagSelect" class="select-control" style="flex: 1; height: 38px; box-sizing: border-box; background: #0b1120; border: 1px solid #334155; color: #f8fafc; border-radius: 6px; padding: 0 10px;">
+                  ${data.tags.length === 0 ? html`
+                    <option value="">No Git tags found (click Fetch Remote Tags or create one)</option>
+                  ` : data.tags.map((t, idx) => html`
+                    <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
+                  `)}
+                </select>
+                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
+                  Fetch Remote Tags
+                </button>
+              </div>
             </div>
 
-            <div id="diffSummaryCard" style="display: none; padding: 12px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px;">
-              <strong style="color: #38bdf8;">Preview Diff Summary:</strong>
-              <pre id="diffSummaryContent" style="margin-top: 6px; color: #e2e8f0; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; background: rgba(0,0,0,0.4); padding: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06);"></pre>
+            <div id="diffSummaryCard" style="display: none; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px;">
+              <strong style="color: #38bdf8;">Diff Preview Summary:</strong>
+              <pre id="diffSummaryContent" style="margin-top: 8px; color: #e2e8f0; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06);"></pre>
             </div>
           </div>
-        </div>
 
-        <div style="margin-top: 24px; display: flex; gap: 8px;">
-          <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center;" onclick="previewGitDiff()">
-            🔍 Preview Diff (Dry Run)
-          </button>
-          <button type="button" id="btnConfirmRestore" class="btn btn-primary" style="flex: 1; justify-content: center; display: none; background: #10b981;" onclick="executeRestore()">
-            ✓ Confirm & Load into D1
-          </button>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px; background: #10b981; border-color: #10b981; color: #0f172a; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;" onclick="executeRestore()">
+              Execute Import (Restore D1)
+            </button>
+            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 6px;" onclick="previewGitDiff()">
+              Preview Diff (Dry Run)
+            </button>
+          </div>
         </div>
       </div>
 
@@ -439,18 +536,18 @@ export function renderGitView(
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 16px;">💻</span>
-          <h3 style="margin: 0; font-size: 14px; font-family: monospace; color: #cbd5e1;">Git & D1 Console Output</h3>
+          <h3 style="margin: 0; font-size: 14px; font-family: monospace; color: #cbd5e1;">Console & Execution Output</h3>
         </div>
         <button type="button" class="btn-copy" onclick="clearConsoleLog()">Clear Log</button>
       </div>
 
-      <div id="consoleLogBox" style="height: 220px; overflow-y: auto; background: #0f172a; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.5; color: #94a3b8; white-space: pre-wrap;">
-[Ready] SlottD Git operations initialized for ${data.repoPath}. Select an action above.
+      <div id="consoleLogBox" style="height: 200px; overflow-y: auto; background: #0f172a; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.5; color: #94a3b8; white-space: pre-wrap;">
+[Ready] SlottD Git operations initialized for ${activeSite}. Select an operation above.
       </div>
     </div>
 
     <script>
       ${raw(clientScript)}
     </script>
-  `);
+  `, undefined, siteContext);
 }

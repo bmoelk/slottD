@@ -11,7 +11,8 @@ export function renderEditorView(
   isNew: boolean,
   user: { email: string; authMethod?: string; apiKey?: string },
   modelIcon: string = '⚙️',
-  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' }
+  editorConfig?: { format?: 'markdown' | 'richtext'; tier?: 'light' | 'heavy' },
+  siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
   let publishedData: Record<string, any> = {};
   let draftData: Record<string, any> = {};
@@ -1219,5 +1220,5 @@ export function renderEditorView(
     <script>
       ${raw(clientScript)}
     </script>
-  `, editorConfig);
+  `, editorConfig, siteContext);
 }
