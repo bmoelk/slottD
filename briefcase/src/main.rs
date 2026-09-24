@@ -142,6 +142,15 @@ fn highlight_line(line: &str, query: Option<&str>) -> Line<'static> {
     Line::from(Span::styled(line.to_string(), Style::default().fg(base_fg)))
 }
 
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    PathBuf::from(path)
+}
+
 fn resolve_paths(cli_cms: &str, cli_site: Option<&str>) -> (PathBuf, Option<PathBuf>) {
     let cms_path = PathBuf::from(cli_cms);
     
@@ -242,6 +251,7 @@ fn main() -> Result<()> {
                 let count = engine.hydrate_from_disk()?;
                 println!("🎉 Successfully restored and loaded {} documents into D1!", count);
             }
+
             Commands::Release { tag, message, push } => {
                 let site_id = cli.site_id.ok_or_else(|| anyhow::anyhow!("--site-id is required for release; the 'default' site concept has been abolished."))?;
                 let release_tag = tag.unwrap_or_else(|| {
@@ -250,14 +260,69 @@ fn main() -> Result<()> {
                 let default_message = format!("chore(content): release {}", release_tag);
                 let commit_message = message.as_deref().unwrap_or(&default_message);
                 println!("🏷️ Creating release snapshot: {}", release_tag);
-                let git = GitDriver::new(content_path)
+
+                let has_local_git = content_path.join(".git").exists();
+                let effective_content_path = if has_local_git {
+                    content_path
+                } else {
+                    use std::io::{IsTerminal, Write};
+                    if std::io::stdin().is_terminal() {
+                        println!("⚠️ No local Git repository found at: {:?}", content_path);
+                        println!("   Would you like to:");
+                        println!("     [1] Set up or adopt a local repository (recommended)");
+                        println!("     [2] Use an ephemeral temporary clone (one-off release, no files kept locally)");
+                        print!("   Select [1/2] (default: 1): ");
+                        std::io::stdout().flush()?;
+                        let mut choice = String::new();
+                        std::io::stdin().read_line(&mut choice)?;
+                        let choice = choice.trim();
+
+                        if choice == "2" {
+                            content_path
+                        } else {
+                            print!("   Enter directory path for local repository (press Enter for {:?}): ", content_path);
+                            std::io::stdout().flush()?;
+                            let mut chosen_path = String::new();
+                            std::io::stdin().read_line(&mut chosen_path)?;
+                            let chosen_path = chosen_path.trim();
+                            let target_path = if chosen_path.is_empty() {
+                                content_path
+                            } else {
+                                expand_tilde(chosen_path)
+                            };
+
+                            let remote_url = cli.remote_url.as_deref().ok_or_else(|| {
+                                anyhow::anyhow!("Cannot set up repository without a remote URL configured (--remote-url).")
+                            })?;
+
+                            let is_existing = GitDriver::setup_local_repo(remote_url, &target_path, &cli.branch)?;
+                            if is_existing {
+                                println!("📂 Existing local repository detected at {:?}. Successfully adopted!", target_path);
+                            } else {
+                                println!("📥 Cloned remote repository into {:?}!", target_path);
+                            }
+                            target_path
+                        }
+                    } else {
+                        content_path
+                    }
+                };
+
+                let git = GitDriver::new(effective_content_path.clone())
                     .with_remote(cli.remote_url)
                     .with_branch(cli.branch)
                     .with_content_subpath(cli.content_subpath)
                     .with_site_id(Some(site_id));
-                println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
-                let commit_sha = git.release_via_temp(&db_path, &release_tag, commit_message, push)?;
-                println!("✅ Successfully released! Commit SHA: {}", commit_sha);
+
+                if effective_content_path.join(".git").exists() {
+                    println!("🚀 Committing, tagging, and pushing directly in local repository: {:?}...", effective_content_path);
+                    let commit_sha = git.release_direct(&db_path, &release_tag, commit_message, push)?;
+                    println!("✅ Successfully released! Commit SHA: {}", commit_sha);
+                } else {
+                    println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
+                    let commit_sha = git.release_via_temp(&db_path, &release_tag, commit_message, push)?;
+                    println!("✅ Successfully released! Commit SHA: {}", commit_sha);
+                }
             }
             Commands::Secret { key, set } => {
                 let store = KeyringStore::default();
@@ -1034,23 +1099,46 @@ fn run_tui(
                     }
                     KeyCode::Char('r') => {
                         let release_tag = format!("release-{}", chrono::Local::now().format("%Y.%m.%d-%H%M"));
-                        log_message = match git_driver.release_via_temp(
-                            &db_path,
-                            &release_tag,
-                            &format!("chore(content): release {}", release_tag),
-                            true,
-                        ) {
-                            Ok(sha) => {
-                                let msg = format!("🚀 Released and pushed via isolated temp clone! Commit: {} (Tag: {})", sha, release_tag);
-                                let mut g = git_logs.lock().unwrap();
-                                g.push_back(format!("✅ [TUI Hotkey] {}", msg));
-                                msg
+                        let has_local_git = git_driver.has_local_git();
+                        log_message = if has_local_git {
+                            match git_driver.release_direct(
+                                &db_path,
+                                &release_tag,
+                                &format!("chore(content): release {}", release_tag),
+                                true,
+                            ) {
+                                Ok(sha) => {
+                                    let msg = format!("🚀 Released and pushed directly in local repo ({:?})! Commit: {} (Tag: {})", git_driver.repo_path(), sha, release_tag);
+                                    let mut g = git_logs.lock().unwrap();
+                                    g.push_back(format!("✅ [TUI Hotkey] {}", msg));
+                                    msg
+                                }
+                                Err(err) => {
+                                    let msg = format!("❌ Git direct release error: {}", err);
+                                    let mut g = git_logs.lock().unwrap();
+                                    g.push_back(msg.clone());
+                                    msg
+                                }
                             }
-                            Err(err) => {
-                                let msg = format!("❌ Git release error: {}", err);
-                                let mut g = git_logs.lock().unwrap();
-                                g.push_back(msg.clone());
-                                msg
+                        } else {
+                            match git_driver.release_via_temp(
+                                &db_path,
+                                &release_tag,
+                                &format!("chore(content): release {}", release_tag),
+                                true,
+                            ) {
+                                Ok(sha) => {
+                                    let msg = format!("⚡ Released and pushed via ephemeral temp clone! Commit: {} (Tag: {})", sha, release_tag);
+                                    let mut g = git_logs.lock().unwrap();
+                                    g.push_back(format!("⚡ [TUI Hotkey] {}", msg));
+                                    msg
+                                }
+                                Err(err) => {
+                                    let msg = format!("❌ Git release error: {}", err);
+                                    let mut g = git_logs.lock().unwrap();
+                                    g.push_back(msg.clone());
+                                    msg
+                                }
                             }
                         };
                     }

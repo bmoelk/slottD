@@ -273,12 +273,37 @@ Connection: close\r\n\
             git = git.with_remote(req_url);
         }
 
-        match git.release_via_temp(db_path, &tag, &message, push) {
+        let has_local_git = target_repo.join(".git").exists();
+        let release_result = if has_local_git {
+            log_msg(
+                logs,
+                secondary,
+                format!("📂 [Git Bridge] Releasing directly in local repository: {:?}", target_repo),
+            );
+            git.release_direct(db_path, &tag, &message, push)
+        } else {
+            log_msg(
+                logs,
+                secondary,
+                format!("⚡ [Git Bridge] No local clone declared at {:?}. Using ephemeral scratch clone.", target_repo),
+            );
+            git.release_via_temp(db_path, &tag, &message, push)
+        };
+
+        match release_result {
             Ok(sha) => {
-                let success_msg =
-                    format!("Successfully created and pushed release '{}' via isolated temp clone!", tag);
+                let success_msg = if has_local_git {
+                    format!("Successfully created and pushed release '{}' directly in local repository ({:?})!", tag, target_repo)
+                } else {
+                    format!("Successfully created and pushed release '{}' via ephemeral scratch clone (no local repository declared)!", tag)
+                };
                 let output = format!(
-                    "Database snapshot exported to temp clone.\nCreated commit: {}\nCreated tag: {}{}",
+                    "{}\nCreated commit: {}\nCreated tag: {}{}",
+                    if has_local_git {
+                        format!("Exported directly to local repository: {:?}", target_repo)
+                    } else {
+                        "Database snapshot exported to ephemeral scratch clone.".to_string()
+                    },
                     sha,
                     tag,
                     if push {
@@ -293,6 +318,7 @@ Connection: close\r\n\
                     "message": success_msg,
                     "output": output,
                     "sha": sha,
+                    "isLocal": has_local_git,
                 });
                 send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
                 return Ok(());
@@ -406,6 +432,57 @@ Connection: close\r\n\
                     "success": false,
                     "error": format!("Failed to load tag content: {}", e),
                     "items": [],
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // 7. Setup / Adopt Local Repository (/exec/setup-repo)
+    if method == "POST" && path == "/exec/setup-repo" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let remote_url = match parsed.get("remoteUrl").and_then(|v| v.as_str()) {
+            Some(u) if !u.trim().is_empty() => u.trim(),
+            _ => {
+                let resp = json!({ "success": false, "error": "remoteUrl is required" });
+                send_json_response(&mut stream, 400, &resp.to_string(), cors_headers)?;
+                return Ok(());
+            }
+        };
+        let repo_path_str = match parsed.get("repoPath").and_then(|v| v.as_str()) {
+            Some(p) if !p.trim().is_empty() => p.trim(),
+            _ => {
+                let resp = json!({ "success": false, "error": "repoPath is required" });
+                send_json_response(&mut stream, 400, &resp.to_string(), cors_headers)?;
+                return Ok(());
+            }
+        };
+        let branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
+        let target_path = PathBuf::from(repo_path_str);
+
+        match GitDriver::setup_local_repo(remote_url, &target_path, branch) {
+            Ok(is_existing) => {
+                let msg = if is_existing {
+                    format!("Existing local repository adopted at {:?}", target_path)
+                } else {
+                    format!("Successfully cloned remote repository into {:?}", target_path)
+                };
+                log_msg(logs, secondary, format!("✅ [Git Bridge] {}", msg));
+                let resp = json!({
+                    "success": true,
+                    "isExisting": is_existing,
+                    "repoPath": repo_path_str,
+                    "message": msg,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to set up local repository at {:?}: {}", target_path, e);
+                log_msg(logs, secondary, format!("❌ [Git Bridge] {}", err_msg));
+                let resp = json!({
+                    "success": false,
+                    "error": err_msg,
                 });
                 send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
             }

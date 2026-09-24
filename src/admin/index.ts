@@ -1247,6 +1247,53 @@ adminRouter.post('/git/release', async (c) => {
   }
 });
 
+// ── 11.5. Setup / Adopt Local Repository (/admin/git/setup-repo) ──────────────
+adminRouter.post('/git/setup-repo', async (c) => {
+  const db = createDb(c.env.DB);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
+
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const repoPath = body.repoPath?.trim();
+  const remoteUrl = body.remoteUrl?.trim() || repoInfo.remoteUrl;
+  const branch = body.branch?.trim() || repoInfo.branch || 'main';
+
+  if (!repoPath) {
+    return c.json({ error: 'Local repository path (repoPath) is required.' }, 400);
+  }
+  if (!remoteUrl) {
+    return c.json({ error: 'Remote URL is required to set up local repository.' }, 400);
+  }
+
+  const bridgeUrl = (c.env as any)?.SLOTTD_BRIDGE_URL || 'http://127.0.0.1:8788';
+  try {
+    const bridgeRes = await fetch(`${bridgeUrl}/exec/setup-repo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remoteUrl, repoPath, branch }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const json: any = await bridgeRes.json().catch(() => ({}));
+    if (!bridgeRes.ok || !json.success) {
+      return c.json({ error: json.error || 'Failed to set up local repository via Git bridge.' }, (bridgeRes.status as any) || 500);
+    }
+
+    // Persist repo_path into system_site_settings for activeSite in D1
+    await registerSite(db, activeSite, { repo_path: repoPath });
+
+    return c.json({
+      success: true,
+      isExisting: json.isExisting,
+      repoPath: json.repoPath,
+      message: json.message,
+    });
+  } catch (err: any) {
+    return c.json({ error: `Git bridge error: ${err.message}` }, 500);
+  }
+});
+
 // ── 12. Preview Git Diff / Dry Run (/admin/git/diff) ──────────────────────────
 adminRouter.post('/git/diff', async (c) => {
   const db = createDb(c.env.DB);

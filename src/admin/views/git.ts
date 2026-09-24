@@ -81,6 +81,29 @@ export function renderGitView(
       }
     }
 
+    async function promptSetupLocalRepo() {
+      const defaultPath = '${data.repoPath || `/Users/bmo/code/websites-git-repos/${activeSite}`}';
+      const chosenPath = prompt("Enter local directory path to clone or adopt:", defaultPath);
+      if (!chosenPath || !chosenPath.trim()) return;
+      appendLog('$ git setup-repo --path ' + chosenPath.trim(), 'command');
+      try {
+        const res = await fetch('/admin/git/setup-repo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoPath: chosenPath.trim() })
+        });
+        const json = await res.json();
+        if (res.ok) {
+          appendLog('✅ ' + json.message, 'success');
+          setTimeout(() => window.location.reload(), 1500);
+        } else {
+          appendLog('❌ Failed to set up repository: ' + (json.error || res.statusText), 'error');
+        }
+      } catch (e) {
+        appendLog('❌ Error: ' + e.message, 'error');
+      }
+    }
+
     function showVerificationSummaryModal(report, onOverride) {
       let modal = document.getElementById('slottdVerificationModal');
       if (!modal) {
@@ -358,9 +381,14 @@ export function renderGitView(
         </div>
         <div>
           <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 2px;">Execution Strategy</span>
-          <span style="font-size: 12px; color: ${data.repoPath ? '#38bdf8' : '#94a3b8'};">
-            ${data.repoPath ? '📁 Direct Local Clone' : '📦 Isolated Temp Location'}
-          </span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 12px; color: ${data.repoPath ? '#38bdf8' : '#fbbf24'}; font-family: monospace;">
+              ${data.repoPath ? '📁 Local: ' + data.repoPath : '⚡ Ephemeral Scratch Clone'}
+            </span>
+            <button type="button" onclick="promptSetupLocalRepo()" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.4); color: #38bdf8; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;">
+              ${data.repoPath ? 'Adopt / Relink' : 'Set Up Local Clone'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

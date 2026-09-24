@@ -39,6 +39,14 @@ impl GitDriver {
         }
     }
 
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
+    pub fn has_local_git(&self) -> bool {
+        self.repo_path.join(".git").exists()
+    }
+
     pub fn with_remote(mut self, remote_url: Option<String>) -> Self {
         self.remote_url = remote_url;
         self
@@ -302,45 +310,163 @@ impl GitDriver {
         Ok(commit_sha)
     }
 
-    /// Stages content changes, commits, tags, and pushes to Git remote using native SSH.
-    pub fn release(&self, tag: &str, message: &str, push: bool) -> Result<String> {
-        let add_res = Command::new("git")
-            .args(["-C", self.repo_path.to_str().unwrap(), "add", "."])
-            .output()
-            .context("Failed to stage git changes")?;
-        if !add_res.status.success() {
-            anyhow::bail!("git add failed: {}", String::from_utf8_lossy(&add_res.stderr));
+    /// Exports database documents directly into the declared local content repository,
+    /// stages changes, commits, tags, and pushes directly from that local working tree.
+    /// The local repository advances its HEAD and stays 100% in sync with remote.
+    pub fn release_direct(
+        &self,
+        db_path: &Path,
+        tag: &str,
+        message: &str,
+        push: bool,
+    ) -> Result<String> {
+        let site_id = self.site_id.as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("site_id is required for Git release operations; the 'default' site concept has been abolished."))?;
+
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+
+        if !self.repo_path.join(".git").exists() {
+            anyhow::bail!("Declared repository path '{}' is not a valid git repository (.git directory missing).", repo_str);
         }
 
+        // 1. Export documents directly into the configured content directory
+        let target_content = if self.content_subpath.is_empty() {
+            self.repo_path.clone()
+        } else {
+            self.repo_path.join(&self.content_subpath)
+        };
+        std::fs::create_dir_all(&target_content)
+            .context("Failed to ensure target content directory exists in local repository")?;
+
+        let sync_engine = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, Some(site_id.to_string()))?;
+        sync_engine.export_to_disk()
+            .context("Failed to export database documents into local repository")?;
+
+        // 2. Stage changes
+        let add_res = Command::new("git")
+            .args(["-C", repo_str, "add", "-A"])
+            .output()
+            .context("Failed to stage changes in local repository")?;
+        if !add_res.status.success() {
+            anyhow::bail!("git add failed in local repository: {}", String::from_utf8_lossy(&add_res.stderr));
+        }
+
+        // 3. Commit changes (or proceed if working tree was already clean)
         let _commit_res = Command::new("git")
-            .args(["-C", self.repo_path.to_str().unwrap(), "commit", "-m", message])
+            .args(["-C", repo_str, "commit", "-m", message])
             .output();
 
-        let tag_res = Command::new("git")
-            .args(["-C", self.repo_path.to_str().unwrap(), "tag", "-a", tag, "-m", message])
+        // 4. Verify HEAD exists before tagging
+        let rev_check = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", "--verify", "HEAD"])
             .output()
-            .context("Failed to create git tag")?;
-        if !tag_res.status.success() {
-            anyhow::bail!("git tag failed: {}", String::from_utf8_lossy(&tag_res.stderr));
+            .context("Failed to verify HEAD in local repository")?;
+        if !rev_check.status.success() {
+            anyhow::bail!("Cannot tag release: local repository has no commits and HEAD cannot be resolved.");
         }
 
+        // 5. Create annotated tag
+        let tag_res = Command::new("git")
+            .args(["-C", repo_str, "tag", "-a", tag, "-m", message])
+            .output()
+            .context("Failed to create tag in local repository")?;
+        if !tag_res.status.success() {
+            anyhow::bail!("git tag failed in local repository: {}", String::from_utf8_lossy(&tag_res.stderr));
+        }
+
+        // 6. Push commit and tag to remote
         if push {
             let tag_ref = format!("refs/tags/{}", tag);
             let push_res = Command::new("git")
-                .args(["-C", self.repo_path.to_str().unwrap(), "push", "origin", "HEAD", &tag_ref])
+                .args(["-C", repo_str, "push", "origin", &self.branch, &tag_ref])
                 .output()
-                .context("Failed to push git commit and tag")?;
+                .context("Failed to push commit and tag from local repository")?;
             if !push_res.status.success() {
-                anyhow::bail!("git push failed: {}", String::from_utf8_lossy(&push_res.stderr));
+                anyhow::bail!("git push failed from local repository: {}", String::from_utf8_lossy(&push_res.stderr));
             }
         }
 
         let rev_out = Command::new("git")
-            .args(["-C", self.repo_path.to_str().unwrap(), "rev-parse", "--short", "HEAD"])
+            .args(["-C", repo_str, "rev-parse", "--short", "HEAD"])
             .output()?;
         let commit_sha = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
 
         Ok(commit_sha)
+    }
+
+    /// Ensures a local repository exists at `target_path`.
+    /// If target_path already has a valid `.git` directory, it verifies the remote and adopts it (returns Ok(true)).
+    /// If target_path does not have `.git`, it clones `remote_url` into `target_path` (returns Ok(false)).
+    pub fn setup_local_repo(remote_url: &str, target_path: &Path, branch: &str) -> Result<bool> {
+        let path_str = target_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid target_path"))?;
+
+        if target_path.join(".git").exists() {
+            // Existing clone detected - adopt it directly!
+            // Verify or set remote URL
+            let current_remote_out = Command::new("git")
+                .args(["-C", path_str, "remote", "get-url", "origin"])
+                .output();
+
+            match current_remote_out {
+                Ok(out) if out.status.success() => {
+                    let cur_url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if cur_url != remote_url && !cur_url.is_empty() {
+                        let _ = Command::new("git")
+                            .args(["-C", path_str, "remote", "set-url", "origin", remote_url])
+                            .output();
+                    }
+                }
+                _ => {
+                    let _ = Command::new("git")
+                        .args(["-C", path_str, "remote", "add", "origin", remote_url])
+                        .output();
+                }
+            }
+
+            return Ok(true);
+        }
+
+        // Directory does not have .git -> clone remote
+        std::fs::create_dir_all(target_path)
+            .context(format!("Failed to create directory at {:?}", target_path))?;
+
+        let clone_res = Command::new("git")
+            .args(["clone", "--branch", branch, remote_url, path_str])
+            .output();
+
+        let mut cloned = false;
+        if let Ok(ref o) = clone_res {
+            if o.status.success() {
+                cloned = true;
+            }
+        }
+
+        if !cloned {
+            let full_clone = Command::new("git")
+                .args(["clone", remote_url, path_str])
+                .output();
+            if let Ok(ref o) = full_clone {
+                if o.status.success() {
+                    cloned = true;
+                }
+            }
+        }
+
+        if !cloned {
+            Command::new("git").args(["init", path_str]).output()
+                .context("Failed to init git repository")?;
+            Command::new("git")
+                .args(["-C", path_str, "remote", "add", "origin", remote_url])
+                .output()
+                .context("Failed to configure remote origin")?;
+            let _ = Command::new("git")
+                .args(["-C", path_str, "checkout", "-b", branch])
+                .output();
+        }
+
+        Ok(false)
     }
 
     /// Extracts content items from a git tag into an isolated temporary directory
@@ -740,5 +866,121 @@ mod tests {
         assert_eq!(items[0]["collection"], "blog_posts");
         assert_eq!(items[0]["title"], "Root Level Post");
         assert_eq!(items[0]["data"]["content"], "# Root Post Markdown Content");
+    }
+
+    #[test]
+    fn test_release_direct_updates_working_tree_and_remote() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-direct-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(99887)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let bare_remote = temp_base.join("remote.git");
+        let local_repo = temp_base.join("local_clone");
+
+        // 1. Setup bare remote
+        let _ = Command::new("git").args(["init", "--bare", bare_remote.to_str().unwrap()]).output();
+
+        // 2. Setup local repo tracking remote
+        let _ = fs::create_dir_all(&local_repo);
+        let _ = Command::new("git").args(["init", local_repo.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", local_repo.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = Command::new("git").args(["-C", local_repo.to_str().unwrap(), "remote", "add", "origin", bare_remote.to_str().unwrap()]).output();
+        let _ = fs::write(local_repo.join("initial.txt"), "hello");
+        let _ = Command::new("git").args(["-C", local_repo.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", local_repo.to_str().unwrap(), "commit", "-m", "init"]).output();
+        let _ = Command::new("git").args(["-C", local_repo.to_str().unwrap(), "push", "-u", "origin", "main"]).output();
+
+        // 3. Create mock D1 database
+        let db_file = temp_base.join("d1.sqlite");
+        let conn = rusqlite::Connection::open(&db_file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (
+                id TEXT PRIMARY KEY,
+                site_id TEXT,
+                collection TEXT,
+                slug TEXT,
+                title TEXT,
+                status TEXT,
+                schema_version INTEGER DEFAULT 1,
+                publish_at INTEGER,
+                data TEXT,
+                created_at INTEGER,
+                updated_at INTEGER,
+                draft_data TEXT,
+                draft_updated_at INTEGER,
+                draft_status TEXT
+            );
+            INSERT INTO documents (id, site_id, collection, slug, title, status, data, created_at, updated_at, draft_status)
+            VALUES ('doc-direct', 'test-site', 'posts', 'direct-post', 'Direct Post', 'published', '{\"content\":\"direct markdown\"}', 1000, 2000, 'published');"
+        ).unwrap();
+        drop(conn);
+
+        // 4. Run release_direct
+        let driver = GitDriver::new(local_repo.clone())
+            .with_remote(Some(bare_remote.to_str().unwrap().to_string()))
+            .with_branch("main".to_string())
+            .with_content_subpath("content".to_string())
+            .with_site_id(Some("test-site".to_string()));
+
+        let release_res = driver.release_direct(&db_file, "release-direct-v1", "release directly", true);
+        assert!(release_res.is_ok(), "release_direct failed: {:?}", release_res.err());
+
+        // 5. Verify local working tree has the exported file directly
+        assert!(local_repo.join("content/posts/direct-post.json").exists());
+        assert!(local_repo.join("content/posts/direct-post.md").exists());
+
+        // 6. Verify working tree is clean at HEAD
+        let status_out = String::from_utf8_lossy(
+            &Command::new("git").args(["-C", local_repo.to_str().unwrap(), "status", "--porcelain"]).output().unwrap().stdout
+        ).to_string();
+        assert!(status_out.trim().is_empty(), "Local repo working tree is not clean: {}", status_out);
+
+        // 7. Verify bare remote received tag
+        let remote_tags = String::from_utf8_lossy(
+            &Command::new("git").args(["-C", bare_remote.to_str().unwrap(), "tag", "-l"]).output().unwrap().stdout
+        ).to_string();
+        assert!(remote_tags.contains("release-direct-v1"));
+    }
+
+    #[test]
+    fn test_setup_local_repo_adopts_existing_and_clones_new() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-setup-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(11223)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let bare_remote = temp_base.join("remote.git");
+        let _ = Command::new("git").args(["init", "--bare", bare_remote.to_str().unwrap()]).output();
+
+        // Make an initial commit in bare_remote via seed clone
+        let seed = temp_base.join("seed");
+        let _ = fs::create_dir_all(&seed);
+        let _ = Command::new("git").args(["init", seed.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "remote", "add", "origin", bare_remote.to_str().unwrap()]).output();
+        let _ = fs::write(seed.join("README.md"), "hello");
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "commit", "-m", "init"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "push", "origin", "main"]).output();
+
+        let remote_str = bare_remote.to_str().unwrap();
+
+        // Case A: Clone into non-existent target
+        let new_target = temp_base.join("new_clone");
+        let clone_res = GitDriver::setup_local_repo(remote_str, &new_target, "main");
+        assert!(clone_res.is_ok());
+        assert_eq!(clone_res.unwrap(), false); // false = was cloned
+        assert!(new_target.join(".git").exists());
+        assert!(new_target.join("README.md").exists());
+
+        // Case B: Adopt existing local repo
+        let adopt_res = GitDriver::setup_local_repo(remote_str, &new_target, "main");
+        assert!(adopt_res.is_ok());
+        assert_eq!(adopt_res.unwrap(), true); // true = was adopted
     }
 }
