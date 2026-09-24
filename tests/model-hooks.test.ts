@@ -69,7 +69,20 @@ describe('SlottD Model Lifecycle Hooks & Constraints Engine', () => {
       expect(ctx.data.primaryCtaUrl).toBe('/about-us');
     });
 
-    it('flags absolute URLs as bypassable errors on publish unless allowed', async () => {
+    it('permits absolute URLs by default or when allowAbsolute is true', async () => {
+      const validator = validateUrlFormat(['primaryCtaUrl']);
+      const ctx: any = {
+        collection: 'page_sections',
+        data: { primaryCtaUrl: 'https://brainendeavor.com' },
+        force: false,
+        isDraft: false,
+      };
+
+      const res = await validator(ctx);
+      expect(res.status).toBe('ok');
+    });
+
+    it('flags absolute URLs as bypassable errors on publish when allowAbsolute is explicitly false', async () => {
       const validator = validateUrlFormat(['primaryCtaUrl'], { allowAbsolute: false });
       const ctx: any = {
         collection: 'page_sections',

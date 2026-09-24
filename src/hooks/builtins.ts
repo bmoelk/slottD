@@ -101,15 +101,15 @@ export function verifyMediaExists(fields: string | string[]) {
 /**
  * Validates URL format:
  * - Strictly rejects dangerous pseudo-protocols (`javascript:`, `data:`, `vbscript:`).
- * - Prefers root-relative URLs (`/about`, `/pricing`).
- * - Flags absolute URLs (`https://...`) as warnings/bypassable errors unless allowAbsolute is true.
+ * - Root-relative URLs, anchors, mailto, tel, and absolute HTTP/HTTPS URLs are allowed by default.
+ * - Flags absolute URLs (`https://...`) as warnings/bypassable errors only if allowAbsolute is explicitly false.
  */
 export function validateUrlFormat(
   fields: string | string[],
   options?: { allowAbsolute?: boolean }
 ) {
   const fieldList = Array.isArray(fields) ? fields : [fields];
-  const allowAbsolute = options?.allowAbsolute ?? false;
+  const allowAbsolute = options?.allowAbsolute ?? true;
 
   return async (ctx: ItemHookContext): Promise<HookResult> => {
     for (const field of fieldList) {

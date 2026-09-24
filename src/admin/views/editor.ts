@@ -495,6 +495,9 @@ export function renderEditorView(
           }
         }
 
+        const forceCheckbox = document.getElementById('forceBypassChecks');
+        const isForceBypass = forceCheckbox ? forceCheckbox.checked : false;
+
         const payload = Object.assign({}, {
           id: docId,
           collection: collection,
@@ -502,11 +505,13 @@ export function renderEditorView(
           slug: slug,
           status: status,
           draft: isDraftSave,
+          force: isForceBypass,
           site_id: activeSite || undefined
         }, customPayload);
 
         try {
-          const endpoint = (isNew ? '/items/' + collection : '/items/' + collection + '/' + encodeURIComponent(docId)) + itemSiteQuery;
+          const forceQueryParam = isForceBypass ? (itemSiteQuery ? '&force=true' : '?force=true') : '';
+          const endpoint = (isNew ? '/items/' + collection : '/items/' + collection + '/' + encodeURIComponent(docId)) + itemSiteQuery + forceQueryParam;
           const method = isNew ? 'POST' : 'PATCH';
 
           const res = await fetch(endpoint, {
@@ -522,8 +527,44 @@ export function renderEditorView(
               window.location.href = '/admin/content/' + collection + itemSiteQuery;
             }
           } else {
-            const err = await res.text();
-            alert('Save failed: ' + err);
+            const errText = await res.text();
+            let parsedErr = null;
+            try { parsedErr = JSON.parse(errText); } catch {}
+
+            const isBypassable = parsedErr?.errors?.some(function(e) { return e && e.extensions && e.extensions.bypassable === true; }) ||
+                                 (parsedErr && parsedErr.extensions && parsedErr.extensions.bypassable === true);
+
+            if (isBypassable && !payload.force) {
+              const warningMsg = (parsedErr && parsedErr.message) || (parsedErr && parsedErr.errors && parsedErr.errors[0] && parsedErr.errors[0].message) || 'Validation constraint encountered.';
+              if (confirm('Validation Constraint Encountered:\n\n' + warningMsg + '\n\nThis check is bypassable. Would you like to force save and override this check?')) {
+                payload.force = true;
+                if (forceCheckbox) forceCheckbox.checked = true;
+                const retryQueryParam = itemSiteQuery ? (itemSiteQuery + '&force=true') : '?force=true';
+                const retryEndpoint = (isNew ? '/items/' + collection : '/items/' + collection + '/' + encodeURIComponent(docId)) + retryQueryParam;
+                try {
+                  const retryRes = await fetch(retryEndpoint, {
+                    method: method,
+                    headers: getStudioHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify(payload)
+                  });
+                  if (retryRes.ok) {
+                    if (isDraftSave) {
+                      window.location.reload();
+                    } else {
+                      window.location.href = '/admin/content/' + collection + itemSiteQuery;
+                    }
+                    return;
+                  } else {
+                    const retryErrText = await retryRes.text();
+                    alert('Force save failed: ' + retryErrText);
+                  }
+                } catch (retryErr) {
+                  alert('Network error during force save: ' + retryErr.message);
+                }
+              }
+            } else {
+              alert('Save failed: ' + errText);
+            }
             if (publishBtn) { publishBtn.innerText = '💾 Save'; publishBtn.disabled = false; }
             if (saveDraftBtn) { saveDraftBtn.innerText = '💾 Save as Draft'; window.updateDraftButtonState(); }
           }
@@ -566,7 +607,7 @@ export function renderEditorView(
       if (!editorForm) return vals;
       const fd = new FormData(editorForm);
       for (const [k, v] of fd.entries()) {
-        if (k.endsWith('_editor_mode') || k.endsWith('_trix_input') || k.endsWith('_raw_textarea')) continue;
+        if (k.endsWith('_editor_mode') || k.endsWith('_trix_input') || k.endsWith('_raw_textarea') || k === 'force') continue;
         vals[k] = String(v ?? '');
       }
       document.querySelectorAll('.editor-container-wrapper').forEach(function(c) {
@@ -1176,6 +1217,18 @@ export function renderEditorView(
               <option value="published" ${isNew || doc.status === 'published' ? 'selected' : ''}>Published</option>
               <option value="archived" ${!isNew && doc.status === 'archived' ? 'selected' : ''}>Archived</option>
             </select>
+          </div>
+
+          <div class="form-group" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color, #27272a);">
+            <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-normal, #e4e4e7); user-select: none;">
+              <input type="checkbox" id="forceBypassChecks" name="force" value="true" style="margin-top: 2px; cursor: pointer;" />
+              <div>
+                <span style="font-weight: 600;">Force Save</span>
+                <span style="display: block; font-size: 11px; color: var(--text-muted, #a1a1aa); margin-top: 2px; line-height: 1.3;">
+                  Bypass non-fatal validation warnings &amp; model constraints.
+                </span>
+              </div>
+            </label>
           </div>
 
           <hr class="divider" />

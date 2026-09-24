@@ -74,12 +74,12 @@ export const slotwirePack: ModelPack = {
         beforeCreate: composeHooks(
           autoIncrementOrder({ groupField: 'pageSlug', step: 10 }),
           validateParentExists({ parentCollection: 'pages', parentKey: 'slug', foreignField: 'pageSlug' }),
-          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: false }),
+          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: true }),
           validateRequiredFields(['title', 'pageSlug', 'sectionKey'])
         ),
         beforeUpdate: composeHooks(
           validateParentExists({ parentCollection: 'pages', parentKey: 'slug', foreignField: 'pageSlug' }),
-          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: false })
+          validateUrlFormat(['primaryCtaUrl', 'secondaryCtaUrl'], { allowAbsolute: true })
         ),
       },
     },
@@ -106,11 +106,11 @@ export const slotwirePack: ModelPack = {
       hooks: {
         beforeCreate: composeHooks(
           autoIncrementOrder({ groupField: ['pageSlug', 'sectionKey'], step: 10 }),
-          validateUrlFormat(['linkUrl'], { allowAbsolute: false }),
+          validateUrlFormat(['linkUrl'], { allowAbsolute: true }),
           validateRequiredFields(['title', 'pageSlug', 'sectionKey'])
         ),
         beforeUpdate: composeHooks(
-          validateUrlFormat(['linkUrl'], { allowAbsolute: false })
+          validateUrlFormat(['linkUrl'], { allowAbsolute: true })
         ),
       },
     },
