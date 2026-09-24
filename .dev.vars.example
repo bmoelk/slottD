@@ -15,3 +15,9 @@ JWT_SECRET="local-dev-jwt-secret-slottd-2026"
 
 # Optional SlotWire preview secret
 PREVIEW_SECRET="local-dev-preview-secret-2026"
+
+# Optional local Studio admin password hash (HMAC-SHA256, keyed by ADMIN_API_KEY).
+# NOTE: If a user changes or removes their password through SlottD Studio (/admin/settings),
+# the active password is saved in the D1 database (system_settings table), which takes precedence
+# and causes this ADMIN_PASSWORD_HASH value to be ignored.
+# ADMIN_PASSWORD_HASH=""

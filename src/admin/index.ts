@@ -268,15 +268,18 @@ adminRouter.post('/login', async (c) => {
   const operatorName = (c.env as any).OPERATOR_NAME || 'Local Operator';
 
   let configuredHash = (c.env as any).ADMIN_PASSWORD_HASH;
-  const legacyPlain = (c.env as any).ADMIN_PASSWORD;
+  let legacyPlain = (c.env as any).ADMIN_PASSWORD;
 
-  if (!configuredHash && c.env.DB) {
+  if (c.env.DB) {
     try {
       const row = await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
         .bind('admin_password_hash')
         .first<{ value: string }>();
-      if (row?.value) {
+      if (row !== null && row !== undefined) {
         configuredHash = row.value;
+        if (!row.value) {
+          legacyPlain = undefined;
+        }
       }
     } catch {}
   }
@@ -1802,7 +1805,7 @@ adminRouter.get('/setup', async (c) => {
         .all<{ key: string; value: string }>();
 
       for (const row of rows.results || []) {
-        if (row.key === 'admin_password_hash' && row.value) isPasswordProtected = true;
+        if (row.key === 'admin_password_hash') isPasswordProtected = !!row.value;
         if (row.key === 'git_remote_url' && row.value) gitRemoteUrl = row.value;
         if (row.key === 'git_branch' && row.value) gitBranch = row.value;
         if (row.key === 'git_token_enc' && row.value) hasToken = true;
@@ -1842,14 +1845,19 @@ adminRouter.post('/setup/password', async (c) => {
   const email = (c.env as any).OPERATOR_EMAIL || 'dev@localhost';
 
   let currentHash = (c.env as any).ADMIN_PASSWORD_HASH;
-  const legacyPlain = (c.env as any).ADMIN_PASSWORD;
+  let legacyPlain = (c.env as any).ADMIN_PASSWORD;
 
   if (c.env.DB) {
     try {
       const row = await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
         .bind('admin_password_hash')
         .first<{ value: string }>();
-      if (row?.value) currentHash = row.value;
+      if (row !== null && row !== undefined) {
+        currentHash = row.value;
+        if (!row.value) {
+          legacyPlain = undefined;
+        }
+      }
     } catch {}
   }
 
@@ -1869,8 +1877,10 @@ adminRouter.post('/setup/password', async (c) => {
   if (remove) {
     if (c.env.DB) {
       try {
-        await c.env.DB.prepare('DELETE FROM system_settings WHERE key = ?')
-          .bind('admin_password_hash')
+        await c.env.DB.prepare(
+          'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+        )
+          .bind('admin_password_hash', '', Date.now())
           .run();
       } catch {}
     }

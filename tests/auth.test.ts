@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { getAuthenticatedUser, setCachedPublicKey, clearJwksCache } from '../src/auth/guard.js';
 
 function base64UrlEncode(str: string): string {
@@ -376,6 +376,55 @@ describe('SlottD Auth & Edge Security', () => {
     const authUser = await getAuthenticatedUser(authCtx);
     expect(authUser?.email).toBe('dev@localhost');
     expect(authUser?.authMethod).toBe('local-briefcase');
+  });
+
+  it('respects D1 system_settings admin_password_hash over env ADMIN_PASSWORD_HASH in auth guard', async () => {
+    const { hashPassword } = await import('../src/auth/guard.js');
+    const oldHash = await hashPassword('old-pass', 'key');
+    const newHash = await hashPassword('new-pass', 'key');
+
+    // 1. D1 has a new hash -> protects with new hash
+    const d1DbWithHash = {
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({ value: newHash }),
+        }),
+      }),
+    };
+
+    const ctxWithD1: any = {
+      env: {
+        ENVIRONMENT: 'development',
+        ADMIN_API_KEY: 'key',
+        ADMIN_PASSWORD_HASH: oldHash,
+        DB: d1DbWithHash,
+      },
+      req: { header: () => null },
+    };
+    const userProtected = await getAuthenticatedUser(ctxWithD1);
+    expect(userProtected).toBeNull(); // Requires auth because D1 has password
+
+    // 2. D1 has empty hash (zero-barrier mode) -> allows access even if env has hash
+    const d1DbZeroBarrier = {
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnValue({
+          first: vi.fn().mockResolvedValue({ value: '' }),
+        }),
+      }),
+    };
+
+    const ctxZeroBarrier: any = {
+      env: {
+        ENVIRONMENT: 'development',
+        ADMIN_API_KEY: 'key',
+        ADMIN_PASSWORD_HASH: oldHash,
+        DB: d1DbZeroBarrier,
+      },
+      req: { header: () => null },
+    };
+    const userZeroBarrier = await getAuthenticatedUser(ctxZeroBarrier);
+    expect(userZeroBarrier?.email).toBe('dev@localhost');
+    expect(userZeroBarrier?.authMethod).toBe('local-briefcase');
   });
 
   it('encrypts and decrypts secrets at rest using AES-GCM', async () => {

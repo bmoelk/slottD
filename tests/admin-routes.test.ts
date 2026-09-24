@@ -233,6 +233,62 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(res.headers.get('set-cookie')).toContain('slottd_session=');
   });
 
+  it('handles login POST using updated password hash in D1 system_settings overriding env ADMIN_PASSWORD_HASH', async () => {
+    const { hashPassword } = await import('../src/auth/guard.js');
+    const oldEnvHash = await hashPassword('old-env-pass', 'testkey');
+    const newD1Hash = await hashPassword('new-studio-pass', 'testkey');
+
+    const dbWithNewPassword = {
+      prepare: vi.fn().mockImplementation((query: string) => ({
+        bind: vi.fn().mockImplementation((...args: any[]) => ({
+          first: vi.fn().mockImplementation(async () => {
+            if (args[0] === 'admin_password_hash') {
+              return { value: newD1Hash };
+            }
+            return null;
+          }),
+        })),
+      })),
+    };
+
+    const envWithD1 = {
+      ...mockEnv,
+      DB: dbWithNewPassword,
+      ENVIRONMENT: 'development',
+      ADMIN_API_KEY: 'testkey',
+      JWT_SECRET: 'testsecret',
+      ADMIN_PASSWORD_HASH: oldEnvHash,
+    };
+
+    // Attempting with old env password should FAIL (401)
+    const oldForm = new URLSearchParams();
+    oldForm.append('password', 'old-env-pass');
+    const resOld = await app.fetch(
+      new Request('http://localhost:8787/admin/login', {
+        method: 'POST',
+        headers: { host: 'localhost:8787', 'content-type': 'application/x-www-form-urlencoded' },
+        body: oldForm.toString(),
+      }),
+      envWithD1
+    );
+    expect(resOld.status).toBe(401);
+
+    // Attempting with new D1 password should SUCCEED (302)
+    const newForm = new URLSearchParams();
+    newForm.append('password', 'new-studio-pass');
+    const resNew = await app.fetch(
+      new Request('http://localhost:8787/admin/login', {
+        method: 'POST',
+        headers: { host: 'localhost:8787', 'content-type': 'application/x-www-form-urlencoded' },
+        body: newForm.toString(),
+      }),
+      envWithD1
+    );
+    expect(resNew.status).toBe(302);
+    expect(resNew.headers.get('location')).toBe('/admin/home');
+    expect(resNew.headers.get('set-cookie')).toContain('slottd_session=');
+  });
+
   it('sanitizes open-redirect attempts on login POST to /admin/home', async () => {
     const { hashPassword } = await import('../src/auth/guard.js');
     const hash = await hashPassword('correct-pass', 'testkey');

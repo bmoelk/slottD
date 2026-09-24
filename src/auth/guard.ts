@@ -298,16 +298,19 @@ export class LocalDevAuthAdapter implements AuthAdapter {
     const apiKey = c.env.ADMIN_API_KEY || 'local-briefcase';
 
     let configuredHash = (c.env as any).ADMIN_PASSWORD_HASH;
-    const legacyPlain = (c.env as any).ADMIN_PASSWORD;
+    let legacyPlain = (c.env as any).ADMIN_PASSWORD;
 
     // Check if password hash is stored in system_settings in D1
-    if (!configuredHash && c.env.DB) {
+    if (c.env.DB) {
       try {
         const row = (await c.env.DB.prepare('SELECT value FROM system_settings WHERE key = ?')
           .bind('admin_password_hash')
           .first()) as { value: string } | null;
-        if (row?.value) {
+        if (row !== null && row !== undefined) {
           configuredHash = row.value;
+          if (!row.value) {
+            legacyPlain = undefined;
+          }
         }
       } catch {}
     }
