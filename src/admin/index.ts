@@ -733,7 +733,10 @@ adminRouter.get('/content/:collection', async (c) => {
         }
       } catch {}
 
-      if (aVal !== null && bVal !== null && !isNaN(aVal) && !isNaN(bVal)) return aVal - bVal;
+      if (aVal !== null && bVal !== null && !isNaN(aVal) && !isNaN(bVal)) {
+        if (aVal !== bVal) return aVal - bVal;
+        return (b.updated_at || 0) - (a.updated_at || 0);
+      }
       if (aVal !== null && !isNaN(aVal)) return -1;
       if (bVal !== null && !isNaN(bVal)) return 1;
       return (b.updated_at || 0) - (a.updated_at || 0);
@@ -766,17 +769,15 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     items?: { id: string; order?: number; [k: string]: any }[];
     orderField?: string;
+    site_id?: string;
   };
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  let siteId = (c as any).get('siteId');
-  if (!siteId) {
-    try {
-      siteId = await resolveSiteId(c);
-    } catch {
-      const { activeSite } = await getSiteContext(c, db);
-      siteId = activeSite;
-    }
+  
+  const siteContext = await getSiteContext(c, db);
+  let siteId = body.site_id || c.req.query('site_id') || (c as any).get('siteId') || siteContext.activeSite;
+  if (siteId) {
+    siteId = normalizeSiteId(siteId);
   }
 
   const items = body.items || [];
@@ -790,12 +791,21 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
 
   for (const item of items) {
     if (!item.id) continue;
-    const doc = await db
+    let docQuery = db
       .selectFrom('documents')
-      .where('site_id', '=', siteId)
       .where('collection', '=', collection)
-      .where('id', '=', item.id)
-      .select(['id', 'title', 'data', 'draft_data'])
+      .where('id', '=', item.id);
+
+    if (siteId) {
+      docQuery = docQuery.where((eb) => eb.or([
+        eb('site_id', '=', siteId),
+        eb('site_id', '=', 'default'),
+        eb('site_id', 'is', null)
+      ]));
+    }
+
+    const doc = await docQuery
+      .select(['id', 'title', 'data', 'draft_data', 'site_id'])
       .executeTakeFirst();
 
     if (!doc) continue;
@@ -828,14 +838,13 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
         updated_at: now,
       })
       .where('id', '=', doc.id)
-      .where('site_id', '=', siteId)
       .execute();
 
     updatedCount++;
   }
 
   await logActivity(db, {
-    siteId,
+    siteId: siteId || 'default',
     actor: user.email,
     action: 'reorder',
     collection,

@@ -428,6 +428,56 @@ describe('SlottD Admin Router Deep Links', () => {
     expect(htmlReorder).not.toContain('Hero Slide 1');
   });
 
+  it('renders non-blocking category statement without "Scope Required for Reordering" warning', async () => {
+    const mockCategoryDocs = [
+      {
+        id: 'proj-1',
+        title: 'Project 1',
+        slug: 'project-1',
+        collection: 'projects',
+        data: JSON.stringify({ title: 'Project 1', category: 'venture', order: 10 }),
+        status: 'published',
+        updated_at: 1000,
+      },
+      {
+        id: 'proj-2',
+        title: 'Project 2',
+        slug: 'project-2',
+        collection: 'projects',
+        data: JSON.stringify({ title: 'Project 2', category: 'opensource', order: 20 }),
+        status: 'published',
+        updated_at: 2000,
+      },
+    ];
+
+    const mockDb: any = {
+      prepare: vi.fn().mockReturnValue({
+        bind: vi.fn().mockReturnThis(),
+        all: vi.fn().mockResolvedValue({ results: mockCategoryDocs, meta: { changes: 0 } }),
+        raw: vi.fn().mockResolvedValue([]),
+        first: vi.fn().mockResolvedValue(null),
+        run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+      }),
+    };
+
+    const res = await app.fetch(
+      new Request('http://localhost:8787/admin/content/projects', {
+        headers: { host: 'localhost:8787' },
+      }),
+      { ...mockEnv, DB: mockDb }
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Does NOT contain the blocking warning
+    expect(html).not.toContain('Scope Required for Reordering');
+    expect(html).not.toContain('⚠️');
+    // Contains non-blocking statement
+    expect(html).toContain('scope-info-banner');
+    expect(html).toContain('This collection contains distinct <strong>Category</strong> categories');
+    // toggleReorderMode does not have blocking condition
+    expect(html).not.toContain('if (this.hasScopeFilter && !this.isReorderMode)');
+  });
+
   it('discoverScopeFilter correctly handles sectionKey, category, unassigned, and single value scenarios', async () => {
     const { discoverScopeFilter, formatScopeLabel, formatValueLabel } = await import('../src/admin/index.js');
 

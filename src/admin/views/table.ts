@@ -102,6 +102,7 @@ export function renderTableView(
           hasScopeFilter: ${scopeFilterDef && scopeFilterDef.values.length > 1 && !activeScope ? 'true' : 'false'},
           showScopePrompt: false,
           isSaving: false,
+          activeSite: ${raw(JSON.stringify(activeSite || ''))},
           orderField: ${raw(JSON.stringify(orderField))},
           collection: ${raw(JSON.stringify(collection))},
           items: ${raw(JSON.stringify(initialItemsData))},
@@ -126,13 +127,8 @@ export function renderTableView(
           },
 
           toggleReorderMode() {
-            if (this.hasScopeFilter && !this.isReorderMode) {
-              this.showScopePrompt = !this.showScopePrompt;
-              return;
-            }
             this.isReorderMode = !this.isReorderMode;
             if (this.isReorderMode) {
-              this.showScopePrompt = false;
               const search = document.getElementById('itemSearch');
               if (search && search.value) {
                 search.value = '';
@@ -148,6 +144,9 @@ export function renderTableView(
               item.order = num;
               const row = document.getElementById('row_' + id);
               if (row) row.dataset.order = String(num);
+              const badge = row?.querySelector('.order-badge');
+              if (badge) badge.textContent = String(num);
+              this.items = [...this.items];
             }
           },
 
@@ -165,7 +164,7 @@ export function renderTableView(
             if (direction < 0) {
               tbody.insertBefore(currentRow, targetRow);
             } else {
-              tbody.insertBefore(targetRow, currentRow);
+              tbody.insertBefore(currentRow, targetRow.nextSibling);
             }
 
             this.autoSequence(10);
@@ -181,28 +180,40 @@ export function renderTableView(
               const id = row.dataset.id;
               const newOrder = (index + 1) * step;
               row.dataset.order = String(newOrder);
+
+              const input = row.querySelector('.reorder-input');
+              if (input) input.value = String(newOrder);
+
+              const badge = row.querySelector('.order-badge');
+              if (badge) badge.textContent = String(newOrder);
+
               const item = this.items.find(i => String(i.id) === String(id));
               if (item) {
                 item.order = newOrder;
               }
             });
-            const firstDirty = this.items.find(i => Number(i.order) !== Number(i.initialOrder));
-            if (firstDirty) {
-              this.items = [...this.items];
-            }
+            this.items = [...this.items];
           },
 
           resetOrders() {
             this.items.forEach(i => {
               i.order = i.initialOrder;
               const row = document.getElementById('row_' + i.id);
-              if (row) row.dataset.order = String(i.initialOrder);
+              if (row) {
+                row.dataset.order = String(i.initialOrder);
+                const input = row.querySelector('.reorder-input');
+                if (input) input.value = String(i.initialOrder);
+                const badge = row.querySelector('.order-badge');
+                if (badge) badge.textContent = String(i.initialOrder);
+              }
             });
             const tbody = document.getElementById('itemsTableBody');
-            this.items.forEach(i => {
+            const sorted = [...this.items].sort((a, b) => a.initialOrder - b.initialOrder);
+            sorted.forEach(i => {
               const row = document.getElementById('row_' + i.id);
               if (row) tbody.appendChild(row);
             });
+            this.items = [...this.items];
           },
 
           async saveOrders() {
@@ -211,11 +222,13 @@ export function renderTableView(
 
             this.isSaving = true;
             try {
+              const targetSite = this.activeSite || window.currentActiveSite || undefined;
               const payload = {
                 orderField: this.orderField,
+                site_id: targetSite,
                 items: dirtyItems.map(i => ({ id: i.id, [this.orderField]: i.order }))
               };
-              const reorderSiteQuery = window.currentActiveSite ? '?site_id=' + encodeURIComponent(window.currentActiveSite) : '';
+              const reorderSiteQuery = targetSite ? '?site_id=' + encodeURIComponent(targetSite) : '';
               const res = await fetch('/admin/content/' + this.collection + '/reorder' + reorderSiteQuery, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -275,39 +288,28 @@ export function renderTableView(
 
     ${(orderField && scopeFilterDef && scopeFilterDef.values.length > 1 && !activeScope) ? html`
       <div
-        x-show="showScopePrompt"
+        x-show="isReorderMode"
         x-cloak
-        class="card scope-guard-banner"
-        style="margin-bottom: 16px; padding: 14px 18px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px;"
+        class="card scope-info-banner"
+        style="margin-bottom: 16px; padding: 10px 16px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;"
       >
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <span style="font-size: 18px;">⚠️</span>
-            <div>
-              <strong style="color: #fbbf24;">Scope Required for Reordering</strong>
-              <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">
-                This collection contains distinct <strong>${scopeFilterDef.label}</strong> groups. Select a group below to reorder items within that scope without mixing orders:
-              </p>
-            </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary);">
+            <span style="font-size: 16px;">💡</span>
+            <span>
+              This collection contains distinct <strong>${scopeFilterDef.label}</strong> categories. You may wish to scope the reordering by selecting a category above, or proceed reordering all records below.
+            </span>
           </div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+          <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
             ${scopeFilterDef.values.map(v => html`
               <a
                 href="/admin/content/${collection}?${siteQueryParam ? `${siteQueryParam}&` : ''}${scopeFilterDef.key}=${encodeURIComponent(v.value)}&reorder=true"
                 class="btn btn-secondary"
-                style="font-size: 12px; padding: 5px 12px; border-color: rgba(245, 158, 11, 0.4); color: #fde68a;"
+                style="font-size: 11px; padding: 3px 10px; border-color: rgba(56, 189, 248, 0.3); color: #38bdf8;"
               >
-                Reorder ${v.label} (${v.count}) →
+                ${v.label} (${v.count})
               </a>
             `)}
-            <button
-              type="button"
-              class="btn-text"
-              @click="showScopePrompt = false"
-              style="margin-left: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer;"
-            >
-              ✕ Cancel
-            </button>
           </div>
         </div>
       </div>
@@ -412,7 +414,7 @@ export function renderTableView(
         </div>
         ${(!activeScope && orderField) ? html`
           <div class="scope-reorder-hint">
-            <span>💡 Select a ${scopeFilterDef.label.toLowerCase()} group above before reordering to prevent mixing display orders across groups.</span>
+            <span>💡 This collection contains distinct ${scopeFilterDef.label.toLowerCase()} categories. You may scope reordering by category above, or reorder across all records as needed.</span>
           </div>
         ` : ''}
       </div>
