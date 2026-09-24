@@ -400,23 +400,38 @@ fn run_tui(
     let mut scroll_offset: usize = 0;
     let mut search_query: Option<String> = None;
 
+    let (mut doc_count, mut col_count) = match D1Database::open_readonly(db_path.to_str().unwrap()) {
+        Ok(db) => db.get_stats().unwrap_or((0, 0)),
+        Err(_) => (0, 0),
+    };
+    let (mut is_monorepo, _monorepo_root) = git_driver.detect_monorepo();
+    let mut git_status = git_driver.status().unwrap_or_else(|_| slottd_briefcase::GitStatusInfo {
+        branch: "unknown".into(),
+        remote: "none".into(),
+        is_dirty: false,
+        dirty_files: vec![],
+        unpushed_commits: 0,
+    });
+    let mut last_status_check = std::time::Instant::now();
+    let status_poll_interval = std::time::Duration::from_secs(2);
+
     loop {
         supervisor.tick();
 
-        let (doc_count, col_count) = match D1Database::open_readonly(db_path.to_str().unwrap()) {
-            Ok(db) => db.get_stats().unwrap_or((0, 0)),
-            Err(_) => (0, 0),
-        };
-
-        let (is_monorepo, _monorepo_root) = git_driver.detect_monorepo();
-
-        let git_status = git_driver.status().unwrap_or_else(|_| slottd_briefcase::GitStatusInfo {
-            branch: "unknown".into(),
-            remote: "none".into(),
-            is_dirty: false,
-            dirty_files: vec![],
-            unpushed_commits: 0,
-        });
+        if last_status_check.elapsed() >= status_poll_interval {
+            if let Ok(db) = D1Database::open_readonly(db_path.to_str().unwrap()) {
+                if let Ok(stats) = db.get_stats() {
+                    doc_count = stats.0;
+                    col_count = stats.1;
+                }
+            }
+            if let Ok(st) = git_driver.status() {
+                git_status = st;
+            }
+            let (mono, _) = git_driver.detect_monorepo();
+            is_monorepo = mono;
+            last_status_check = std::time::Instant::now();
+        }
 
         let cms_status = supervisor.cms.status.lock().unwrap().clone();
         let site_status = supervisor.site.as_ref().map(|s| s.status.lock().unwrap().clone());
@@ -909,6 +924,7 @@ fn run_tui(
                                     } else {
                                         "❌ Restore failed: no --site-id specified for this briefcase session.".to_string()
                                     };
+                                    last_status_check = std::time::Instant::now() - status_poll_interval;
                                 }
                                 continue;
                             }
@@ -983,16 +999,16 @@ fn run_tui(
                         }
                         // Scrolling Hotkeys
                         KeyCode::Up | KeyCode::Char('k') => {
-                            scroll_offset = scroll_offset.saturating_add(1);
+                            scroll_offset = scroll_offset.saturating_add(10);
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
-                            scroll_offset = scroll_offset.saturating_sub(1);
+                            scroll_offset = scroll_offset.saturating_sub(10);
                         }
                         KeyCode::PageUp => {
-                            scroll_offset = scroll_offset.saturating_add(15);
+                            scroll_offset = scroll_offset.saturating_add(30);
                         }
                         KeyCode::PageDown => {
-                            scroll_offset = scroll_offset.saturating_sub(15);
+                            scroll_offset = scroll_offset.saturating_sub(30);
                         }
                         KeyCode::Home | KeyCode::Char('g') => {
                             scroll_offset = usize::MAX / 2;
@@ -1072,6 +1088,7 @@ fn run_tui(
                         } else {
                             "❌ Export failed: no --site-id specified for this briefcase session.".to_string()
                         };
+                        last_status_check = std::time::Instant::now() - status_poll_interval;
                     }
                     KeyCode::Char('l') => {
                         // Open Tag Picker Modal
@@ -1087,6 +1104,7 @@ fn run_tui(
                                     } else {
                                         "❌ Restore failed: no --site-id specified for this briefcase session.".to_string()
                                     };
+                                    last_status_check = std::time::Instant::now() - status_poll_interval;
                                 } else {
                                     modal_state = ModalState::TagPicker { tags, selected: 0 };
                                     log_message = "Select a release tag with Up/Down and press Enter to restore.".to_string();
@@ -1141,6 +1159,7 @@ fn run_tui(
                                 }
                             }
                         };
+                        last_status_check = std::time::Instant::now() - status_poll_interval;
                     }
                     _ => {}
                 }
