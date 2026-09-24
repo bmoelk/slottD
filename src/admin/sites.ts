@@ -174,15 +174,11 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     }
   } catch {}
 
-  if (sitesMap.size === 0) {
-    sitesMap.set('default', { site_id: 'default', updated_at: Date.now() });
-  }
-
   return Array.from(sitesMap.values()).map((s) => ({
     site_id: s.site_id!,
     git_remote_url: s.git_remote_url,
     git_branch: s.git_branch || 'main',
-    content_path: s.content_path !== undefined ? s.content_path : 'content',
+    content_path: s.content_path ?? '',
     repo_path: s.repo_path,
     deploy_hook: s.deploy_hook,
     has_token: !!s.has_token,

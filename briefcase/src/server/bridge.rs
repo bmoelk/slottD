@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -9,12 +10,24 @@ use std::thread;
 
 use crate::git::GitDriver;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SiteRegistration {
+    pub site_id: String,
+    pub host: String,
+    pub port: u16,
+    pub pid: Option<u32>,
+    pub updated_at: u64,
+}
+
+pub type SiteRegistry = Arc<Mutex<HashMap<String, SiteRegistration>>>;
+
 pub struct BridgeServer {
     pub port: u16,
     pub content_dir: PathBuf,
     pub db_path: PathBuf,
     pub logs: Arc<Mutex<VecDeque<String>>>,
     pub secondary_logs: Option<Arc<Mutex<VecDeque<String>>>>,
+    pub sites: SiteRegistry,
 }
 
 impl BridgeServer {
@@ -30,7 +43,13 @@ impl BridgeServer {
             db_path,
             logs,
             secondary_logs: None,
+            sites: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_sites(mut self, sites: SiteRegistry) -> Self {
+        self.sites = sites;
+        self
     }
 
     pub fn with_secondary_logs(mut self, secondary: Arc<Mutex<VecDeque<String>>>) -> Self {
@@ -75,6 +94,7 @@ impl BridgeServer {
         let db_path = self.db_path.clone();
         let logs = Arc::clone(&self.logs);
         let secondary = self.secondary_logs.clone();
+        let sites = Arc::clone(&self.sites);
 
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -84,6 +104,7 @@ impl BridgeServer {
                         let db_clone = db_path.clone();
                         let logs_clone = Arc::clone(&logs);
                         let secondary_clone = secondary.clone();
+                        let sites_clone = Arc::clone(&sites);
                         thread::spawn(move || {
                             let _ = handle_client(
                                 s,
@@ -91,6 +112,7 @@ impl BridgeServer {
                                 &db_clone,
                                 &logs_clone,
                                 secondary_clone.as_ref(),
+                                &sites_clone,
                             );
                         });
                     }
@@ -104,15 +126,15 @@ impl BridgeServer {
 }
 
 fn resolve_target_repo(req_repo: Option<PathBuf>, content_dir: &Path) -> PathBuf {
-    // 1. If content_dir is an explicit path that exists and is not "." or "./", prioritize it
-    if content_dir.exists() && content_dir != Path::new(".") && content_dir != Path::new("./") {
-        return content_dir.to_path_buf();
-    }
-    // 2. If req_repo is provided, exists, and is not "." or "./", use it
+    // 1. If req_repo is provided, exists, and is not "." or "./", prioritize it
     if let Some(p) = req_repo {
         if p.exists() && p != Path::new(".") && p != Path::new("./") {
             return p;
         }
+    }
+    // 2. If content_dir is an explicit path that exists and is not "." or "./", use it as fallback
+    if content_dir.exists() && content_dir != Path::new(".") && content_dir != Path::new("./") {
+        return content_dir.to_path_buf();
     }
     content_dir.to_path_buf()
 }
@@ -123,6 +145,7 @@ fn handle_client(
     db_path: &Path,
     logs: &Arc<Mutex<VecDeque<String>>>,
     secondary: Option<&Arc<Mutex<VecDeque<String>>>>,
+    _sites: &SiteRegistry,
 ) -> Result<()> {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(30)));
@@ -206,7 +229,7 @@ Connection: close\r\n\
         let push = parsed.get("push").and_then(|v| v.as_bool()).unwrap_or(true);
         let req_url = parsed.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
         let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
-        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("content");
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("");
         let req_repo = parsed
             .get("repoPath")
             .and_then(|v| v.as_str())
@@ -223,15 +246,29 @@ Connection: close\r\n\
             ),
         );
 
-        let req_site_id = parsed
+        let req_site_id = match parsed
             .get("siteId")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => s,
+            None => {
+                let err_msg = "siteId is required for Git release operations; the 'default' site concept has been abolished.";
+                log_msg(logs, secondary, format!("❌ [Git Bridge] {}", err_msg));
+                let resp = json!({
+                    "success": false,
+                    "error": err_msg,
+                });
+                send_json_response(&mut stream, 400, &resp.to_string(), cors_headers)?;
+                return Ok(());
+            }
+        };
 
         let mut git = GitDriver::new(target_repo.clone())
             .with_branch(req_branch.to_string())
             .with_content_subpath(req_content_path.to_string())
-            .with_site_id(req_site_id);
+            .with_site_id(Some(req_site_id));
         if req_url.is_some() {
             git = git.with_remote(req_url);
         }
@@ -345,10 +382,13 @@ Connection: close\r\n\
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
         let req_url = parsed.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("content");
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("");
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
         let target_repo = resolve_target_repo(req_repo, content_dir);
 
-        let mut git = GitDriver::new(target_repo).with_content_subpath(req_content_path.to_string());
+        let mut git = GitDriver::new(target_repo)
+            .with_content_subpath(req_content_path.to_string())
+            .with_site_id(req_site_id);
         if req_url.is_some() {
             git = git.with_remote(req_url);
         }

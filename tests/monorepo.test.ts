@@ -160,7 +160,7 @@ describe('NativeShellGitDriver: Briefcase Bridge Delegation & Fallback', () => {
     }
   });
 
-  it('falls back to IsomorphicGitDriver over HTTPS when Briefcase Bridge is offline', async () => {
+  it('fails fast and throws when Briefcase Bridge is offline instead of silent fallback', async () => {
     const { NativeShellGitDriver } = await import('../src/sync/native-shell-driver.js');
 
     // Bridge is offline on closed port
@@ -168,20 +168,19 @@ describe('NativeShellGitDriver: Briefcase Bridge Delegation & Fallback', () => {
       url: 'https://example.com/virtual/repo.git',
       branch: 'main',
       contentPath: 'content',
+      siteId: 'test-site',
       bridgeUrl: 'http://127.0.0.1:59999',
     });
 
-    const result = await driver.createRelease({
-      tag: 'release-offline-fallback',
-      message: 'test offline fallback release',
-      files: [
-        { path: 'content/posts/offline.json', content: JSON.stringify({ title: 'Offline Post' }) }
-      ],
-      push: false,
-    });
-
-    expect(result.tagCreated).toBe(true);
-    expect(result.commitSha).toBeDefined();
-    expect(result.commitSha.length).toBe(40);
+    await expect(
+      driver.createRelease({
+        tag: 'release-offline-fallback',
+        message: 'test offline fallback release',
+        files: [
+          { path: 'content/posts/offline.json', content: JSON.stringify({ title: 'Offline Post' }) }
+        ],
+        push: false,
+      })
+    ).rejects.toThrow(/Git Bridge is unreachable at http:\/\/127\.0\.0\.1:59999/);
   });
 });

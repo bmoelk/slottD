@@ -8,7 +8,7 @@ import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGi
 import { getGitDriver } from './sync/driver.js';
 import { createDb } from './db/client.js';
 import { syncCollectionView } from './api/views.js';
-import { resolveSiteId } from './auth/site.js';
+import { resolveSiteId, SiteResolutionError } from './auth/site.js';
 import { slotwirePack } from './packs/slotwire.js';
 import { blogPack } from './packs/blog.js';
 import { requireWriteAuth, requireStudioAuth, getAuthenticatedUser, createBriefcaseSessionCookie } from './auth/guard.js';
@@ -96,9 +96,32 @@ function recordRequestTelemetry(path: string, durationMs: number) {
 
 // 0. Multi-Website Site Resolution Middleware
 app.use('*', async (c, next) => {
-  const siteId = await resolveSiteId(c);
-  c.set('siteId', siteId);
+  try {
+    const siteId = await resolveSiteId(c);
+    c.set('siteId', siteId);
+  } catch {}
   await next();
+});
+
+// Tenancy & Server Error Handler
+app.onError((err, c) => {
+  if (err instanceof SiteResolutionError || (err as any)?.name === 'SiteResolutionError') {
+    return c.json(
+      {
+        error: 'SiteResolutionError',
+        message: err.message,
+      },
+      (err as any).statusCode || 400
+    );
+  }
+  console.error('Unhandled SlottD Server Error:', err);
+  return c.json(
+    {
+      error: err.name || 'InternalServerError',
+      message: err.message,
+    },
+    500
+  );
 });
 
 // Canonical Host Redirect (Generic, env-configurable)
@@ -440,12 +463,14 @@ async function handlePublishRelease(c: any) {
 
   // 5. Serialize documents for Git release
   const updatedItems = await exportToGitFormat(db, undefined, siteId);
-  const files = serializeToFiles(updatedItems, siteSettings.content_path || 'content');
+  const targetContentPath = siteSettings.content_path ?? '';
+  const files = serializeToFiles(updatedItems, targetContentPath);
 
-  // Embed verification report in content/.audit/
+  // Embed verification report in .audit/
   if (auditReport) {
+    const auditPath = targetContentPath ? `${targetContentPath}/.audit/verification-report.json` : '.audit/verification-report.json';
     files.push({
-      path: `${siteSettings.content_path || 'content'}/.audit/verification-report.json`,
+      path: auditPath,
       content: JSON.stringify(auditReport, null, 2),
     });
   }
@@ -611,7 +636,9 @@ app.post('/ext/sync/pull', requireWriteAuth, async (c) => {
     branch,
     token,
     repoPath: siteSettings.repo_path || c.env.REPO_PATH,
+    contentPath: siteSettings.content_path ?? '',
     isProduction: c.env.ENVIRONMENT === 'production',
+    siteId,
   });
 
   const tag = body.tag || (await driver.listTags()).slice(-1)[0] || 'HEAD';
@@ -863,9 +890,9 @@ export default {
         const branch = siteSettings.git_branch || 'main';
         const deployHookUrl = siteSettings.deploy_hook || siteSettings.deploy_hook_url || env.PRODUCTION_DEPLOY_HOOK_URL;
 
-        if (githubToken && repoOwner && repoOwner !== 'default') {
+        if (githubToken && repoOwner) {
           const items = await exportToGitFormat(db, undefined, siteId);
-          const files = serializeToFiles(items, siteSettings.content_path || 'content');
+          const files = serializeToFiles(items, siteSettings.content_path ?? '');
           const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
           const timeStr = new Date().toTimeString().slice(0, 5).replace(/:/g, '');
           const tagName = `release-scheduled-${dateStr}-${timeStr}`;

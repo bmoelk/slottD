@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import type { Env } from '../types.js';
+import { getAuthenticatedUser } from './guard.js';
 
 export class SiteResolutionError extends Error {
   constructor(message: string, public statusCode: number = 400) {
@@ -9,7 +10,9 @@ export class SiteResolutionError extends Error {
 }
 
 export function normalizeSiteId(id: string): string {
-  if (!id) return 'default';
+  if (!id || !id.trim()) {
+    throw new SiteResolutionError("site_id is required; the 'default' site concept has been abolished.");
+  }
   let clean = id.trim().toLowerCase();
   if (clean.startsWith('http://') || clean.startsWith('https://')) {
     try {
@@ -18,7 +21,10 @@ export function normalizeSiteId(id: string): string {
   }
   clean = clean.split(':')[0].split('/')[0];
   const sanitized = clean.replace(/[^a-z0-9.-]/g, '');
-  return sanitized || 'default';
+  if (!sanitized) {
+    throw new SiteResolutionError(`Invalid site_id '${id}': must contain alphanumeric characters, dots, or hyphens.`);
+  }
+  return sanitized;
 }
 
 function getCookie(header: string | undefined, name: string): string | null {
@@ -31,19 +37,47 @@ function getCookie(header: string | undefined, name: string): string | null {
  * Resolves the active site identifier for the incoming request using a rigid priority hierarchy.
  */
 export async function resolveSiteId(c: Context<any>): Promise<string> {
-  // 1. Explicit request headers (sent by Astro CMS client or SlotWire)
-  const headerSite = c.req.header('x-slottd-site') || c.req.header('x-site-id');
-  if (headerSite) {
-    return normalizeSiteId(headerSite);
+  // 1. Site-scoped Authenticated User / Bearer Token
+  let user = typeof (c as any)?.get === 'function' ? (c as any).get('user') : null;
+  if (!user && c.req && typeof c.req.header === 'function') {
+    const authHeader = c.req.header('authorization');
+    const apiKeyHeader = c.req.header('x-api-key');
+    if (authHeader || apiKeyHeader) {
+      try {
+        user = await getAuthenticatedUser(c);
+      } catch {}
+    }
+  }
+  if (user?.siteId) {
+    return normalizeSiteId(user.siteId);
   }
 
-  // 2. Query parameter (?site=domain.com or ?siteId=...)
-  const querySite = c.req.query('site') || c.req.query('siteId');
+  // 2. Directus query filter (?filter[site_id][_eq]=domain.com or ?filter[site_id]=... or ?filter={"site_id":...})
+  if (typeof c.req?.query === 'function') {
+    const filterSite = c.req.query('filter[site_id][_eq]') || c.req.query('filter[site_id]');
+    if (filterSite) {
+      return normalizeSiteId(filterSite);
+    }
+
+    const rawFilter = c.req.query('filter');
+    if (rawFilter && typeof rawFilter === 'string' && rawFilter.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(rawFilter);
+        const siteVal = parsed?.site_id?._eq || parsed?.site_id;
+        if (siteVal && typeof siteVal === 'string') {
+          return normalizeSiteId(siteVal);
+        }
+      } catch {}
+    }
+  }
+
+  // 3. Standard Query parameter (?site_id=domain.com)
+  const querySite = typeof c.req?.query === 'function' ? c.req.query('site_id') : null;
   if (querySite) {
     return normalizeSiteId(querySite);
   }
 
-  // 3. Studio active session cookie (set by navbar dropdown in Admin UI)
+  // 4. Studio active session cookie (set by navbar dropdown in Admin UI)
   const rawCookie = c.req.header('cookie') || c.req.raw?.headers?.get('cookie') || '';
   const cookieSite = getCookie(rawCookie, 'slottd_site') || getCookie(rawCookie, 'slottd_active_site');
   if (cookieSite) {
@@ -64,7 +98,13 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
   }
 
   // 5. Host Header Domain Mapping (e.g. cms.spectragql.dev -> spectragql.dev)
-  const host = (c.req.header('host') || '').split(':')[0].toLowerCase();
+  let rawHost = c.req.header('host') || '';
+  if (!rawHost && c.req.url) {
+    try {
+      rawHost = new URL(c.req.url).host;
+    } catch {}
+  }
+  const host = rawHost.split(':')[0].toLowerCase();
   let hostDerived = '';
   if (host.startsWith('cms.') && host.length > 4) {
     hostDerived = host.slice(4);
@@ -119,18 +159,8 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     return normalizeSiteId(candidateDomain);
   }
 
-  // 9. Check if any site exists in system_site_settings before falling back to 'default'
-  if (c.env?.DB) {
-    try {
-      const firstSite = (await c.env.DB.prepare(
-        'SELECT site_id FROM system_site_settings ORDER BY id ASC LIMIT 1'
-      ).first()) as { site_id: string } | null;
-      if (firstSite?.site_id) {
-        return normalizeSiteId(firstSite.site_id);
-      }
-    } catch {}
-  }
-
-  // 10. Generic Fallback for localhost / local dev / test suites
-  return 'default';
+  // 9. Fail fast: No site context could be determined
+  throw new SiteResolutionError(
+    'Missing site context. Please specify site_id in query parameter (?site_id=...), session cookie, or bearer token.'
+  );
 }

@@ -39,10 +39,16 @@ export function renderEditorView(
   const titleLabel = titleField?.label || 'Title';
   const titlePlaceholder = `${titleLabel}...`;
 
+  const activeSite = siteContext?.activeSite;
+  const siteQueryParam = activeSite ? `site_id=${encodeURIComponent(activeSite)}` : '';
+  const siteQuery = activeSite ? `?site_id=${encodeURIComponent(activeSite)}` : '';
+
   const clientScript = `
     const isNew = ${JSON.stringify(Boolean(isNew))};
     const collection = ${JSON.stringify(String(collection))};
     const docId = ${JSON.stringify(String(doc.id))};
+    const activeSite = ${JSON.stringify(activeSite || '')};
+    const itemSiteQuery = activeSite ? '?site_id=' + encodeURIComponent(activeSite) : '';
     const publishedData = ${JSON.stringify(publishedData)};
     const draftData = ${JSON.stringify(draftData)};
     const activeData = ${JSON.stringify(activeData)};
@@ -495,11 +501,12 @@ export function renderEditorView(
           title: title,
           slug: slug,
           status: status,
-          draft: isDraftSave
+          draft: isDraftSave,
+          site_id: activeSite || undefined
         }, customPayload);
 
         try {
-          const endpoint = isNew ? '/items/' + collection : '/items/' + collection + '/' + encodeURIComponent(docId);
+          const endpoint = (isNew ? '/items/' + collection : '/items/' + collection + '/' + encodeURIComponent(docId)) + itemSiteQuery;
           const method = isNew ? 'POST' : 'PATCH';
 
           const res = await fetch(endpoint, {
@@ -512,7 +519,7 @@ export function renderEditorView(
             if (isDraftSave) {
               window.location.reload();
             } else {
-              window.location.href = '/admin/content/' + collection;
+              window.location.href = '/admin/content/' + collection + itemSiteQuery;
             }
           } else {
             const err = await res.text();
@@ -631,7 +638,7 @@ export function renderEditorView(
       if (!confirmed) return;
 
       try {
-        const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId) + '/discard-draft', {
+        const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId) + '/discard-draft' + itemSiteQuery, {
           method: 'POST',
           headers: getStudioHeaders({ 'Content-Type': 'application/json' })
         });
@@ -732,12 +739,12 @@ export function renderEditorView(
       if (!confirmed) return;
 
       try {
-        const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId), {
+        const res = await fetch('/items/' + collection + '/' + encodeURIComponent(docId) + itemSiteQuery, {
           method: 'DELETE',
           headers: getStudioHeaders()
         });
         if (res.ok || res.status === 204) {
-          window.location.href = '/admin/content/' + collection;
+          window.location.href = '/admin/content/' + collection + itemSiteQuery;
         } else {
           alert('Delete failed: ' + await res.text());
         }
@@ -1016,9 +1023,9 @@ export function renderEditorView(
   return renderLayout(isNew ? `New ${collection}` : `Edit: ${doc.title || doc.slug || collection}`, 'content', user, html`
     <div class="header">
       <div class="breadcrumbs">
-        <a href="/admin">Collections</a>
+        <a href="/admin${siteQuery}">Collections</a>
         <span>/</span>
-        <a href="/admin/content/${collection}">${collection}</a>
+        <a href="/admin/content/${collection}${siteQuery}">${collection}</a>
         <span>/</span>
         <span class="current">${isNew ? 'New Record' : doc.title || doc.slug}</span>
         <span class="model-badge" style="margin-left: 8px; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3); color: #a5b4fc; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-family: monospace; display: inline-flex; align-items: center; gap: 4px;">
@@ -1026,7 +1033,7 @@ export function renderEditorView(
         </span>
       </div>
       <div class="actions" style="display: flex; align-items: center; gap: 8px;">
-        <a href="/admin/content/${collection}" class="btn btn-secondary">Cancel</a>
+        <a href="/admin/content/${collection}${siteQuery}" class="btn btn-secondary">Cancel</a>
         <button type="button" id="publishBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 4px;">
           💾 Save
         </button>
@@ -1121,6 +1128,7 @@ export function renderEditorView(
     ` : '')}
 
     <form id="editorForm" class="editor-grid">
+      <input type="hidden" name="site_id" value="${activeSite || ''}" />
       <div class="main-column card">
         <div class="form-group">
           <label for="title">${titleLabel} *</label>

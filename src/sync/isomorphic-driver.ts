@@ -20,7 +20,7 @@ export class IsomorphicGitDriver implements GitDriver {
     this.url = normalizeGitUrl(options.url);
     this.branch = options.branch || 'main';
     this.token = options.token;
-    this.contentSubpath = options.contentSubpath;
+    this.contentSubpath = options.contentPath ?? options.contentSubpath ?? '';
     this.isMonorepo = options.isMonorepo;
     this.siteId = options.siteId;
   }
@@ -264,7 +264,7 @@ export class IsomorphicGitDriver implements GitDriver {
         ? `Release '${scopedTag}' committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`
         : `Changes committed and pushed via isomorphic-git (${commitSha.slice(0, 7)}).`,
       pushed,
-      contentSubpath: this.contentSubpath || 'content',
+      contentSubpath: this.contentSubpath ?? '',
       isMonorepo: this.isMonorepo,
     };
   }

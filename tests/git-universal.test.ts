@@ -30,6 +30,7 @@ describe('IsomorphicGitDriver: Edge Smart HTTP in Memory', () => {
     const driver = new IsomorphicGitDriver({
       url: 'git@github.com:bmoelk/brainendeavor.com.git',
       branch: 'main',
+      siteId: 'test-site',
     });
     expect(driver.engineName).toContain('isomorphic-git');
   });
@@ -37,6 +38,7 @@ describe('IsomorphicGitDriver: Edge Smart HTTP in Memory', () => {
   it('lists remote tags over Smart HTTP without requiring a filesystem', async () => {
     const driver = new IsomorphicGitDriver({
       url: 'https://github.com/isomorphic-git/isomorphic-git.git',
+      siteId: 'test-site',
     });
 
     const tags = await driver.listTags();
@@ -49,6 +51,7 @@ describe('IsomorphicGitDriver: Edge Smart HTTP in Memory', () => {
     const driver = new IsomorphicGitDriver({
       url: 'https://example.com/virtual/repo.git',
       branch: 'main',
+      siteId: 'test-site',
     });
 
     const result = await driver.createRelease({
@@ -67,12 +70,32 @@ describe('IsomorphicGitDriver: Edge Smart HTTP in Memory', () => {
     expect(result.pushed).toBe(false);
   });
 
-  it('selects IsomorphicGitDriver for production environment regardless of URL scheme', async () => {
+  it('rejects SSH remote URLs in production environment with actionable error', async () => {
+    await expect(
+      getGitDriver({
+        url: 'git@github.com:bmoelk/brainendeavor.com.git',
+        isProduction: true,
+        siteId: 'brainendeavor.com',
+      })
+    ).rejects.toThrow(/Cloud-hosted SlottD does not support SSH remote URLs/);
+  });
+
+  it('selects IsomorphicGitDriver for production environment with HTTPS URL', async () => {
     const driver = await getGitDriver({
-      url: 'git@github.com:bmoelk/brainendeavor.com.git',
+      url: 'https://github.com/bmoelk/brainendeavor.com.git',
       isProduction: true,
+      siteId: 'brainendeavor.com',
     });
     expect(driver.engineName).toContain('isomorphic-git');
+  });
+
+  it('rejects GitDriver initialization when siteId is missing', async () => {
+    await expect(
+      getGitDriver({
+        url: 'https://github.com/bmoelk/brainendeavor.com.git',
+        siteId: '',
+      })
+    ).rejects.toThrow(/siteId is required/);
   });
 });
 

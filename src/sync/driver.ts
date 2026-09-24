@@ -10,7 +10,7 @@ export interface GitDriverOptions {
   contentSubpath?: string;
   isMonorepo?: boolean;
   gitTopLevel?: string;
-  siteId?: string;
+  siteId: string;
   bridgeUrl?: string;
 }
 
@@ -75,6 +75,18 @@ export function isSshUrl(url: string): boolean {
 export async function getGitDriver(options: GitDriverOptions): Promise<GitDriver> {
   const globalProc = (globalThis as any).process;
   const isProd = options.isProduction ?? (typeof globalProc !== 'undefined' && globalProc?.env?.ENVIRONMENT === 'production');
+
+  if (!options.siteId || !options.siteId.trim()) {
+    throw new Error('siteId is required for Git operations; "default" site concept has been abolished.');
+  }
+
+  // Strict Invariant: Cloud-hosted / production SlottD does NOT accept SSH remote URLs.
+  if (isProd && isSshUrl(options.url)) {
+    throw new Error(
+      `Cloud-hosted SlottD does not support SSH remote URLs ('${options.url}'). ` +
+      `Please configure an HTTPS repository clone URL with a valid access token in site settings for site '${options.siteId}'.`
+    );
+  }
 
   // If local Briefcase / workstation with local filesystem repo or SSH URL, use native shell
   if (!isProd && (options.repoPath || isSshUrl(options.url))) {

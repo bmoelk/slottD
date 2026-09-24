@@ -30,11 +30,31 @@ describe('SlottD Admin Router Deep Links', () => {
   });
 
   it('handles /admin/content/:collection/:id Directus adapter edit route without 404', async () => {
+    const envWithDoc: any = {
+      ...mockEnv,
+      DB: {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({
+            results: [{ id: 'section-home-hero', collection: 'page_sections', site_id: 'default', title: 'Hero' }],
+            meta: { changes: 0 },
+          }),
+          raw: vi.fn().mockResolvedValue([]),
+          first: vi.fn().mockResolvedValue({
+            id: 'section-home-hero',
+            collection: 'page_sections',
+            site_id: 'default',
+            title: 'Hero',
+          }),
+          run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+        }),
+      },
+    };
     const res = await app.fetch(
       new Request('http://localhost:8787/admin/content/page_sections/section-home-hero', {
         headers: { host: 'localhost:8787' },
       }),
-      mockEnv
+      envWithDoc
     );
 
     expect(res.status).toBe(200);
@@ -136,10 +156,8 @@ describe('SlottD Admin Router Deep Links', () => {
       mockEnv
     );
 
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('SlottD Studio');
-    expect(html).toContain('New projects');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/admin/content/projects/new');
   });
 
   it('serves /admin/vendor/alpine.js without authentication', async () => {

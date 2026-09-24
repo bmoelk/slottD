@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { html } from 'hono/html';
 import { createDb } from '../db/client.js';
 import { introspectCollectionFields } from '../api/views.js';
 import {
@@ -9,6 +10,7 @@ import {
   encryptSecret,
   decryptSecret,
 } from '../auth/guard.js';
+import { renderLayout } from './layout.js';
 import { renderDashboardView } from './views/dashboard.js';
 import { renderTableView, type TableViewScopeOptions } from './views/table.js';
 import { renderEditorView } from './views/editor.js';
@@ -79,10 +81,11 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
   }
 
   // 2. Check system_site_settings in D1 if siteId provided
+  let siteContentPath: string | undefined = undefined;
   if (siteId && env?.DB) {
     try {
-      const rows = await env.DB.prepare('SELECT key, value FROM system_site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?)')
-        .bind(siteId, 'git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
+      const rows = await env.DB.prepare('SELECT key, value FROM system_site_settings WHERE site_id = ? AND key IN (?, ?, ?, ?, ?)')
+        .bind(siteId, 'git_remote_url', 'repo_path', 'git_branch', 'git_token_enc', 'content_path')
         .all<{ key: string; value: string }>();
       let encToken = '';
       for (const r of rows.results || []) {
@@ -90,6 +93,7 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
         if (r.key === 'repo_path' && r.value) chosenPath = r.value;
         if (r.key === 'git_branch' && r.value) branch = r.value;
         if (r.key === 'git_token_enc' && r.value) encToken = r.value;
+        if (r.key === 'content_path') siteContentPath = r.value;
       }
       if (encToken) {
         const secret = env.JWT_SECRET || 'briefcase-local-secret';
@@ -102,8 +106,8 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
   // 3. Check system_settings in D1 as global fallback
   if (!remoteUrl && env?.DB) {
     try {
-      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?)')
-        .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc')
+      const rows = await env.DB.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)')
+        .bind('git_remote_url', 'repo_path', 'git_branch', 'git_token_enc', 'content_path')
         .all<{ key: string; value: string }>();
       let encToken = '';
       for (const r of rows.results || []) {
@@ -111,6 +115,7 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
         if (r.key === 'repo_path' && r.value) chosenPath = r.value;
         if (r.key === 'git_branch' && r.value) branch = r.value;
         if (r.key === 'git_token_enc' && r.value) encToken = r.value;
+        if (r.key === 'content_path' && siteContentPath === undefined) siteContentPath = r.value;
       }
       if (encToken && !token) {
         const secret = env.JWT_SECRET || 'briefcase-local-secret';
@@ -124,10 +129,11 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
     chosenPath = (env as any)?.REPO_PATH || './';
   }
 
-  // 3. Detect Monorepo Context & Remote Content Path
-  const explicitPath = appConfig?.git?.path || (env as any)?.GIT_CONTENT_PATH;
+  // 4. Detect Monorepo Context & Remote Content Path
+  const explicitPath = siteContentPath !== undefined ? siteContentPath : (appConfig?.git?.path || (env as any)?.GIT_CONTENT_PATH);
   const { detectMonorepo } = await import('../sync/monorepo.js');
   const monorepo = await detectMonorepo(chosenPath, explicitPath);
+  const finalContentPath = siteContentPath !== undefined ? siteContentPath : (monorepo.contentPath ?? '');
 
   if (cp && (cp as any).execSync && chosenPath && chosenPath !== '/' && chosenPath !== './') {
     try {
@@ -152,7 +158,7 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
     branch,
     token,
     isMonorepo: monorepo.isMonorepo,
-    contentPath: monorepo.contentPath,
+    contentPath: finalContentPath,
     gitTopLevel: monorepo.gitTopLevel,
   };
 }
@@ -171,14 +177,17 @@ export async function getSiteContext(c: any, db: any) {
 
   let activeSite = (c.get('siteId') as string);
   if (!activeSite) {
-    activeSite = await resolveSiteId(c);
+    try {
+      activeSite = await resolveSiteId(c);
+    } catch {}
   }
 
-  if (availableSites.length > 0 && !availableSites.includes(activeSite)) {
+  if (availableSites.length > 0 && (!activeSite || !availableSites.includes(activeSite))) {
     activeSite = availableSites[0];
   } else if (availableSites.length === 0) {
-    availableSites = [activeSite || 'default'];
+    availableSites = activeSite ? [activeSite] : [];
   }
+  activeSite = activeSite || (availableSites[0] ?? '');
   activeFavicon = siteFavicons[activeSite];
 
   return { activeSite, availableSites, activeFavicon, siteFavicons };
@@ -760,7 +769,15 @@ adminRouter.post('/content/:collection/reorder', async (c) => {
   };
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+  let siteId = (c as any).get('siteId');
+  if (!siteId) {
+    try {
+      siteId = await resolveSiteId(c);
+    } catch {
+      const { activeSite } = await getSiteContext(c, db);
+      siteId = activeSite;
+    }
+  }
 
   const items = body.items || [];
   if (!Array.isArray(items) || items.length === 0) {
@@ -837,9 +854,11 @@ adminRouter.get('/content/:collection/:id', async (c) => {
   const isNew = idOrSlug === '+' || idOrSlug === 'new';
   const db = createDb(c.env.DB);
   const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
+  const siteContext = await getSiteContext(c, db);
 
   let doc: any = {
     id: isNew ? crypto.randomUUID() : idOrSlug,
+    site_id: siteContext.activeSite,
     collection,
     slug: isNew ? '' : idOrSlug,
     title: '',
@@ -847,9 +866,12 @@ adminRouter.get('/content/:collection/:id', async (c) => {
     data: '{}',
   };
 
+  const hasExplicitSiteQuery = Boolean(c.req.query('site_id') || c.req.query('site') || c.req.query('siteId'));
+
   if (!isNew) {
     const existing = await db
       .selectFrom('documents')
+      .where('site_id', '=', siteContext.activeSite)
       .where('collection', '=', collection)
       .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
       .selectAll()
@@ -857,6 +879,47 @@ adminRouter.get('/content/:collection/:id', async (c) => {
 
     if (existing) {
       doc = existing;
+    } else {
+      // Document was not found under the active site
+      if (!hasExplicitSiteQuery) {
+        // Naked URL without site parameter: check if this document exists under ANY site in the database
+        const anyDoc = await db
+          .selectFrom('documents')
+          .where('collection', '=', collection)
+          .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
+          .selectAll()
+          .executeTakeFirst();
+
+        if (anyDoc && anyDoc.site_id) {
+          // Auto-redirect to the document's true site and update session cookie
+          c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(anyDoc.site_id)}; Path=/; Max-Age=31536000`);
+          return c.redirect(`/admin/content/${encodeURIComponent(collection)}/${encodeURIComponent(idOrSlug)}?site_id=${encodeURIComponent(anyDoc.site_id)}`);
+        }
+      }
+
+      // If explicit site was requested, or doc doesn't exist anywhere in DB, fail fast / 404
+      const editorConfig = await getEditorConfig(c.env);
+      return c.html(
+        renderLayout(
+          'Document Not Found',
+          'content',
+          user,
+          html`
+            <div class="container" style="max-width: 600px; margin: 60px auto; text-align: center;">
+              <h2 style="color: #ef4444; margin-bottom: 12px;">Document Not Found</h2>
+              <p style="color: #94a3b8; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+                Record <code>${idOrSlug}</code> does not exist in collection <code>${collection}</code> for site <code>${siteContext.activeSite}</code>.
+              </p>
+              <a href="/admin/content/${encodeURIComponent(collection)}?site_id=${encodeURIComponent(siteContext.activeSite)}" class="btn btn-primary">
+                Return to ${collection} Table
+              </a>
+            </div>
+          `,
+          editorConfig,
+          siteContext
+        ),
+        404
+      );
     }
   }
 
@@ -876,7 +939,6 @@ adminRouter.get('/content/:collection/:id', async (c) => {
 
   const fields = await introspectCollectionFields(db, collection);
   const editorConfig = await getEditorConfig(c.env);
-  const siteContext = await getSiteContext(c, db);
   return c.html(renderEditorView(collection, doc, fields, isNew, user, modelIcon, editorConfig, siteContext));
 });
 
@@ -981,42 +1043,22 @@ adminRouter.get('/git', async (c) => {
   // List tags using universal driver or local Git bridge
   if (repoInfo.hasRemote) {
     let bridgeLoaded = false;
-    if (c.env.ENVIRONMENT !== 'production') {
-      try {
-        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
-        if (bridgeCheck && bridgeCheck.ok) {
-          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repoPath: repoInfo.path }),
-          });
-          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
-          if (bridgeRes.ok && Array.isArray(bridgeJson.tags)) {
-            tags = bridgeJson.tags;
-            engineName = 'Native Git CLI (SSH Agent)';
-            bridgeLoaded = true;
-          }
-        }
-      } catch {}
-    }
-
-    if (!bridgeLoaded) {
-      try {
-        const driver = await getGitDriver({
-          url: repoInfo.remoteUrl,
-          branch: repoInfo.branch,
-          token: repoInfo.token,
-          repoPath: repoInfo.path,
-          isProduction: c.env.ENVIRONMENT === 'production',
-          isMonorepo: repoInfo.isMonorepo,
-          contentPath: repoInfo.contentPath,
-          gitTopLevel: repoInfo.gitTopLevel,
-        });
-        engineName = driver.engineName;
-        tags = await driver.listTags();
-      } catch (err: any) {
-        console.warn('Failed to list git tags:', err.message);
-      }
+    try {
+      const driver = await getGitDriver({
+        url: repoInfo.remoteUrl,
+        branch: repoInfo.branch,
+        token: repoInfo.token,
+        repoPath: repoInfo.path,
+        isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
+        siteId: activeSite,
+      });
+      engineName = driver.engineName;
+      tags = await driver.listTags();
+    } catch (err: any) {
+      console.warn('Failed to list git tags:', err.message);
     }
   }
 
@@ -1060,36 +1102,16 @@ adminRouter.post('/git/fetch', async (c) => {
   }
 
   try {
-    // 1. Check local Git execution bridge if running in development mode
-    if (c.env.ENVIRONMENT !== 'production') {
-      try {
-        const bridgeCheck = await fetch('http://127.0.0.1:8788/health', { signal: AbortSignal.timeout(600) }).catch(() => null);
-        if (bridgeCheck && bridgeCheck.ok) {
-          const bridgeRes = await fetch('http://127.0.0.1:8788/exec/fetch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repoPath: repoInfo.path }),
-          });
-          const bridgeJson: any = await bridgeRes.json().catch(() => ({}));
-          if (bridgeRes.ok) {
-            const tags = bridgeJson.tags || [];
-            return c.json({
-              success: true,
-              message: `Fetched ${tags.length} remote tags successfully (Git Bridge / SSH Agent).`,
-              output: tags.length > 0 ? `Tags found:\n${tags.slice(0, 10).join('\n')}${tags.length > 10 ? `\n...and ${tags.length - 10} more` : ''}` : 'No tags found in remote repository.',
-              tags,
-            });
-          }
-        }
-      } catch {}
-    }
-
     const driver = await getGitDriver({
       url: repoInfo.remoteUrl,
       branch: repoInfo.branch,
       token: repoInfo.token,
       repoPath: repoInfo.path,
       isProduction: c.env.ENVIRONMENT === 'production',
+      isMonorepo: repoInfo.isMonorepo,
+      contentPath: repoInfo.contentPath,
+      gitTopLevel: repoInfo.gitTopLevel,
+      siteId: siteContext.activeSite,
     });
 
     const tags = await driver.listTags();
@@ -1189,6 +1211,7 @@ adminRouter.post('/git/release', async (c) => {
         isMonorepo: repoInfo.isMonorepo,
         contentPath: repoInfo.contentPath,
         gitTopLevel: repoInfo.gitTopLevel,
+        siteId: activeSite,
       });
 
       const user = await getAuthenticatedUser(c);
@@ -1267,6 +1290,7 @@ adminRouter.post('/git/diff', async (c) => {
       isMonorepo: repoInfo.isMonorepo,
       contentPath: repoInfo.contentPath,
       gitTopLevel: repoInfo.gitTopLevel,
+      siteId: activeSite,
     });
 
     const activeItems = await exportToGitFormat(db, undefined, activeSite);
@@ -1311,6 +1335,7 @@ adminRouter.post('/git/load', async (c) => {
       isMonorepo: repoInfo.isMonorepo,
       contentPath: repoInfo.contentPath,
       gitTopLevel: repoInfo.gitTopLevel,
+      siteId: activeSite,
     });
 
     const items = await driver.loadTagContent(tag);
@@ -1397,7 +1422,7 @@ adminRouter.get('/help', (c) => c.redirect('/admin/docs'));
 
 // ── 17. Multi-Website Management (/admin/sites) ──────────────────────────────
 adminRouter.get('/sites/switch', async (c) => {
-  const targetSite = normalizeSiteId(c.req.query('site') || 'default');
+  const targetSite = normalizeSiteId(c.req.query('site_id') || 'default');
   const redirect = (c.req.query('redirect') || '/admin').trim();
   c.header('Set-Cookie', `slottd_site=${targetSite}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
   return c.redirect(redirect, 302);
@@ -1448,6 +1473,7 @@ adminRouter.get('/sites', async (c) => {
           isMonorepo: repoInfo.isMonorepo,
           contentPath: repoInfo.contentPath,
           gitTopLevel: repoInfo.gitTopLevel,
+          siteId: siteContext.activeSite,
         });
         const tags = await driver.listTags();
         tagCount = tags.length;
@@ -1601,11 +1627,20 @@ adminRouter.post('/sites/delete', async (c) => {
     await deleteSite(db, siteId, purgeData);
 
     // If the active site was deleted, find the next available site and switch session cookie
-    const activeSite = c.get('siteId') || (await resolveSiteId(c));
+    let activeSite = c.get('siteId');
+    if (!activeSite) {
+      try {
+        activeSite = await resolveSiteId(c);
+      } catch {}
+    }
     if (activeSite === siteId) {
       const remainingSites = await listSites(db);
-      const nextSite = remainingSites.find((s) => s.site_id !== siteId)?.site_id || 'default';
-      c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(nextSite)}; Path=/; Max-Age=31536000`);
+      const nextSite = remainingSites.find((s) => s.site_id !== siteId)?.site_id || '';
+      if (nextSite) {
+        c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(nextSite)}; Path=/; Max-Age=31536000`);
+      } else {
+        c.header('Set-Cookie', 'slottd_active_site=; Path=/; Max-Age=0');
+      }
     }
 
     return c.redirect(`/admin/sites?deleted=${encodeURIComponent(siteId)}`);
@@ -1651,6 +1686,8 @@ adminRouter.post('/sites/pull', async (c) => {
       token,
       repoPath: siteSettings.repo_path || c.env.REPO_PATH,
       isProduction: c.env.ENVIRONMENT === 'production',
+      contentPath: siteSettings.content_path ?? '',
+      siteId,
     });
 
     const tags = await driver.listTags();
@@ -1897,44 +1934,6 @@ adminRouter.get('/:collection/:id', async (c) => {
     return c.notFound();
   }
 
-  const isNew = idOrSlug === '+' || idOrSlug === 'new';
-  const db = createDb(c.env.DB);
-  const user = (await getAuthenticatedUser(c)) || { email: 'dev@localhost', authMethod: 'local-dev' };
-
-  let doc: any = {
-    id: isNew ? crypto.randomUUID() : idOrSlug,
-    collection,
-    slug: isNew ? '' : idOrSlug,
-    title: '',
-    status: 'draft',
-    data: '{}',
-  };
-
-  if (!isNew) {
-    const existing = await db
-      .selectFrom('documents')
-      .where('collection', '=', collection)
-      .where((eb) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
-      .selectAll()
-      .executeTakeFirst();
-
-    if (existing) {
-      doc = existing;
-    }
-  }
-
-  if (isNew) {
-    const queryEntries = Object.fromEntries(new URL(c.req.url).searchParams.entries());
-    doc.slug = queryEntries.slug || doc.slug;
-    doc.title = queryEntries.title || doc.title;
-    doc.status = queryEntries.status || doc.status;
-    const { collection: _c, slug: _s, title: _t, status: _st, ...restParams } = queryEntries;
-    if (Object.keys(restParams).length > 0) {
-      doc.data = JSON.stringify(restParams);
-    }
-  }
-
-  const fields = await introspectCollectionFields(db, collection);
-  const editorConfig = await getEditorConfig(c.env);
-  return c.html(renderEditorView(collection, doc, fields, isNew, user, '⚙️', editorConfig));
+  const query = c.req.url.includes('?') ? '?' + c.req.url.split('?')[1] : '';
+  return c.redirect(`/admin/content/${encodeURIComponent(collection)}/${encodeURIComponent(idOrSlug)}${query}`);
 });

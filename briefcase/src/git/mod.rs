@@ -157,6 +157,11 @@ impl GitDriver {
         message: &str,
         push: bool,
     ) -> Result<String> {
+        let site_id = self.site_id.as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("site_id is required for Git release operations; the 'default' site concept has been abolished."))?;
+
         let remote_url = self.resolve_remote_url();
 
         // Step 1: Create a temp location, git init, add the remote, clone the repo
@@ -169,7 +174,24 @@ impl GitDriver {
         let _guard = TempDirGuard(temp_dir_path.clone());
         let temp_str = temp_dir_path.to_str().unwrap();
 
-        if let Some(ref url) = remote_url {
+        // If self.repo_path exists and is a valid git repository, clone locally from it
+        if self.repo_path.join(".git").exists() {
+            let clone_res = Command::new("git")
+                .args(["clone", self.repo_path.to_str().unwrap(), temp_str])
+                .output()
+                .context("Failed to clone local repository into temp directory")?;
+            if !clone_res.status.success() {
+                anyhow::bail!("Local git clone failed: {}", String::from_utf8_lossy(&clone_res.stderr));
+            }
+            if let Some(ref url) = remote_url {
+                let _ = Command::new("git")
+                    .args(["-C", temp_str, "remote", "set-url", "origin", url])
+                    .output();
+            }
+            let _ = Command::new("git")
+                .args(["-C", temp_str, "checkout", "-B", &self.branch])
+                .output();
+        } else if let Some(ref url) = remote_url {
             let mut cloned = false;
             let clone_res = Command::new("git")
                 .args(["clone", "--depth", "1", "--branch", &self.branch, url, temp_str])
@@ -211,9 +233,13 @@ impl GitDriver {
         }
 
         // Step 2: Export files into that location
-        let target_content = temp_dir_path.join(&self.content_subpath);
-        let sync_engine = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, self.site_id.clone());
-        sync_engine.export_to_disk()
+        let target_content = if self.content_subpath.is_empty() {
+            temp_dir_path.clone()
+        } else {
+            temp_dir_path.join(&self.content_subpath)
+        };
+        let sync_engine = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, Some(site_id.to_string()))?;
+        let _ = sync_engine.export_to_disk()
             .context("Failed to export database documents into temp release location")?;
 
         // Step 3: Create tag and push to the remote
@@ -225,9 +251,22 @@ impl GitDriver {
             anyhow::bail!("git add failed: {}", String::from_utf8_lossy(&add_res.stderr));
         }
 
-        let _ = Command::new("git")
+        let commit_res = Command::new("git")
             .args(["-C", temp_str, "commit", "-m", message])
-            .output();
+            .output()
+            .context("Failed to execute git commit in temp release location")?;
+
+        // Verify HEAD exists (either created by commit or existed from base repo)
+        let head_check = Command::new("git")
+            .args(["-C", temp_str, "rev-parse", "--verify", "HEAD"])
+            .output()?;
+        if !head_check.status.success() {
+            anyhow::bail!(
+                "Cannot tag release: No commits exist in repository and git commit produced no changes: stdout: {}, stderr: {}",
+                String::from_utf8_lossy(&commit_res.stdout).trim(),
+                String::from_utf8_lossy(&commit_res.stderr).trim()
+            );
+        }
 
         let tag_res = Command::new("git")
             .args(["-C", temp_str, "tag", "-a", tag, "-m", message])
@@ -245,6 +284,13 @@ impl GitDriver {
                 .context("Failed to push git commit and tag from temp release location")?;
             if !push_res.status.success() {
                 anyhow::bail!("git push failed: {}", String::from_utf8_lossy(&push_res.stderr));
+            }
+
+            // Sync back to local content repo if it exists so operator's working tree stays updated
+            if self.repo_path.join(".git").exists() {
+                let _ = Command::new("git")
+                    .args(["-C", self.repo_path.to_str().unwrap(), "fetch", "origin"])
+                    .output();
             }
         }
 
@@ -596,6 +642,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE documents (
                 id TEXT PRIMARY KEY,
+                site_id TEXT,
                 collection TEXT,
                 slug TEXT,
                 title TEXT,
@@ -609,8 +656,8 @@ mod tests {
                 draft_updated_at INTEGER,
                 draft_status TEXT
             );
-            INSERT INTO documents (id, collection, slug, title, status, data, created_at, updated_at, draft_status)
-            VALUES ('d1', 'posts', 'first-post', 'First Post', 'published', '{\"summary\":\"hi\"}', 1000, 1000, 'published');"
+            INSERT INTO documents (id, site_id, collection, slug, title, status, data, created_at, updated_at, draft_status)
+            VALUES ('d1', 'test-site', 'posts', 'first-post', 'First Post', 'published', '{\"summary\":\"hi\"}', 1000, 1000, 'published');"
         ).unwrap();
         drop(conn);
 
@@ -618,7 +665,8 @@ mod tests {
         let driver = GitDriver::new(monorepo_dir.clone())
             .with_remote(Some(bare_remote.to_str().unwrap().to_string()))
             .with_branch("main".to_string())
-            .with_content_subpath("content".to_string());
+            .with_content_subpath("content".to_string())
+            .with_site_id(Some("test-site".to_string()));
 
         let result = driver.release_via_temp(&db_file, "v1.0.0", "chore: release v1.0.0", true);
         assert!(result.is_ok(), "release_via_temp failed: {:?}", result.err());

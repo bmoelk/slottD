@@ -175,7 +175,7 @@ This repository stores the version-controlled content and release snapshots for 
    - Tags can be inspected, compared, and restored at any time via the SlottD Studio Git Center.
 
 3. **Frontend Integration**:
-   - Consumed by Astro and SlotWire frontends via \`x-slottd-site: ${cleanSiteId}\`.
+   - Consumed by Astro and SlotWire frontends via Directus filter \`?filter[site_id][_eq]=${cleanSiteId}\` or site-scoped Bearer token.
 `;
 }
 

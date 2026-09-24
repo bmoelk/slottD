@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import app from '../src/index.js';
-import { resolveSiteId, normalizeSiteId } from '../src/auth/site.js';
+import { resolveSiteId, normalizeSiteId, SiteResolutionError } from '../src/auth/site.js';
 import { renameSite, listSites, registerSite } from '../src/admin/sites.js';
 import { hydrateFromGit } from '../src/sync/git-sync.js';
 import { createDb } from '../src/db/client.js';
@@ -11,46 +11,134 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(normalizeSiteId('Example.COM')).toBe('example.com');
       expect(normalizeSiteId('https://sub.domain.org:8787/path?query=1')).toBe('sub.domain.org');
       expect(normalizeSiteId('  my-site.dev  ')).toBe('my-site.dev');
-      expect(normalizeSiteId('')).toBe('default');
+      expect(() => normalizeSiteId('')).toThrow(SiteResolutionError);
     });
 
-    it('resolves site ID with strict precedence (header > query > cookie > host > default)', async () => {
-      // 1. Header precedence over query and host
-      const req1 = new Request('http://host-domain.com/items/posts?site=query-site.com', {
+    it('resolves site ID with strict precedence (user siteId > directus filter > query ?site > cookie > host > default)', async () => {
+      // 1. Authenticated User siteId precedence over query and host
+      const mockUserCtx: any = {
+        get: (k: string) => (k === 'user' ? { email: 'token@user-site.com', siteId: 'user-site.com' } : null),
+        req: {
+          header: () => null,
+          query: () => 'filter-site.com',
+          raw: new Request('http://host-domain.com/items/posts?filter[site_id][_eq]=filter-site.com'),
+        },
+        env: {},
+      };
+      const site1 = await resolveSiteId(mockUserCtx);
+      expect(site1).toBe('user-site.com');
+
+      // 2. Directus query filter (filter[site_id][_eq]) precedence over ?site_id and cookie
+      const req2 = new Request('http://host-domain.com/items/posts?filter[site_id][_eq]=directus-filter.com&site_id=query-site.com', {
         headers: {
-          'x-slottd-site': 'header-site.com',
-          'cookie': 'slottd_site=cookie-site.com',
+          cookie: 'slottd_site=cookie-site.com',
         },
       });
-      const site1 = await resolveSiteId({ req: { header: (k: string) => req1.headers.get(k), query: (k: string) => new URL(req1.url).searchParams.get(k), raw: req1 }, env: {} } as any);
-      expect(site1).toBe('header-site.com');
+      const site2 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req2.headers.get(k),
+          query: (k: string) => new URL(req2.url).searchParams.get(k),
+          raw: req2,
+        },
+        env: {},
+      } as any);
+      expect(site2).toBe('directus-filter.com');
 
-      // 2. Query param precedence over cookie and host
-      const req2 = new Request('http://host-domain.com/items/posts?site=query-site.com', {
+      // 3. Directus JSON filter precedence
+      const req3 = new Request('http://host-domain.com/items/posts?filter=' + encodeURIComponent('{"site_id":{"_eq":"json-site.com"}}'), {
         headers: {
-          'cookie': 'slottd_site=cookie-site.com',
+          cookie: 'slottd_site=cookie-site.com',
         },
       });
-      const site2 = await resolveSiteId({ req: { header: (k: string) => req2.headers.get(k), query: (k: string) => new URL(req2.url).searchParams.get(k), raw: req2 }, env: {} } as any);
-      expect(site2).toBe('query-site.com');
+      const site3 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req3.headers.get(k),
+          query: (k: string) => new URL(req3.url).searchParams.get(k),
+          raw: req3,
+        },
+        env: {},
+      } as any);
+      expect(site3).toBe('json-site.com');
 
-      // 3. Cookie precedence over host
-      const req3 = new Request('http://host-domain.com/items/posts', {
+      // 4. Query param (?site_id=) precedence over cookie and host
+      const req4 = new Request('http://host-domain.com/items/posts?site_id=query-site.com', {
         headers: {
-          'cookie': 'slottd_site=cookie-site.com',
+          cookie: 'slottd_site=cookie-site.com',
         },
       });
-      const site3 = await resolveSiteId({ req: { header: (k: string) => req3.headers.get(k), query: (k: string) => new URL(req3.url).searchParams.get(k), raw: req3 }, env: {} } as any);
-      expect(site3).toBe('cookie-site.com');
+      const site4 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req4.headers.get(k),
+          query: (k: string) => new URL(req4.url).searchParams.get(k),
+          raw: req4,
+        },
+        env: {},
+      } as any);
+      expect(site4).toBe('query-site.com');
 
-      // 4. Fallback to DEFAULT_SITE_ID env variable
-      const req4 = new Request('http://localhost:8787/items/posts');
-      const site4 = await resolveSiteId({ req: { header: (k: string) => req4.headers.get(k), query: (k: string) => new URL(req4.url).searchParams.get(k), raw: req4 }, env: { DEFAULT_SITE_ID: 'configured-default.org' } } as any);
-      expect(site4).toBe('configured-default.org');
+      // 5. Deprecated custom header x-slottd-site is ignored
+      const req5 = new Request('http://host-domain.com/items/posts', {
+        headers: {
+          'x-slottd-site': 'ignored-header.com',
+          cookie: 'slottd_site=cookie-site.com',
+        },
+      });
+      const site5 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req5.headers.get(k),
+          query: (k: string) => new URL(req5.url).searchParams.get(k),
+          raw: req5,
+        },
+        env: {},
+      } as any);
+      expect(site5).toBe('cookie-site.com'); // Fell through to cookie because header was ignored
 
-      // 5. Fallback to 'default' when no env var is set
-      const site5 = await resolveSiteId({ req: { header: () => null, query: () => null, raw: req4 }, env: {} } as any);
-      expect(site5).toBe('default');
+      // 6. Cookie precedence over host
+      const req6 = new Request('http://host-domain.com/items/posts', {
+        headers: {
+          cookie: 'slottd_site=cookie-site.com',
+        },
+      });
+      const site6 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req6.headers.get(k),
+          query: (k: string) => new URL(req6.url).searchParams.get(k),
+          raw: req6,
+        },
+        env: {},
+      } as any);
+      expect(site6).toBe('cookie-site.com');
+
+      // 7. Fallback to DEFAULT_SITE_ID env variable
+      const req7 = new Request('http://localhost:8787/items/posts');
+      const site7 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: (k: string) => req7.headers.get(k),
+          query: (k: string) => new URL(req7.url).searchParams.get(k),
+          raw: req7,
+        },
+        env: { DEFAULT_SITE_ID: 'configured-default.org' },
+      } as any);
+      expect(site7).toBe('configured-default.org');
+
+      // 8. Rejects with SiteResolutionError when no site context or env var is set
+      await expect(
+        resolveSiteId({
+          get: () => null,
+          req: {
+            header: () => null,
+            query: () => null,
+            raw: req7,
+          },
+          env: {},
+        } as any)
+      ).rejects.toThrow(SiteResolutionError);
     });
 
     it('honors domain referral alias when ALLOW_DOMAIN_REFERRAL_FALLBACK is enabled', async () => {
@@ -269,7 +357,7 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
 
     it('handles switching active site via cookie set on redirect', async () => {
       const res = await app.fetch(
-        new Request('http://localhost:8787/admin/sites/switch?site=beta.dev&redirect=/admin', {
+        new Request('http://localhost:8787/admin/sites/switch?site_id=beta.dev&redirect=/admin', {
           headers: { host: 'localhost:8787' },
         }),
         mockEnv

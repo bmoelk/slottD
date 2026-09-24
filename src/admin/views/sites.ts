@@ -87,7 +87,7 @@ export function renderSitesView({
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <select
-              onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();"
+              onchange="window.switchSite ? window.switchSite(this.value) : (document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000', window.location.reload());"
               style="background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 7px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;"
             >
               ${availableSiteIds.map((id) => html`
@@ -178,7 +178,7 @@ export function renderSitesView({
                 </div>
                 ${!isActive ? html`
                   <button
-                    onclick="document.cookie='slottd_active_site='+'${encodeURIComponent(site.site_id)}'+'; path=/; max-age=31536000'; window.location.reload();"
+                    onclick="window.switchSite ? window.switchSite('${encodeURIComponent(site.site_id)}') : (document.cookie='slottd_active_site='+'${encodeURIComponent(site.site_id)}'+'; path=/; max-age=31536000', window.location.reload());"
                     class="btn btn-secondary"
                     style="font-size: 11px; padding: 4px 8px;"
                   >

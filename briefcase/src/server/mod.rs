@@ -10,9 +10,47 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 pub mod bridge;
-pub use bridge::BridgeServer;
+pub use bridge::{BridgeServer, SiteRegistration, SiteRegistry};
 
 const MAX_LOG_LINES: usize = 300;
+
+/// Strips ANSI escape sequences, carriage returns, and non-printable control characters
+/// to protect TUI render buffers from frame corruptions and unintended cursor jumps.
+pub fn sanitize_log_line(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if let Some(&'[') = chars.peek() {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            } else if let Some(&']') = chars.peek() {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if c == '\x07' || c == '\x1b' {
+                        break;
+                    }
+                }
+            } else {
+                let _ = chars.next();
+            }
+        } else if ch == '\r' {
+            continue;
+        } else if ch == '\t' {
+            result.push_str("    ");
+        } else if (ch as u32) >= 0x20 || ch == '\n' {
+            result.push(ch);
+        }
+    }
+    result.trim_end().to_string()
+}
 
 pub fn is_port_ready(port: u16) -> bool {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
@@ -146,12 +184,16 @@ impl ManagedService {
             let name_clone = self.name.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
+                for raw_line in reader.lines().map_while(Result::ok) {
+                    let cleaned = sanitize_log_line(&raw_line);
+                    if cleaned.is_empty() {
+                        continue;
+                    }
                     let mut logs = logs_clone.lock().unwrap();
                     if logs.len() >= MAX_LOG_LINES {
                         logs.pop_front();
                     }
-                    logs.push_back(format!("[{}] {}", name_clone, line));
+                    logs.push_back(format!("[{}] {}", name_clone, cleaned));
                 }
             });
         }
@@ -162,12 +204,16 @@ impl ManagedService {
             let name_clone = self.name.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
+                for raw_line in reader.lines().map_while(Result::ok) {
+                    let cleaned = sanitize_log_line(&raw_line);
+                    if cleaned.is_empty() {
+                        continue;
+                    }
                     let mut logs = logs_clone.lock().unwrap();
                     if logs.len() >= MAX_LOG_LINES {
                         logs.pop_front();
                     }
-                    logs.push_back(format!("[{}:err] {}", name_clone, line));
+                    logs.push_back(format!("[{}:err] {}", name_clone, cleaned));
                 }
             });
         }
@@ -325,6 +371,18 @@ mod tests {
         assert_eq!(*service.status.lock().unwrap(), ServiceStatus::Stopped);
         assert_eq!(service.is_running(), false);
         assert_eq!(service.port, 9999);
+    }
+
+    #[test]
+    fn test_sanitize_log_line() {
+        let raw = "\x1b[32mReady in 12ms\x1b[0m\r\n";
+        assert_eq!(sanitize_log_line(raw), "Ready in 12ms");
+
+        let raw_csi = "\x1b[2K\x1b[1A[vite] building...\r";
+        assert_eq!(sanitize_log_line(raw_csi), "[vite] building...");
+
+        let raw_clean = "Clean log line without formatting";
+        assert_eq!(sanitize_log_line(raw_clean), "Clean log line without formatting");
     }
 }
 

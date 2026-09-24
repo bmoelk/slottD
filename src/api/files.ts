@@ -60,7 +60,7 @@ filesRouter.post('/', requireWriteAuth, async (c) => {
   }
 
   // 1. Upload to Cloudflare R2 Bucket using descriptive key namespaced by site
-  const r2StorageKey = siteId !== 'default' ? `${siteId}/${key}` : key;
+  const r2StorageKey = `${siteId}/${key}`;
   const fileBuffer = await file.arrayBuffer();
   await c.env.MEDIA.put(r2StorageKey, fileBuffer, {
     httpMetadata: {
@@ -179,9 +179,7 @@ filesRouter.get('/:idOrKey', async (c) => {
   const r2Key = mediaRecord ? mediaRecord.key : idOrKey;
   let object = null;
   if (c.env.MEDIA) {
-    if (siteId !== 'default') {
-      object = await c.env.MEDIA.get(`${siteId}/${r2Key}`);
-    }
+    object = await c.env.MEDIA.get(`${siteId}/${r2Key}`);
     if (!object) {
       object = await c.env.MEDIA.get(r2Key);
     }
@@ -220,7 +218,7 @@ filesRouter.delete('/:idOrKey', async (c) => {
   if (mediaRecord) {
     await db.deleteFrom('media').where('id', '=', mediaRecord.id).where('site_id', '=', siteId).execute();
     if (c.env.MEDIA) {
-      const siteR2Key = siteId !== 'default' ? `${siteId}/${mediaRecord.key}` : mediaRecord.key;
+      const siteR2Key = `${siteId}/${mediaRecord.key}`;
       await c.env.MEDIA.delete(siteR2Key).catch(() => {});
       await c.env.MEDIA.delete(mediaRecord.key).catch(() => {});
     }

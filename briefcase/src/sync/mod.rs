@@ -29,12 +29,17 @@ pub struct SyncEngine {
 }
 
 impl SyncEngine {
-    pub fn new(db_path: PathBuf, content_dir: PathBuf, site_id: Option<String>) -> Self {
-        Self {
+    pub fn new(db_path: PathBuf, content_dir: PathBuf, site_id: Option<String>) -> Result<Self> {
+        let site_id = site_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("site_id is required for SyncEngine; the 'default' site concept has been abolished."))?;
+
+        Ok(Self {
             db_path,
             content_dir,
-            site_id: site_id.unwrap_or_else(|| "default".to_string()),
-        }
+            site_id,
+        })
     }
 
     /// Exports documents from SQLite into flat JSON and Markdown files.
@@ -119,7 +124,7 @@ impl SyncEngine {
                 created_at: doc.created_at,
                 updated_at: doc.updated_at,
                 data: custom_data,
-                site_id: if doc.site_id != "default" { Some(doc.site_id) } else { None },
+                site_id: Some(doc.site_id),
             };
 
             let json_path = col_dir.join(format!("{}.json", doc.slug));

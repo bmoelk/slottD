@@ -5,6 +5,7 @@ export interface AuthenticatedUser {
   email: string;
   name?: string;
   authMethod: 'cloudflare-access' | 'bearer-token' | 'local-briefcase' | 'local-dev' | string;
+  siteId?: string;
 }
 
 /**
@@ -248,6 +249,24 @@ export class BearerTokenAuthAdapter implements AuthAdapter {
       };
     }
 
+    // Check site-scoped token configured in system_site_settings table
+    if (token && c.env?.DB) {
+      try {
+        const row = (await c.env.DB.prepare(
+          "SELECT site_id FROM system_site_settings WHERE key = 'api_key' AND value = ? LIMIT 1"
+        )
+          .bind(token)
+          .first()) as { site_id: string } | null;
+        if (row?.site_id) {
+          return {
+            email: `token@${row.site_id}`,
+            authMethod: 'bearer-token',
+            siteId: row.site_id,
+          };
+        }
+      } catch {}
+    }
+
     // Check signed session token
     if (token && token.includes('.')) {
       const secret = c.env.JWT_SECRET || (c.env as any).PREVIEW_SECRET || 'briefcase-local-secret';
@@ -256,6 +275,7 @@ export class BearerTokenAuthAdapter implements AuthAdapter {
         return {
           email: session.email,
           authMethod: 'bearer-token',
+          siteId: session.siteId,
         };
       }
     }
@@ -543,7 +563,7 @@ export async function createBriefcaseSessionCookie(email: string, secret: string
 export async function verifyBriefcaseSessionCookie(
   cookieVal: string | null | undefined,
   secret: string
-): Promise<{ email: string } | null> {
+): Promise<{ email: string; siteId?: string } | null> {
   if (!cookieVal) return null;
   const parts = cookieVal.split('.');
   if (parts.length !== 2) return null;
@@ -565,7 +585,7 @@ export async function verifyBriefcaseSessionCookie(
 
     const payload = JSON.parse(atob(b64Payload));
     if (payload.exp && payload.exp < Date.now()) return null;
-    return { email: payload.email };
+    return { email: payload.email, siteId: payload.siteId };
   } catch {
     return null;
   }

@@ -16,6 +16,7 @@ export function renderLayout(
   const format = editorConfig?.format || 'markdown';
 
   const isSystemActive = ['models', 'logs', 'activity', 'setup'].includes(activeTab);
+  const siteQuery = siteContext?.activeSite ? `?site_id=${encodeURIComponent(siteContext.activeSite)}` : '';
 
   return html`
     <!DOCTYPE html>
@@ -45,11 +46,47 @@ export function renderLayout(
       <style>
         ${adminStyles}
       </style>
+      <script>
+        window.switchSite = function(newSite) {
+          try {
+            sessionStorage.setItem('slottd_tab_site', newSite);
+          } catch(e) {}
+          document.cookie = 'slottd_active_site=' + encodeURIComponent(newSite) + '; path=/; max-age=31536000';
+          const url = new URL(window.location.href);
+          url.searchParams.set('site_id', newSite);
+          url.searchParams.delete('site');
+
+          // If on an editor path (/admin/content/:collection/:id), switching sites routes to collection root
+          const pathParts = url.pathname.split('/').filter(Boolean);
+          if (pathParts[0] === 'admin' && pathParts[1] === 'content' && pathParts.length >= 4) {
+            const collection = pathParts[2];
+            url.pathname = '/admin/content/' + collection;
+          }
+          window.location.href = url.toString();
+        };
+
+        (function() {
+          try {
+            const url = new URL(window.location.href);
+            const urlSite = url.searchParams.get('site_id');
+            if (urlSite) {
+              sessionStorage.setItem('slottd_tab_site', urlSite);
+            } else {
+              const tabSite = sessionStorage.getItem('slottd_tab_site');
+              if (tabSite && window.location.pathname.startsWith('/admin')) {
+                url.searchParams.set('site_id', tabSite);
+                url.searchParams.delete('site');
+                window.location.replace(url.toString());
+              }
+            }
+          } catch(e) {}
+        })();
+      </script>
     </head>
     <body>
       <div class="topbar">
         <div style="display: flex; align-items: center; gap: 12px; margin-right: 28px;">
-          <a href="/admin/sites" class="brand" style="text-decoration: none; color: inherit;">
+          <a href="/admin/sites${siteQuery}" class="brand" style="text-decoration: none; color: inherit;">
             <svg viewBox="0 0 512 512" width="28" height="28">
               <rect width="512" height="512" rx="96" fill="#1e293b"/>
               <path d="M 160 128 H 210 V 384 H 160 Z" fill="#FFD043"/>
@@ -61,16 +98,16 @@ export function renderLayout(
           </a>
           <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context">
             ${renderFavicon(siteContext?.activeSite || '', 14, siteContext?.activeFavicon)}
-            <select onchange="document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000'; window.location.reload();" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
+            <select onchange="window.switchSite ? window.switchSite(this.value) : (document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000', window.location.reload())" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
               ${(siteContext?.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext?.activeSite || 'default']).map(s => html`<option value="${s}" ${s === (siteContext?.activeSite || 'default') ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
             </select>
           </div>
         </div>
         <div class="nav-tabs">
-          <a href="/admin/sites" class="nav-tab ${activeTab === 'sites' || activeTab === 'home' ? 'active' : ''}">Sites</a>
-          <a href="/admin/content" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
-          <a href="/admin/media" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
-          <a href="/admin/git" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
+          <a href="/admin/sites${siteQuery}" class="nav-tab ${activeTab === 'sites' || activeTab === 'home' ? 'active' : ''}">Sites</a>
+          <a href="/admin/content${siteQuery}" class="nav-tab ${activeTab === 'content' ? 'active' : ''}">Content</a>
+          <a href="/admin/media${siteQuery}" class="nav-tab ${activeTab === 'media' ? 'active' : ''}">Media</a>
+          <a href="/admin/git${siteQuery}" class="nav-tab ${activeTab === 'git' || activeTab === 'sync' ? 'active' : ''}">Git</a>
           <div class="nav-dropdown">
             <button
               type="button"
@@ -81,12 +118,12 @@ export function renderLayout(
               <span style="font-size: 9px; opacity: 0.7;">▼</span>
             </button>
             <div class="nav-dropdown-menu">
-              <a href="/admin/models" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">Models</a>
-              <a href="/admin/logs" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs & Activity</a>
-              <a href="/admin/setup" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
+              <a href="/admin/models${siteQuery}" class="nav-dropdown-item ${activeTab === 'models' ? 'active' : ''}">Models</a>
+              <a href="/admin/logs${siteQuery}" class="nav-dropdown-item ${activeTab === 'logs' || activeTab === 'activity' ? 'active' : ''}">Logs & Activity</a>
+              <a href="/admin/setup${siteQuery}" class="nav-dropdown-item ${activeTab === 'setup' ? 'active' : ''}">Setup</a>
             </div>
           </div>
-          <a href="/admin/docs" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
+          <a href="/admin/docs${siteQuery}" class="nav-tab ${activeTab === 'docs' || activeTab === 'help' ? 'active' : ''}">Help</a>
         </div>
         <div class="nav-dropdown">
           <div class="user-badge" title="Operator: ${user?.email || 'dev@localhost'} (${user?.authMethod || 'local-briefcase'})">

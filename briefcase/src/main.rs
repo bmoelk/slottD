@@ -14,7 +14,7 @@ use ratatui::{
     Terminal,
 };
 use slottd_briefcase::{
-    BridgeServer, D1Database, DualSupervisor, GitDriver, KeyringStore, ServiceStatus, SyncEngine,
+    BridgeServer, D1Database, DualSupervisor, GitDriver, KeyringStore, ServiceStatus, SiteRegistration, SyncEngine,
 };
 use std::collections::VecDeque;
 use std::io;
@@ -41,25 +41,25 @@ struct Cli {
     #[arg(long, env = "SITE_DIR")]
     site_dir: Option<String>,
 
-    /// Active website ID / domain (defaults to "default")
-    #[arg(long, env = "SITE_ID", default_value = "default")]
-    site_id: String,
-
-    /// Disable running the Astro website dev server
-    #[arg(long, default_value_t = false)]
-    no_site: bool,
-
-    /// Remote Git repository URL (e.g. git@github.com:owner/repo.git)
-    #[arg(short = 'r', long = "remote", env = "GIT_REMOTE_URL")]
+    /// Git remote URL (auto-detected from content_dir if omitted)
+    #[arg(long, env = "GIT_REMOTE_URL")]
     remote_url: Option<String>,
 
-    /// Target Git branch
-    #[arg(short = 'b', long, env = "GIT_BRANCH", default_value = "main")]
+    /// Target Git branch to track
+    #[arg(long, env = "GIT_BRANCH", default_value = "main")]
     branch: String,
 
-    /// Target content path within the remote repository (e.g. "content" or "subpath/content")
-    #[arg(short = 'p', long = "content-path", env = "GIT_CONTENT_PATH", default_value = "content")]
+    /// Subpath inside the Git repository where markdown content lives
+    #[arg(long, env = "GIT_CONTENT_PATH", default_value = "")]
     content_subpath: String,
+
+    /// Active multi-site identifier (partitions D1 documents by site_id)
+    #[arg(long, env = "SITE_ID")]
+    site_id: Option<String>,
+
+    /// Disable the companion Astro dev server process
+    #[arg(long, env = "NO_SITE", default_value_t = false)]
+    no_site: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -67,26 +67,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Export local D1 database records to flat Git repository files
+    /// Export D1 SQLite database to local markdown files
     Export,
-    /// Restore and load database from Git repository (optionally from a specific release tag)
-    Restore {
+    /// Restore local markdown files into D1 SQLite database
+    Hydrate {
+        /// Optional Git tag to checkout before hydration
         #[arg(short, long)]
         tag: Option<String>,
     },
-    /// Create Git release snapshot, tag, and push via SSH
+    /// Release snapshot: exports D1, tags, and pushes to Git remote
     Release {
+        /// Semantic release tag (defaults to timestamp)
         #[arg(short, long)]
         tag: Option<String>,
-        #[arg(short, long, default_value = "chore(content): release snapshot")]
-        message: String,
+        /// Commit message
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Push commit and tag to remote
         #[arg(long, default_value_t = true)]
         push: bool,
     },
-    /// Inspect or configure OS Keyring credentials
-    Keyring {
+    /// Manage secure credentials in the OS Keyring
+    Secret {
         #[arg(short, long)]
-        key: Option<String>,
+        key: String,
         #[arg(short, long)]
         set: Option<String>,
     },
@@ -102,6 +106,7 @@ enum LogTab {
 enum ModalState {
     None,
     TagPicker { tags: Vec<String>, selected: usize },
+    SitePicker { sites: Vec<SiteRegistration>, selected: usize },
     Search { input: String },
 }
 
@@ -140,7 +145,7 @@ fn highlight_line(line: &str, query: Option<&str>) -> Line<'static> {
 fn resolve_paths(cli_cms: &str, cli_site: Option<&str>) -> (PathBuf, Option<PathBuf>) {
     let cms_path = PathBuf::from(cli_cms);
     
-    // Auto-detect site dir if sibling exists, or use explicitly provided
+    // Explicitly provided site directory (--site-dir), or None (Astro site auto-detection deferred until Tauri desktop app)
     let site_path = if let Some(site) = cli_site {
         let p = PathBuf::from(site);
         if p.exists() {
@@ -154,37 +159,7 @@ fn resolve_paths(cli_cms: &str, cli_site: Option<&str>) -> (PathBuf, Option<Path
             }
         }
     } else {
-        // Auto-detect site directory:
-        // 1. Check sibling `astro` (e.g. ../astro from cms_dir)
-        let sibling_astro = cms_path.parent().map(|p| p.join("astro"));
-        if sibling_astro.as_ref().map(|p| p.exists()).unwrap_or(false) {
-            sibling_astro
-        } else {
-            // 2. Check subfolder `astro` inside cms (if run from monorepo root)
-            let sub_astro = cms_path.join("astro");
-            if sub_astro.exists() {
-                Some(sub_astro)
-            } else {
-                // 3. Scan sibling directories for package.json or astro.config
-                let mut found_site = None;
-                if let Some(parent) = cms_path.parent() {
-                    if let Ok(entries) = std::fs::read_dir(parent) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_dir() && path != cms_path {
-                                if path.join("astro.config.mjs").exists()
-                                    || path.join("astro.config.ts").exists()
-                                {
-                                    found_site = Some(path);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                found_site
-            }
-        }
+        None
     };
 
     (cms_path, site_path)
@@ -249,46 +224,50 @@ fn main() -> Result<()> {
     if let Some(cmd) = cli.command {
         match cmd {
             Commands::Export => {
-                println!("🚀 Exporting SlottD D1 database (site: {}) to: {:?}", cli.site_id, content_path);
-                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
+                let site_id = cli.site_id.ok_or_else(|| anyhow::anyhow!("--site-id is required for export; the 'default' site concept has been abolished."))?;
+                println!("🚀 Exporting SlottD D1 database (site: {}) to: {:?}", site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(site_id))?;
                 let count = engine.export_to_disk()?;
                 println!("✅ Exported {} documents successfully!", count);
             }
-            Commands::Restore { tag } => {
+            Commands::Hydrate { tag } => {
+                let site_id = cli.site_id.ok_or_else(|| anyhow::anyhow!("--site-id is required for hydrate; the 'default' site concept has been abolished."))?;
                 let git = GitDriver::new(content_path.clone());
                 if let Some(ref t) = tag {
                     println!("🏷️ Checking out tag '{}' in content repository...", t);
                     git.checkout_ref(t)?;
                 }
-                println!("📥 Restoring and loading SlottD D1 database (site: {}) from: {:?}", cli.site_id, content_path);
-                let engine = SyncEngine::new(db_path, content_path, Some(cli.site_id));
+                println!("📥 Restoring and loading SlottD D1 database (site: {}) from: {:?}", site_id, content_path);
+                let engine = SyncEngine::new(db_path, content_path, Some(site_id))?;
                 let count = engine.hydrate_from_disk()?;
                 println!("🎉 Successfully restored and loaded {} documents into D1!", count);
             }
             Commands::Release { tag, message, push } => {
+                let site_id = cli.site_id.ok_or_else(|| anyhow::anyhow!("--site-id is required for release; the 'default' site concept has been abolished."))?;
                 let release_tag = tag.unwrap_or_else(|| {
                     format!("release-{}", chrono::Local::now().format("%Y.%m.%d-%H%M"))
                 });
+                let default_message = format!("chore(content): release {}", release_tag);
+                let commit_message = message.as_deref().unwrap_or(&default_message);
                 println!("🏷️ Creating release snapshot: {}", release_tag);
                 let git = GitDriver::new(content_path)
                     .with_remote(cli.remote_url)
                     .with_branch(cli.branch)
                     .with_content_subpath(cli.content_subpath)
-                    .with_site_id(Some(cli.site_id.clone()));
+                    .with_site_id(Some(site_id));
                 println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
-                let commit_sha = git.release_via_temp(&db_path, &release_tag, &message, push)?;
+                let commit_sha = git.release_via_temp(&db_path, &release_tag, commit_message, push)?;
                 println!("✅ Successfully released! Commit SHA: {}", commit_sha);
             }
-            Commands::Keyring { key, set } => {
+            Commands::Secret { key, set } => {
                 let store = KeyringStore::default();
-                let target_key = key.unwrap_or_else(|| "admin_passphrase".to_string());
                 if let Some(secret) = set {
-                    store.set_secret(&target_key, &secret)?;
-                    println!("🔒 Secret saved to OS Keyring under key: {}", target_key);
+                    store.set_secret(&key, &secret)?;
+                    println!("🔒 Secret saved to OS Keyring under key: {}", key);
                 } else {
-                    match store.get_secret(&target_key)? {
-                        Some(_) => println!("🔑 Key '{}' is present in OS Keyring.", target_key),
-                        None => println!("⚠️ Key '{}' not found in OS Keyring.", target_key),
+                    match store.get_secret(&key)? {
+                        Some(_) => println!("🔑 Key '{}' is present in OS Keyring.", key),
+                        None => println!("⚠️ Key '{}' not found in OS Keyring.", key),
                     }
                 }
             }
@@ -317,7 +296,7 @@ fn run_tui(
     remote_url: Option<String>,
     branch: String,
     content_subpath: String,
-    site_id: String,
+    site_id: Option<String>,
 ) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -325,12 +304,12 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let sync_engine = SyncEngine::new(db_path.clone(), content_path.clone(), Some(site_id.clone()));
+    let sync_engine = site_id.as_ref().and_then(|s| SyncEngine::new(db_path.clone(), content_path.clone(), Some(s.clone())).ok());
     let git_driver = GitDriver::new(content_path.clone())
         .with_remote(remote_url)
         .with_branch(branch)
         .with_content_subpath(content_subpath)
-        .with_site_id(Some(site_id.clone()));
+        .with_site_id(site_id.clone());
 
     // Boot Dual Process Supervisor (CMS + Astro site)
     let mut supervisor = DualSupervisor::new(cms_path.clone(), site_path.clone());
@@ -346,9 +325,10 @@ fn run_tui(
         Arc::clone(&git_logs),
     )
     .with_secondary_logs(Arc::clone(&supervisor.cms.logs));
+    let site_registry = Arc::clone(&bridge.sites);
     let _ = bridge.start();
 
-    let mut log_message = "Ready. [O] Studio (:8787) | [W] Site (:4321) | [/] Search | [↑/↓] Scroll | [Z] Zoom".to_string();
+    let mut log_message = "Ready. [O] Studio (:8787) | [W] Sites | [/] Search | [↑/↓] Scroll | [Z] Zoom".to_string();
     let mut active_tab = LogTab::Cms;
     let mut modal_state = ModalState::None;
     let mut full_log_mode = false;
@@ -441,7 +421,7 @@ fn run_tui(
                     None => Span::styled("⚪ Disabled (--no-site)", Style::default().fg(Color::DarkGray)),
                 };
 
-                let site_display_path = site_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "None".to_string());
+                let _site_display_path = site_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| "None".to_string());
 
                 let (cms_reqs, cms_avg_ms, last_burst_summary, last_page_boundary) = {
                     let logs = supervisor.cms.logs.lock().unwrap();
@@ -476,6 +456,21 @@ fn run_tui(
                     (count, avg, burst, page_boundary)
                 };
 
+                let (sites_count, sites_summary) = {
+                    let lock = site_registry.lock().unwrap();
+                    let count = lock.len();
+                    if count == 0 {
+                        (0, "Awaiting 'npm run dev' registration...".to_string())
+                    } else {
+                        let mut parts: Vec<String> = lock
+                            .values()
+                            .map(|s| format!("{} (:{})", s.site_id, s.port))
+                            .collect();
+                        parts.sort();
+                        (count, parts.join("  •  "))
+                    }
+                };
+
                 let status_lines = vec![
                     Line::from(vec![
                         Span::styled("SlottD CMS: ", Style::default().fg(Color::Yellow)),
@@ -483,9 +478,14 @@ fn run_tui(
                         Span::raw(format!("  Path: {}", cms_path.to_string_lossy())),
                     ]),
                     Line::from(vec![
-                        Span::styled("Astro Site: ", Style::default().fg(Color::Yellow)),
-                        site_badge,
-                        Span::raw(format!("  Path: {}", site_display_path)),
+                        Span::styled("Astro Sites: ", Style::default().fg(Color::Yellow)),
+                        if sites_count > 0 {
+                            Span::styled(format!("🟢 {} active: {}", sites_count, sites_summary), Style::default().fg(Color::LightGreen))
+                        } else if supervisor.site.is_some() {
+                            site_badge
+                        } else {
+                            Span::styled(format!("⚪ {}", sites_summary), Style::default().fg(Color::DarkGray))
+                        },
                     ]),
                     Line::from(vec![
                         Span::styled("Telemetry:  ", Style::default().fg(Color::Yellow)),
@@ -507,7 +507,7 @@ fn run_tui(
                     ]),
                     Line::from(vec![
                         Span::styled("Content DB: ", Style::default().fg(Color::Yellow)),
-                        Span::raw(format!("{} documents ({} collections) | 🌐 Site: {}", doc_count, col_count, site_id)),
+                        Span::raw(format!("{} documents ({} collections) | 🌐 Site: {}", doc_count, col_count, site_id.as_deref().unwrap_or("multi"))),
                         Span::raw(" | Git: "),
                         if git_status.is_dirty {
                             Span::styled(format!("⚠️ Dirty ({} uncommitted)", git_status.dirty_files.len()), Style::default().fg(Color::LightRed))
@@ -523,7 +523,16 @@ fn run_tui(
                     ]),
                     Line::from(vec![
                         Span::styled("Quick Link: ", Style::default().fg(Color::Yellow)),
-                        Span::raw("[O] Studio: http://localhost:8787/admin  |  [W] Site: http://localhost:4321  |  Git Bridge: :8788"),
+                        Span::raw(format!(
+                            "[O] Studio: http://localhost:8787/admin  |  [W] {}  |  Git Bridge: :8788",
+                            if sites_count > 1 {
+                                format!("Sites ({} active)", sites_count)
+                            } else if sites_count == 1 {
+                                "Site (1 active)".to_string()
+                            } else {
+                                "Sites".to_string()
+                            }
+                        )),
                     ]),
                 ];
                 let status_widget = Paragraph::new(status_lines)
@@ -565,6 +574,25 @@ fn run_tui(
 
                     let picker_widget = List::new(tag_items)
                         .block(Block::default().borders(Borders::ALL).title("🏷️ Select Release Tag to Load/Restore (Up/Down + Enter, [Esc] to cancel)"));
+                    f.render_widget(picker_widget, stream_chunk);
+                }
+                ModalState::SitePicker { ref sites, selected } => {
+                    let site_items: Vec<ListItem> = sites
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, s)| {
+                            let url = format!("http://{}:{}", s.host, s.port);
+                            if idx == selected {
+                                ListItem::new(format!(" 👉 [{}] {} ── {} (Press Enter to Open)", idx + 1, s.site_id, url))
+                                    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                            } else {
+                                ListItem::new(format!("    [{}] {} ── {}", idx + 1, s.site_id, url))
+                            }
+                        })
+                        .collect();
+
+                    let picker_widget = List::new(site_items)
+                        .block(Block::default().borders(Borders::ALL).title("🌐 Select Active Astro Site to Open in Browser (Up/Down + Enter, [1-9], [Esc] to cancel)"));
                     f.render_widget(picker_widget, stream_chunk);
                 }
                 _ => {
@@ -642,9 +670,18 @@ fn run_tui(
                         filtered_lines[start..end].to_vec()
                     };
 
+                    let max_line_width = stream_chunk.width.saturating_sub(4) as usize;
                     let log_items: Vec<ListItem> = visible_lines
                         .into_iter()
-                        .map(|line| ListItem::new(highlight_line(&line, search_query.as_deref())))
+                        .map(|line| {
+                            let clipped = if max_line_width > 0 && line.chars().count() > max_line_width {
+                                let tr: String = line.chars().take(max_line_width.saturating_sub(3)).collect();
+                                format!("{}...", tr)
+                            } else {
+                                line
+                            };
+                            ListItem::new(highlight_line(&clipped, search_query.as_deref()))
+                        })
                         .collect();
 
                     let stream_title = {
@@ -700,7 +737,7 @@ fn run_tui(
                 Span::styled("[O]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
                 Span::raw(" Studio | "),
                 Span::styled("[W]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw(" Site | "),
+                Span::raw(" Sites | "),
                 Span::styled("[/]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::raw(" Search | "),
                 Span::styled("[↑/↓/PgUp/PgDn]", Style::default().fg(Color::Yellow)),
@@ -721,168 +758,254 @@ fn run_tui(
         })?;
 
         if event::poll(std::time::Duration::from_millis(300))? {
-            if let Event::Key(key) = event::read()? {
-                // Universal graceful quit on Ctrl+C
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
-                {
-                    break;
+            match event::read()? {
+                Event::Resize(_, _) => {
+                    let _ = terminal.clear();
+                    continue;
                 }
+                Event::Key(key) => {
+                    // Universal graceful quit on Ctrl+C
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('C'))
+                    {
+                        break;
+                    }
 
-                // 1. Handle Search Modal Input
-                if let ModalState::Search { ref mut input } = modal_state {
-                    match key.code {
-                        KeyCode::Esc => {
-                            modal_state = ModalState::None;
-                            log_message = if let Some(ref q) = search_query {
-                                format!("Search edit cancelled. Active filter: \"{}\"", q)
-                            } else {
-                                "Search cancelled.".to_string()
-                            };
-                            continue;
+                    // 1. Handle Search Modal Input
+                    if let ModalState::Search { ref mut input } = modal_state {
+                        match key.code {
+                            KeyCode::Esc => {
+                                modal_state = ModalState::None;
+                                log_message = if let Some(ref q) = search_query {
+                                    format!("Search edit cancelled. Active filter: \"{}\"", q)
+                                } else {
+                                    "Search cancelled.".to_string()
+                                };
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                let query = input.trim().to_string();
+                                if query.is_empty() {
+                                    search_query = None;
+                                    log_message = "Search filter cleared.".to_string();
+                                } else {
+                                    search_query = Some(query.clone());
+                                    log_message = format!("Filtering logs by \"{}\". Press [Esc] or [/] to clear.", query);
+                                }
+                                scroll_offset = 0;
+                                modal_state = ModalState::None;
+                                continue;
+                            }
+                            KeyCode::Backspace => {
+                                input.pop();
+                                continue;
+                            }
+                            KeyCode::Char(c) => {
+                                input.push(c);
+                                continue;
+                            }
+                            _ => {
+                                continue;
+                            }
                         }
-                        KeyCode::Enter => {
-                            let query = input.trim().to_string();
-                            if query.is_empty() {
+                    }
+
+                    // 2. Handle TagPicker Modal Input
+                    if let ModalState::TagPicker { ref tags, ref mut selected } = modal_state {
+                        match key.code {
+                            KeyCode::Esc => {
+                                modal_state = ModalState::None;
+                                log_message = "Tag selection cancelled.".to_string();
+                                continue;
+                            }
+                            KeyCode::Up => {
+                                if *selected > 0 {
+                                    *selected -= 1;
+                                }
+                                continue;
+                            }
+                            KeyCode::Down => {
+                                if *selected + 1 < tags.len() {
+                                    *selected += 1;
+                                }
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                let chosen_tag = tags[*selected].clone();
+                                modal_state = ModalState::None;
+                                if let Err(e) = git_driver.checkout_ref(&chosen_tag) {
+                                    log_message = format!("❌ Git checkout error: {}", e);
+                                } else {
+                                    log_message = if let Some(ref se) = sync_engine {
+                                        match se.hydrate_from_disk() {
+                                            Ok(n) => format!("🎉 Successfully restored {} documents from tag '{}'!", n, chosen_tag),
+                                            Err(err) => format!("❌ Restore error: {}", err),
+                                        }
+                                    } else {
+                                        "❌ Restore failed: no --site-id specified for this briefcase session.".to_string()
+                                    };
+                                }
+                                continue;
+                            }
+                            _ => {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // 2b. Handle SitePicker Modal Input
+                    if let ModalState::SitePicker { ref sites, ref mut selected } = modal_state {
+                        match key.code {
+                            KeyCode::Esc => {
+                                modal_state = ModalState::None;
+                                log_message = "Site selection cancelled.".to_string();
+                                continue;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if *selected > 0 {
+                                    *selected -= 1;
+                                }
+                                continue;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if *selected + 1 < sites.len() {
+                                    *selected += 1;
+                                }
+                                continue;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(site) = sites.get(*selected) {
+                                    let url = format!("http://{}:{}", site.host, site.port);
+                                    let _ = open::that(&url);
+                                    log_message = format!("Opened {} ({}) in default browser.", site.site_id, url);
+                                }
+                                modal_state = ModalState::None;
+                                continue;
+                            }
+                            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                                let idx = (c as usize) - ('1' as usize);
+                                if idx < sites.len() {
+                                    let site = &sites[idx];
+                                    let url = format!("http://{}:{}", site.host, site.port);
+                                    let _ = open::that(&url);
+                                    log_message = format!("Opened {} ({}) in default browser.", site.site_id, url);
+                                    modal_state = ModalState::None;
+                                    continue;
+                                }
+                            }
+                            _ => {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // 3. Normal View Hotkeys
+                    match key.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Esc => {
+                            if search_query.is_some() {
                                 search_query = None;
+                                scroll_offset = 0;
                                 log_message = "Search filter cleared.".to_string();
                             } else {
-                                search_query = Some(query.clone());
-                                log_message = format!("Filtering logs by \"{}\". Press [Esc] or [/] to clear.", query);
+                                break;
                             }
+                        }
+                        KeyCode::Char('/') => {
+                            modal_state = ModalState::Search {
+                                input: search_query.clone().unwrap_or_default(),
+                            };
+                        }
+                        // Scrolling Hotkeys
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        KeyCode::PageUp => {
+                            scroll_offset = scroll_offset.saturating_add(15);
+                        }
+                        KeyCode::PageDown => {
+                            scroll_offset = scroll_offset.saturating_sub(15);
+                        }
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            scroll_offset = usize::MAX / 2;
+                        }
+                        KeyCode::End | KeyCode::Char('G') => {
                             scroll_offset = 0;
-                            modal_state = ModalState::None;
-                            continue;
+                            log_message = "Jumped to latest logs (auto-follow enabled).".to_string();
                         }
-                        KeyCode::Backspace => {
-                            input.pop();
-                            continue;
+                        // Tab Switching (resets scroll offset for fresh view)
+                        KeyCode::Char('1') => {
+                            active_tab = LogTab::Cms;
+                            scroll_offset = 0;
                         }
-                        KeyCode::Char(c) => {
-                            input.push(c);
-                            continue;
+                        KeyCode::Char('2') => {
+                            active_tab = LogTab::Site;
+                            scroll_offset = 0;
                         }
-                        _ => {
-                            continue;
+                        KeyCode::Char('3') => {
+                            active_tab = LogTab::Git;
+                            scroll_offset = 0;
                         }
-                    }
-                }
+                        KeyCode::Tab => {
+                            active_tab = match active_tab {
+                                LogTab::Cms => LogTab::Site,
+                                LogTab::Site => LogTab::Git,
+                                LogTab::Git => LogTab::Cms,
+                            };
+                            scroll_offset = 0;
+                        }
+                        KeyCode::Char('o') => {
+                            let _ = open::that("http://localhost:8787/admin");
+                            log_message = "Opened SlottD Studio (http://localhost:8787/admin) in default browser.".to_string();
+                        }
+                        KeyCode::Char('w') => {
+                            let registered_sites = {
+                                let lock = site_registry.lock().unwrap();
+                                let mut list: Vec<slottd_briefcase::SiteRegistration> = lock.values().cloned().collect();
+                                list.sort_by(|a, b| a.site_id.cmp(&b.site_id));
+                                list
+                            };
 
-                // 2. Handle TagPicker Modal Input
-                if let ModalState::TagPicker { ref tags, ref mut selected } = modal_state {
-                    match key.code {
-                        KeyCode::Esc => {
-                            modal_state = ModalState::None;
-                            log_message = "Tag selection cancelled.".to_string();
-                            continue;
-                        }
-                        KeyCode::Up => {
-                            if *selected > 0 {
-                                *selected -= 1;
-                            }
-                            continue;
-                        }
-                        KeyCode::Down => {
-                            if *selected + 1 < tags.len() {
-                                *selected += 1;
-                            }
-                            continue;
-                        }
-                        KeyCode::Enter => {
-                            let chosen_tag = tags[*selected].clone();
-                            modal_state = ModalState::None;
-                            if let Err(e) = git_driver.checkout_ref(&chosen_tag) {
-                                log_message = format!("❌ Git checkout error: {}", e);
+                            if registered_sites.is_empty() {
+                                if let Some(ServiceStatus::Running { port, .. }) = site_status {
+                                    let url = format!("http://localhost:{}", port);
+                                    let _ = open::that(&url);
+                                    log_message = format!("Opened Astro Web Site ({}) in default browser.", url);
+                                } else {
+                                    log_message = "No active Astro site dev servers registered. Run 'npm run dev' in any site directory.".to_string();
+                                }
+                            } else if registered_sites.len() == 1 {
+                                let s = &registered_sites[0];
+                                let url = format!("http://{}:{}", s.host, s.port);
+                                let _ = open::that(&url);
+                                log_message = format!("Opened {} ({}) in default browser.", s.site_id, url);
                             } else {
-                                log_message = match sync_engine.hydrate_from_disk() {
-                                    Ok(n) => format!("🎉 Successfully restored {} documents from tag '{}'!", n, chosen_tag),
-                                    Err(err) => format!("❌ Restore error: {}", err),
+                                modal_state = ModalState::SitePicker {
+                                    sites: registered_sites,
+                                    selected: 0,
                                 };
+                                log_message = "Select an Astro site with Up/Down and press Enter to open in browser ([Esc] to cancel).".to_string();
                             }
-                            continue;
                         }
-                        _ => {}
-                    }
-                }
-
-                // 3. Normal View Hotkeys
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Esc => {
-                        if search_query.is_some() {
-                            search_query = None;
-                            scroll_offset = 0;
-                            log_message = "Search filter cleared.".to_string();
-                        } else {
-                            break;
+                        KeyCode::Char('z') => {
+                            full_log_mode = !full_log_mode;
+                            log_message = if full_log_mode {
+                                "Full height log mode enabled. Press [Z] to restore standard dashboard view.".to_string()
+                            } else {
+                                "Standard dashboard view restored.".to_string()
+                            };
                         }
-                    }
-                    KeyCode::Char('/') => {
-                        modal_state = ModalState::Search {
-                            input: search_query.clone().unwrap_or_default(),
-                        };
-                    }
-                    // Scrolling Hotkeys
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        scroll_offset = scroll_offset.saturating_add(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        scroll_offset = scroll_offset.saturating_sub(1);
-                    }
-                    KeyCode::PageUp => {
-                        scroll_offset = scroll_offset.saturating_add(15);
-                    }
-                    KeyCode::PageDown => {
-                        scroll_offset = scroll_offset.saturating_sub(15);
-                    }
-                    KeyCode::Home | KeyCode::Char('g') => {
-                        scroll_offset = usize::MAX / 2;
-                    }
-                    KeyCode::End | KeyCode::Char('G') => {
-                        scroll_offset = 0;
-                        log_message = "Jumped to latest logs (auto-follow enabled).".to_string();
-                    }
-                    // Tab Switching (resets scroll offset for fresh view)
-                    KeyCode::Char('1') => {
-                        active_tab = LogTab::Cms;
-                        scroll_offset = 0;
-                    }
-                    KeyCode::Char('2') => {
-                        active_tab = LogTab::Site;
-                        scroll_offset = 0;
-                    }
-                    KeyCode::Char('3') => {
-                        active_tab = LogTab::Git;
-                        scroll_offset = 0;
-                    }
-                    KeyCode::Tab => {
-                        active_tab = match active_tab {
-                            LogTab::Cms => LogTab::Site,
-                            LogTab::Site => LogTab::Git,
-                            LogTab::Git => LogTab::Cms,
-                        };
-                        scroll_offset = 0;
-                    }
-                    KeyCode::Char('o') => {
-                        let _ = open::that("http://localhost:8787/admin");
-                        log_message = "Opened SlottD Studio (http://localhost:8787/admin) in default browser.".to_string();
-                    }
-                    KeyCode::Char('w') => {
-                        let _ = open::that("http://localhost:4321");
-                        log_message = "Opened Astro Web Site (http://localhost:4321) in default browser.".to_string();
-                    }
-                    KeyCode::Char('z') => {
-                        full_log_mode = !full_log_mode;
-                        log_message = if full_log_mode {
-                            "Full height log mode enabled. Press [Z] to restore standard dashboard view.".to_string()
-                        } else {
-                            "Standard dashboard view restored.".to_string()
-                        };
-                    }
                     KeyCode::Char('e') => {
-                        log_message = match sync_engine.export_to_disk() {
-                            Ok(n) => format!("✅ Exported {} documents successfully to disk.", n),
-                            Err(err) => format!("❌ Export error: {}", err),
+                        log_message = if let Some(ref se) = sync_engine {
+                            match se.export_to_disk() {
+                                Ok(n) => format!("✅ Exported {} documents successfully to disk.", n),
+                                Err(err) => format!("❌ Export error: {}", err),
+                            }
+                        } else {
+                            "❌ Export failed: no --site-id specified for this briefcase session.".to_string()
                         };
                     }
                     KeyCode::Char('l') => {
@@ -891,9 +1014,13 @@ fn run_tui(
                             Ok(tags) => {
                                 if tags.is_empty() {
                                     // Fallback to direct restore from disk if no tags
-                                    log_message = match sync_engine.hydrate_from_disk() {
-                                        Ok(n) => format!("🎉 Restored {} documents directly from disk.", n),
-                                        Err(err) => format!("❌ Restore error: {}", err),
+                                    log_message = if let Some(ref se) = sync_engine {
+                                        match se.hydrate_from_disk() {
+                                            Ok(n) => format!("🎉 Restored {} documents directly from disk.", n),
+                                            Err(err) => format!("❌ Restore error: {}", err),
+                                        }
+                                    } else {
+                                        "❌ Restore failed: no --site-id specified for this briefcase session.".to_string()
                                     };
                                 } else {
                                     modal_state = ModalState::TagPicker { tags, selected: 0 };
@@ -930,8 +1057,10 @@ fn run_tui(
                     _ => {}
                 }
             }
+            _ => {}
         }
     }
+}
 
     // Clean exit: kill all background services (workerd, vite, node)
     supervisor.stop_all();

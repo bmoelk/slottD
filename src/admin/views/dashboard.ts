@@ -19,6 +19,7 @@ export function renderDashboardView(
   recentActivity: any[] = [],
   siteContext?: { activeSite?: string; availableSites?: string[] }
 ) {
+  const siteQuery = siteContext?.activeSite ? `?site=${encodeURIComponent(siteContext.activeSite)}` : '';
   return renderLayout('SlottD Studio', 'content', user, html`
     <div class="header">
       <div>
@@ -111,7 +112,7 @@ export function renderDashboardView(
             data-pack="${pack.toLowerCase()}"
             data-count="${col.count ?? 0}"
           >
-            <a href="/admin/content/${col.name}" class="collection-card">
+            <a href="/admin/content/${col.name}${siteQuery}" class="collection-card">
               <div class="col-card-header">
                 <div class="col-icon-box">${col.icon || '📁'}</div>
               </div>
@@ -128,8 +129,8 @@ export function renderDashboardView(
               </div>
             </a>
             <div class="col-card-footer">
-              <a href="/admin/content/${col.name}" class="btn-card-action">View ${col.count ?? 0} ${col.count === 1 ? 'Record' : 'Records'}</a>
-              <a href="/admin/content/${col.name}/+" class="btn-card-action btn-card-primary" title="Create new ${displayName}">+ New</a>
+              <a href="/admin/content/${col.name}${siteQuery}" class="btn-card-action">View ${col.count ?? 0} ${col.count === 1 ? 'Record' : 'Records'}</a>
+              <a href="/admin/content/${col.name}/+${siteQuery}" class="btn-card-action btn-card-primary" title="Create new ${displayName}">+ New</a>
             </div>
           </div>
         `;

@@ -60,8 +60,16 @@ export function renderTableView(
     });
   }
 
+  const activeSite = siteContext?.activeSite;
+  const siteQueryParam = activeSite ? `site_id=${encodeURIComponent(activeSite)}` : '';
+  const siteQuery = activeSite ? `?site_id=${encodeURIComponent(activeSite)}` : '';
+
   // Construct query parameters for the "+ New Record" link
   const newRecordParts: string[] = [];
+  if (activeSite) {
+    newRecordParts.push(`site_id=${encodeURIComponent(activeSite)}`);
+    newRecordParts.push(`site=${encodeURIComponent(activeSite)}`);
+  }
   if (activeScope) {
     newRecordParts.push(`${encodeURIComponent(activeScope.key)}=${encodeURIComponent(activeScope.value)}`);
   }
@@ -207,7 +215,8 @@ export function renderTableView(
                 orderField: this.orderField,
                 items: dirtyItems.map(i => ({ id: i.id, [this.orderField]: i.order }))
               };
-              const res = await fetch('/admin/content/' + this.collection + '/reorder', {
+              const reorderSiteQuery = window.currentActiveSite ? '?site_id=' + encodeURIComponent(window.currentActiveSite) : '';
+              const res = await fetch('/admin/content/' + this.collection + '/reorder' + reorderSiteQuery, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -238,10 +247,10 @@ export function renderTableView(
     <div x-data="${orderField ? 'tableReorderApp()' : '{}'}">
       <div class="header">
         <div class="breadcrumbs">
-          <a href="/admin">Collections</a>
+          <a href="/admin${siteQuery}">Collections</a>
           <span>/</span>
           ${activeScope ? html`
-            <a href="/admin/content/${collection}">${collection}</a>
+            <a href="/admin/content/${collection}${siteQuery}">${collection}</a>
             <span>/</span>
             <span class="current">${activeScope.label}</span>
           ` : html`
@@ -284,7 +293,7 @@ export function renderTableView(
           <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
             ${scopeFilterDef.values.map(v => html`
               <a
-                href="/admin/content/${collection}?${scopeFilterDef.key}=${encodeURIComponent(v.value)}&reorder=true"
+                href="/admin/content/${collection}?${siteQueryParam ? `${siteQueryParam}&` : ''}${scopeFilterDef.key}=${encodeURIComponent(v.value)}&reorder=true"
                 class="btn btn-secondary"
                 style="font-size: 12px; padding: 5px 12px; border-color: rgba(245, 158, 11, 0.4); color: #fde68a;"
               >
@@ -381,7 +390,7 @@ export function renderTableView(
           <span class="scope-filter-label">${scopeFilterDef.label}:</span>
           <div class="scope-pills">
             <a
-              href="/admin/content/${collection}"
+              href="/admin/content/${collection}${siteQuery}"
               class="scope-pill ${!activeScope ? 'active' : ''}"
             >
               All
@@ -391,7 +400,7 @@ export function renderTableView(
               const isActive = activeScope && activeScope.value.toLowerCase() === v.value.toLowerCase();
               return html`
                 <a
-                  href="/admin/content/${collection}?${scopeFilterDef.key}=${encodeURIComponent(v.value)}"
+                  href="/admin/content/${collection}?${siteQueryParam ? `${siteQueryParam}&` : ''}${scopeFilterDef.key}=${encodeURIComponent(v.value)}"
                   class="scope-pill ${isActive ? 'active' : ''}"
                 >
                   ${v.label}
@@ -418,7 +427,7 @@ export function renderTableView(
           ${sectionKey ? html`<span class="badge" style="background: rgba(99, 102, 241, 0.25); color: #c7d2fe; font-family: monospace; padding: 2px 8px; border-radius: 4px;">Section: ${sectionKey}</span>` : ''}
           <span style="color: var(--text-muted);">(${displayItems.length} of ${items.length} records)</span>
         </div>
-        <a href="/admin/content/${collection}" class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px; white-space: nowrap;">✕ Clear Filter (Show All)</a>
+        <a href="/admin/content/${collection}${siteQuery}" class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px; white-space: nowrap;">✕ Clear Filter (Show All)</a>
       </div>
     ` : ''}
 
@@ -519,7 +528,7 @@ export function renderTableView(
                   </div>
                 </td>
               ` : ''}
-              <td><strong><a href="/admin/content/${collection}/${item.id}">${item.title || '(Untitled)'}</a></strong></td>
+              <td><strong><a href="/admin/content/${collection}/${item.id}${siteQuery}">${item.title || '(Untitled)'}</a></strong></td>
               <td><code style="font-size: 12px; color: #cbd5e1;">${item.slug || '—'}</code></td>
               ${scopeFilterDef ? html`
                 <td>
@@ -542,7 +551,7 @@ export function renderTableView(
                 ${item.updated_at ? new Date(typeof item.updated_at === 'number' && item.updated_at < 1e12 ? item.updated_at * 1000 : item.updated_at).toLocaleDateString() : '—'}
               </td>
               <td style="text-align: right; white-space: nowrap;">
-                <a href="/admin/content/${collection}/${item.id}" class="btn-link">Edit</a>
+                <a href="/admin/content/${collection}/${item.id}${siteQuery}" class="btn-link">Edit</a>
                 <span class="action-divider">|</span>
                 <button type="button" class="btn-text text-danger" onclick="deleteSingleRecord('${collection}', '${item.id}', '${item.title || item.slug}')">Delete</button>
               </td>
@@ -575,8 +584,8 @@ export function renderTableView(
       let sortDirections = {};
       let highlightedRowIndex = -1;
       const currentCollection = ${raw(JSON.stringify(collection))};
-
-
+      const currentActiveSite = ${raw(JSON.stringify(activeSite || ''))};
+      window.currentActiveSite = currentActiveSite;
 
       function getVisibleRows() {
         const tbody = document.getElementById('itemsTableBody');
@@ -606,7 +615,7 @@ export function renderTableView(
 
         if ((e.key === 'n' || e.key === 'c') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
           e.preventDefault();
-          window.location.href = '/admin/content/' + currentCollection + '/new';
+          window.location.href = '/admin/content/' + currentCollection + '/new' + (currentActiveSite ? '?site_id=' + encodeURIComponent(currentActiveSite) : '');
           return;
         }
 
@@ -791,13 +800,14 @@ export function renderTableView(
         if (checked.length === 0) return;
 
         const ids = checked.map(c => c.value);
+        const itemSiteQuery = window.currentActiveSite ? '?site_id=' + encodeURIComponent(window.currentActiveSite) : '';
         try {
           await Promise.all(
             ids.map(id =>
-              fetch('/items/' + col + '/' + id, {
+              fetch('/items/' + col + '/' + id + itemSiteQuery, {
                 method: 'PATCH',
                 headers: getTableAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ status: targetStatus })
+                body: JSON.stringify({ status: targetStatus, site_id: window.currentActiveSite || undefined })
               })
             )
           );
@@ -815,10 +825,11 @@ export function renderTableView(
         if (!confirmed) return;
 
         const ids = checked.map(c => c.value);
+        const itemSiteQuery = window.currentActiveSite ? '?site_id=' + encodeURIComponent(window.currentActiveSite) : '';
         try {
           await Promise.all(
             ids.map(id =>
-              fetch('/items/' + col + '/' + id, { method: 'DELETE', headers: getTableAuthHeaders() })
+              fetch('/items/' + col + '/' + id + itemSiteQuery, { method: 'DELETE', headers: getTableAuthHeaders() })
             )
           );
           window.location.reload();
@@ -831,8 +842,9 @@ export function renderTableView(
         const confirmed = confirm('Are you sure you want to PERMANENTLY delete "' + title + '"? This cannot be undone.');
         if (!confirmed) return;
 
+        const itemSiteQuery = window.currentActiveSite ? '?site_id=' + encodeURIComponent(window.currentActiveSite) : '';
         try {
-          const res = await fetch('/items/' + col + '/' + id, { method: 'DELETE', headers: getTableAuthHeaders() });
+          const res = await fetch('/items/' + col + '/' + id + itemSiteQuery, { method: 'DELETE', headers: getTableAuthHeaders() });
           if (res.ok || res.status === 204) {
             const row = document.getElementById('row_' + id);
             if (row) row.remove();

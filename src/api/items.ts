@@ -248,8 +248,11 @@ itemsRouter.get('/:collection/:id', async (c) => {
 // 3. Create Item
 itemsRouter.post('/:collection', async (c) => {
   const collection = c.req.param('collection');
-  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const body = await c.req.json();
+  let siteId = body.site_id || c.req.query('site_id') || (c as any).get('siteId');
+  if (!siteId) {
+    siteId = await resolveSiteId(c);
+  }
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
 
@@ -433,8 +436,11 @@ itemsRouter.patch('/:collection', async (c) => {
 itemsRouter.patch('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
-  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
   const body = await c.req.json();
+  let siteId = body.site_id || c.req.query('site_id') || (c as any).get('siteId');
+  if (!siteId) {
+    siteId = await resolveSiteId(c);
+  }
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
 
@@ -617,7 +623,7 @@ itemsRouter.patch('/:collection/:id', async (c) => {
 itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
-  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+  const siteId = c.req.query('site_id') || (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
 
   const existing = await db
@@ -666,7 +672,7 @@ itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
 itemsRouter.delete('/:collection/:id', async (c) => {
   const collection = c.req.param('collection');
   const idOrSlug = c.req.param('id');
-  const siteId = (c as any).get('siteId') || (await resolveSiteId(c));
+  const siteId = c.req.query('site_id') || (c as any).get('siteId') || (await resolveSiteId(c));
   const db = createDb(c.env.DB);
   const user = await getAuthenticatedUser(c);
   const force = c.req.query('force') === 'true';
