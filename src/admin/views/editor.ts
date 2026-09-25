@@ -247,6 +247,11 @@ export function renderEditorView(
       if (trixEditor && trixEditor.editor) {
         try { trixEditor.editor.loadHTML(val); } catch (e) {}
       }
+
+      const splitPreview = document.getElementById(fieldName + '_split_draft_preview');
+      if (splitPreview) {
+        splitPreview.textContent = val;
+      }
     };
 
     // 3. Clean 2-Tab Mode Switcher: 'primary' (Active Configured Engine) <-> 'code' (Raw Textarea)
@@ -673,6 +678,105 @@ export function renderEditorView(
       window.updateDraftButtonState();
     }, 150);
 
+    // Live-Reference: Copy Published value into Working Draft field
+    window.copyLiveToDraft = function(fieldName) {
+      const publishedVal = publishedData[fieldName];
+      if (publishedVal === undefined) return;
+
+      const hidden = document.getElementById(fieldName + '_hidden');
+      if (hidden) hidden.value = typeof publishedVal === 'object' ? JSON.stringify(publishedVal, null, 2) : String(publishedVal);
+
+      const input = document.getElementById(fieldName) || document.querySelector('[name="' + fieldName + '"]');
+      if (input) {
+        input.value = typeof publishedVal === 'object' ? JSON.stringify(publishedVal, null, 2) : publishedVal;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      const mediaInput = document.getElementById(fieldName + '_input');
+      if (mediaInput) {
+        mediaInput.value = publishedVal;
+        if (typeof window.updateThumbnailPreview === 'function') {
+          window.updateThumbnailPreview(fieldName, publishedVal);
+        }
+      }
+
+      const mdTextarea = document.getElementById(fieldName + '_md_textarea');
+      if (mdTextarea) {
+        mdTextarea.value = String(publishedVal);
+        mdTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      const rawTextarea = document.getElementById(fieldName + '_raw_textarea');
+      if (rawTextarea) {
+        rawTextarea.value = String(publishedVal);
+        rawTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      if (pellEditors[fieldName] && pellEditors[fieldName].content) {
+        pellEditors[fieldName].content.innerHTML = String(publishedVal);
+        pellEditors[fieldName].content.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+
+      if (toastEditors[fieldName]) {
+        try { toastEditors[fieldName].setMarkdown(String(publishedVal)); } catch (e) {}
+      }
+
+      const trix = document.querySelector('trix-editor[input="' + fieldName + '_trix_input"]');
+      if (trix && trix.editor) {
+        try { trix.editor.loadHTML(String(publishedVal)); } catch (e) {}
+      }
+
+      const splitPreview = document.getElementById(fieldName + '_split_draft_preview');
+      if (splitPreview) {
+        splitPreview.textContent = String(publishedVal);
+      }
+
+      if (typeof window.updateDraftButtonState === 'function') {
+        window.updateDraftButtonState();
+      }
+    };
+
+    // Live-Reference: Toggle side-by-side comparison pane for rich text / markdown
+    window.toggleLiveSplit = function(fieldName) {
+      const splitWrapper = document.getElementById(fieldName + '_split_wrapper');
+      const splitBtn = document.getElementById(fieldName + '_split_btn');
+      if (!splitWrapper) return;
+
+      const isHidden = splitWrapper.style.display === 'none';
+      splitWrapper.style.display = isHidden ? 'grid' : 'none';
+      if (splitBtn) {
+        splitBtn.classList.toggle('active', isHidden);
+        splitBtn.style.background = isHidden ? '#451a03' : '';
+        splitBtn.style.borderColor = isHidden ? '#d97706' : '';
+        splitBtn.style.color = isHidden ? '#fb923c' : '';
+      }
+
+      if (isHidden) {
+        const hidden = document.getElementById(fieldName + '_hidden');
+        const splitPreview = document.getElementById(fieldName + '_split_draft_preview');
+        if (splitPreview && hidden) {
+          splitPreview.textContent = hidden.value || '(empty)';
+        }
+      }
+    };
+
+    // Promote Working Draft directly to Live Published State
+    window.promoteDraft = function() {
+      if (!editorForm) return;
+      isDraftSave = false;
+      const pubBtn = document.getElementById('publishBtn');
+      if (pubBtn) {
+        pubBtn.innerText = '🚀 Promoting to Live...';
+        pubBtn.disabled = true;
+      }
+      const bannerBtn = document.getElementById('promoteDraftBannerBtn');
+      if (bannerBtn) {
+        bannerBtn.innerText = '🚀 Promoting...';
+        bannerBtn.disabled = true;
+      }
+      editorForm.dispatchEvent(new Event('submit', { cancelable: true }));
+    };
+
     // Discard Working Draft
     window.discardWorkingDraft = async function() {
       const confirmed = confirm('Are you sure you want to discard all working draft changes for this document? This will revert the document to its published live state.');
@@ -1075,8 +1179,8 @@ export function renderEditorView(
       </div>
       <div class="actions" style="display: flex; align-items: center; gap: 8px;">
         <a href="/admin/content/${collection}${siteQuery}" class="btn btn-secondary">Cancel</a>
-        <button type="button" id="publishBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 4px;">
-          💾 Save
+        <button type="button" id="publishBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 4px; ${hasDraft ? 'background: #059669; border-color: #10b981;' : ''}">
+          ${hasDraft ? '🚀 Promote Draft to Live' : '💾 Save'}
         </button>
       </div>
     </div>
@@ -1124,6 +1228,16 @@ export function renderEditorView(
               </button>
             </div>
             <!-- All draft operations co-located here -->
+            <button
+              type="button"
+              id="promoteDraftBannerBtn"
+              class="btn"
+              style="background: #064e3b; border: 1px solid #059669; color: #34d399; font-weight: 700; font-size: 12px; padding: 5px 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; transition: all 0.15s ease;"
+              onclick="window.promoteDraft()"
+              title="Promote this working draft into live published content"
+            >
+              🚀 Promote to Live
+            </button>
             <button
               type="button"
               id="saveDraftBtn"
@@ -1174,6 +1288,12 @@ export function renderEditorView(
         <div class="form-group">
           <label for="title">${titleLabel} *</label>
           <input type="text" id="title" name="title" value="${activeData.title || doc.title || ''}" class="input-text" required placeholder="${titlePlaceholder}" />
+          ${hasDraft && publishedData.title && publishedData.title !== activeData.title ? html`
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div>Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${publishedData.title}</code></div>
+              <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('title')" title="Copy live published title into draft">⎘ Copy from Published</button>
+            </div>
+          ` : ''}
         </div>
 
         <div class="form-group">
@@ -1189,6 +1309,12 @@ export function renderEditorView(
             </div>
           </div>
           <input type="text" id="slug" name="slug" value="${activeData.slug || doc.slug || ''}" class="input-text" required placeholder="url-friendly-slug" style="font-family: monospace;" />
+          ${hasDraft && publishedData.slug && publishedData.slug !== activeData.slug ? html`
+            <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <div>Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${publishedData.slug}</code></div>
+              <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('slug')" title="Copy live published slug into draft">⎘ Copy from Published</button>
+            </div>
+          ` : ''}
         </div>
 
         <!-- Dynamic / Schema-Driven Custom Fields with Draft Intelligence -->
