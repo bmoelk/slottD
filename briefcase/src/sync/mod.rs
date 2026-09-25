@@ -133,6 +133,23 @@ impl SyncEngine {
             count += 1;
         }
 
+        // Export activity logs into .slottd/activity.jsonl
+        let activities = db.list_activities(filter_site).unwrap_or_default();
+        if !activities.is_empty() {
+            let slottd_dir = self.content_dir.join(".slottd");
+            if !slottd_dir.exists() {
+                let _ = fs::create_dir_all(&slottd_dir);
+            }
+            let activity_file = slottd_dir.join("activity.jsonl");
+            let mut lines = Vec::new();
+            for act in activities {
+                if let Ok(line) = serde_json::to_string(&act) {
+                    lines.push(line);
+                }
+            }
+            let _ = fs::write(&activity_file, format!("{}\n", lines.join("\n")));
+        }
+
         Ok(count)
     }
 
@@ -199,6 +216,145 @@ impl SyncEngine {
             }
         }
 
+        // Hydrate activity logs from .slottd/activity.jsonl if present
+        let activity_file = self.content_dir.join(".slottd").join("activity.jsonl");
+        if activity_file.exists() {
+            if let Ok(content) = fs::read_to_string(&activity_file) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        if let Ok(act) = serde_json::from_str::<crate::db::ActivityRecord>(trimmed) {
+                            let _ = db.insert_activity_if_not_exists(&act);
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    struct TempDirGuard(std::path::PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup_test_db(path: &std::path::Path) -> D1Database {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                site_id TEXT NOT NULL DEFAULT 'default',
+                collection TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                publish_at INTEGER,
+                data TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                draft_data TEXT,
+                draft_updated_at INTEGER,
+                draft_status TEXT NOT NULL DEFAULT 'none'
+            );
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id TEXT PRIMARY KEY,
+                site_id TEXT NOT NULL DEFAULT 'default',
+                timestamp INTEGER NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                collection TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                document_title TEXT,
+                details TEXT
+            );"
+        ).unwrap();
+        D1Database::open(path.to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_activity_log_export_and_hydrate() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "slottd-sync-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(12345)
+        ));
+        let _ = fs::create_dir_all(&temp_dir);
+        let _guard = TempDirGuard(temp_dir.clone());
+
+        let db_path = temp_dir.join("source.sqlite");
+        let content_dir = temp_dir.join("content");
+        let db = setup_test_db(&db_path);
+
+        // Insert a document
+        let doc = DocumentRecord {
+            id: "doc-1".to_string(),
+            site_id: "test.io".to_string(),
+            collection: "projects".to_string(),
+            slug: "slottd".to_string(),
+            title: "SlottD".to_string(),
+            status: "published".to_string(),
+            schema_version: 1,
+            publish_at: None,
+            data: "{\"name\":\"SlottD\"}".to_string(),
+            created_at: 1000,
+            updated_at: 1000,
+            draft_data: None,
+            draft_updated_at: None,
+            draft_status: "none".to_string(),
+        };
+        db.upsert_document(&doc).unwrap();
+
+        // Insert an activity record
+        let act = crate::db::ActivityRecord {
+            id: "act-1".to_string(),
+            site_id: "test.io".to_string(),
+            timestamp: 1000,
+            actor: "bmo@test.io".to_string(),
+            action: "create".to_string(),
+            collection: "projects".to_string(),
+            document_id: "doc-1".to_string(),
+            document_title: Some("SlottD".to_string()),
+            details: Some("{\"tag\":\"v1\"}".to_string()),
+        };
+        db.insert_activity_if_not_exists(&act).unwrap();
+
+        let sync_engine = SyncEngine::new(db_path.clone(), content_dir.clone(), Some("test.io".to_string())).unwrap();
+        let exported = sync_engine.export_to_disk().unwrap();
+        assert_eq!(exported, 1);
+
+        // Verify .slottd/activity.jsonl exists
+        let activity_file = content_dir.join(".slottd").join("activity.jsonl");
+        assert!(activity_file.exists());
+        let content = fs::read_to_string(&activity_file).unwrap();
+        assert!(content.contains("\"id\":\"act-1\""));
+        assert!(content.contains("\"actor\":\"bmo@test.io\""));
+
+        // Now test hydration into a fresh second database
+        let db_dest_path = temp_dir.join("dest.sqlite");
+        let db_dest = setup_test_db(&db_dest_path);
+
+        let dest_sync = SyncEngine::new(db_dest_path.clone(), content_dir.clone(), Some("test.io".to_string())).unwrap();
+        let hydrated = dest_sync.hydrate_from_disk().unwrap();
+        assert_eq!(hydrated, 1);
+
+        // Verify document and activity were restored into the second database
+        let dest_docs = db_dest.list_documents(Some("test.io")).unwrap();
+        assert_eq!(dest_docs.len(), 1);
+
+        let dest_activities = db_dest.list_activities(Some("test.io")).unwrap();
+        assert_eq!(dest_activities.len(), 1);
+        assert_eq!(dest_activities[0].id, "act-1");
+        assert_eq!(dest_activities[0].actor, "bmo@test.io");
+        assert_eq!(dest_activities[0].action, "create");
+    }
+}
+

@@ -7,9 +7,11 @@ let tableEnsured = false;
 export async function ensureActivityLogTable(db: Kysely<Database>): Promise<void> {
   if (tableEnsured) return;
   try {
-    const rawSql = `
+    const { sql } = await import('kysely');
+    await sql.raw(`
       CREATE TABLE IF NOT EXISTS activity_log (
         id TEXT PRIMARY KEY,
+        site_id TEXT NOT NULL DEFAULT 'default',
         timestamp INTEGER NOT NULL,
         actor TEXT NOT NULL,
         action TEXT NOT NULL,
@@ -17,10 +19,10 @@ export async function ensureActivityLogTable(db: Kysely<Database>): Promise<void
         document_id TEXT NOT NULL,
         document_title TEXT,
         details TEXT
-      );
-    `;
-    const { sql } = await import('kysely');
-    await sql.raw(rawSql).execute(db);
+      )
+    `).execute(db);
+    await sql.raw(`CREATE INDEX IF NOT EXISTS idx_activity_site ON activity_log(site_id)`).execute(db);
+    await sql.raw(`CREATE INDEX IF NOT EXISTS idx_activity_site_time ON activity_log(site_id, timestamp)`).execute(db);
     tableEnsured = true;
   } catch {
     tableEnsured = true;
@@ -30,7 +32,7 @@ export async function ensureActivityLogTable(db: Kysely<Database>): Promise<void
 export interface LogActivityParams {
   siteId?: string;
   actor?: string;
-  action: 'create' | 'update' | 'update_draft' | 'delete' | 'release_tag' | 'hydrate' | 'version_create' | 'version_promote' | string;
+  action: 'create' | 'update' | 'update_draft' | 'delete' | 'release_tag' | 'git_release' | 'hydrate' | 'version_create' | 'version_promote' | string;
   collection: string;
   documentId: string;
   documentTitle?: string | null;
@@ -46,7 +48,7 @@ export async function logActivity(
     const id = crypto.randomUUID();
     const timestamp = Date.now();
     const actor = params.actor || 'admin@localhost';
-    const site_id = params.siteId || 'default';
+    const site_id = (params.siteId || 'default').toLowerCase().trim();
     const detailsStr = params.details
       ? typeof params.details === 'string'
         ? params.details
@@ -70,4 +72,60 @@ export async function logActivity(
   } catch (err: any) {
     console.warn('Activity log write error (non-fatal):', err.message);
   }
+}
+
+export interface UnreleasedActivityResult {
+  activities: ActivityLogRow[];
+  lastReleaseTimestamp: number;
+  lastReleaseTag?: string;
+  lastReleaseSha?: string;
+}
+
+export async function getUnreleasedActivity(
+  db: Kysely<Database>,
+  siteId: string
+): Promise<UnreleasedActivityResult> {
+  await ensureActivityLogTable(db);
+  const cleanSiteId = (siteId || 'default').toLowerCase().trim();
+
+  let lastRelease: any = null;
+  try {
+    lastRelease = await db
+      .selectFrom('activity_log')
+      .where('site_id', '=', cleanSiteId)
+      .where('action', '=', 'git_release')
+      .selectAll()
+      .orderBy('timestamp', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+  } catch {}
+
+  const lastReleaseTimestamp = lastRelease ? Number(lastRelease.timestamp) : 0;
+  let lastReleaseDetails: any = null;
+  if (lastRelease?.details) {
+    try {
+      lastReleaseDetails = typeof lastRelease.details === 'string' ? JSON.parse(lastRelease.details) : lastRelease.details;
+    } catch {}
+  }
+
+  const lastReleaseTag = lastReleaseDetails?.tag || lastRelease?.document_id || undefined;
+  const lastReleaseSha = lastReleaseDetails?.commitSha || undefined;
+
+  let activities: ActivityLogRow[] = [];
+  try {
+    activities = await db
+      .selectFrom('activity_log')
+      .where('site_id', '=', cleanSiteId)
+      .where('timestamp', '>', lastReleaseTimestamp)
+      .selectAll()
+      .orderBy('timestamp', 'asc')
+      .execute();
+  } catch {}
+
+  return {
+    activities,
+    lastReleaseTimestamp,
+    lastReleaseTag,
+    lastReleaseSha,
+  };
 }

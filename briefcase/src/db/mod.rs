@@ -20,6 +20,21 @@ pub struct DocumentRecord {
     pub draft_status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityRecord {
+    pub id: String,
+    pub site_id: String,
+    pub timestamp: i64,
+    pub actor: String,
+    pub action: String,
+    pub collection: String,
+    pub document_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+}
+
 pub struct D1Database {
     conn: Connection,
 }
@@ -241,4 +256,97 @@ impl D1Database {
 
         Ok((doc_count, col_count))
     }
+
+    /// Ensures activity_log table exists with multi-tenant site_id index.
+    pub fn ensure_activity_log_table(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS activity_log (
+                id TEXT PRIMARY KEY,
+                site_id TEXT NOT NULL DEFAULT 'default',
+                timestamp INTEGER NOT NULL,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                collection TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                document_title TEXT,
+                details TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_activity_site ON activity_log(site_id);
+            CREATE INDEX IF NOT EXISTS idx_activity_site_time ON activity_log(site_id, timestamp);"
+        )?;
+        Ok(())
+    }
+
+    /// Fetches all activity records, optionally scoped to a site_id.
+    pub fn list_activities(&self, site_id: Option<&str>) -> Result<Vec<ActivityRecord>> {
+        let _ = self.ensure_activity_log_table();
+        let mut activities = Vec::new();
+        if let Some(site) = site_id {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, site_id, timestamp, actor, action, collection, document_id, document_title, details
+                 FROM activity_log WHERE site_id = ?1 ORDER BY timestamp ASC"
+            )?;
+            let iter = stmt.query_map([site], |row| {
+                Ok(ActivityRecord {
+                    id: row.get(0)?,
+                    site_id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    actor: row.get(3)?,
+                    action: row.get(4)?,
+                    collection: row.get(5)?,
+                    document_id: row.get(6)?,
+                    document_title: row.get(7)?,
+                    details: row.get(8)?,
+                })
+            })?;
+            for act in iter {
+                activities.push(act?);
+            }
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, site_id, timestamp, actor, action, collection, document_id, document_title, details
+                 FROM activity_log ORDER BY timestamp ASC"
+            )?;
+            let iter = stmt.query_map([], |row| {
+                Ok(ActivityRecord {
+                    id: row.get(0)?,
+                    site_id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    actor: row.get(3)?,
+                    action: row.get(4)?,
+                    collection: row.get(5)?,
+                    document_id: row.get(6)?,
+                    document_title: row.get(7)?,
+                    details: row.get(8)?,
+                })
+            })?;
+            for act in iter {
+                activities.push(act?);
+            }
+        }
+        Ok(activities)
+    }
+
+    /// Inserts an activity log record if it does not already exist.
+    pub fn insert_activity_if_not_exists(&self, act: &ActivityRecord) -> Result<bool> {
+        let _ = self.ensure_activity_log_table();
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO activity_log (
+                id, site_id, timestamp, actor, action, collection, document_id, document_title, details
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                act.id,
+                act.site_id,
+                act.timestamp,
+                act.actor,
+                act.action,
+                act.collection,
+                act.document_id,
+                act.document_title,
+                act.details,
+            ],
+        )?;
+        Ok(changed > 0)
+    }
 }
+
