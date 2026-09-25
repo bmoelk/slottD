@@ -316,7 +316,7 @@ fn main() -> Result<()> {
 
                 if effective_content_path.join(".git").exists() {
                     println!("🚀 Committing, tagging, and pushing directly in local repository: {:?}...", effective_content_path);
-                    let commit_sha = git.release_direct(&db_path, &release_tag, commit_message, push)?;
+                    let commit_sha = git.release_direct(&db_path, &release_tag, commit_message, push, false)?;
                     println!("✅ Successfully released! Commit SHA: {}", commit_sha);
                 } else {
                     println!("🚀 Committing, tagging, and pushing via isolated temp clone...");
@@ -1124,6 +1124,7 @@ fn run_tui(
                                 &release_tag,
                                 &format!("chore(content): release {}", release_tag),
                                 true,
+                                false,
                             ) {
                                 Ok(sha) => {
                                     let msg = format!("🚀 Released and pushed directly in local repo ({:?})! Commit: {} (Tag: {})", git_driver.repo_path(), sha, release_tag);

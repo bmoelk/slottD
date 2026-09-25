@@ -33,6 +33,8 @@ export interface GitDriver {
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
+    force?: boolean;
+    useLocal?: boolean;
     author?: { name: string; email: string };
   }): Promise<GitReleaseResult>;
 }

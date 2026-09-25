@@ -307,6 +307,26 @@ impl GitDriver {
             .output()?;
         let commit_sha = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
 
+        if let Ok(db) = crate::db::D1Database::open(db_path.to_str().unwrap()) {
+            let act = crate::db::ActivityRecord {
+                id: format!("act_{}", chrono::Utc::now().timestamp_millis()),
+                site_id: site_id.to_string(),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                actor: "briefcase@localhost".to_string(),
+                action: "git_release".to_string(),
+                collection: "_git".to_string(),
+                document_id: tag.to_string(),
+                document_title: Some(format!("Release {}", tag)),
+                details: Some(json!({
+                    "tag": tag,
+                    "commitSha": commit_sha,
+                    "branch": self.branch,
+                    "pushed": push,
+                }).to_string()),
+            };
+            let _ = db.insert_activity_if_not_exists(&act);
+        }
+
         Ok(commit_sha)
     }
 
@@ -319,6 +339,7 @@ impl GitDriver {
         tag: &str,
         message: &str,
         push: bool,
+        force: bool,
     ) -> Result<String> {
         let site_id = self.site_id.as_ref()
             .map(|s| s.trim())
@@ -329,6 +350,71 @@ impl GitDriver {
 
         if !self.repo_path.join(".git").exists() {
             anyhow::bail!("Declared repository path '{}' is not a valid git repository (.git directory missing).", repo_str);
+        }
+
+        // 0. Pre-Release Upstream Drift Detection
+        if push {
+            let fetch_out = Command::new("git")
+                .args(["-C", repo_str, "fetch", "origin", &self.branch])
+                .output();
+            if let Ok(f) = fetch_out {
+                if f.status.success() {
+                    let rev_out = Command::new("git")
+                        .args(["-C", repo_str, "rev-list", "--count", &format!("HEAD..origin/{}", self.branch)])
+                        .output();
+                    if let Ok(r) = rev_out {
+                        let behind_count = String::from_utf8_lossy(&r.stdout)
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap_or(0);
+                        if behind_count > 0 {
+                            let diff_out = Command::new("git")
+                                .args(["-C", repo_str, "diff", "--name-only", &format!("HEAD..origin/{}", self.branch)])
+                                .output();
+                            let diff_files = if let Ok(d) = diff_out {
+                                String::from_utf8_lossy(&d.stdout)
+                                    .lines()
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect::<Vec<String>>()
+                            } else {
+                                Vec::new()
+                            };
+
+                            let content_prefix = if self.content_subpath.is_empty() {
+                                ""
+                            } else {
+                                self.content_subpath.as_str()
+                            };
+
+                            let conflicting_files: Vec<String> = diff_files
+                                .iter()
+                                .filter(|f| {
+                                    let matches_subpath = content_prefix.is_empty() || f.starts_with(content_prefix);
+                                    let is_content = f.ends_with(".json") || f.ends_with(".md");
+                                    matches_subpath && is_content
+                                })
+                                .cloned()
+                                .collect();
+
+                            if !conflicting_files.is_empty() && !force {
+                                anyhow::bail!(
+                                    "UPSTREAM_CONFLICT: Upstream changes detected in {} conflicting document(s): {:?}",
+                                    conflicting_files.len(),
+                                    conflicting_files
+                                );
+                            }
+
+                            if conflicting_files.is_empty() {
+                                // Disjoint changes: auto fast-forward
+                                let _ = Command::new("git")
+                                    .args(["-C", repo_str, "merge", "--ff-only", &format!("origin/{}", self.branch)])
+                                    .output();
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // 1. Export documents directly into the configured content directory
@@ -379,8 +465,13 @@ impl GitDriver {
         // 6. Push commit and tag to remote
         if push {
             let tag_ref = format!("refs/tags/{}", tag);
+            let mut push_args = vec!["-C", repo_str, "push"];
+            if force {
+                push_args.push("--force-with-lease");
+            }
+            push_args.extend(["origin", &self.branch, &tag_ref]);
             let push_res = Command::new("git")
-                .args(["-C", repo_str, "push", "origin", &self.branch, &tag_ref])
+                .args(&push_args)
                 .output()
                 .context("Failed to push commit and tag from local repository")?;
             if !push_res.status.success() {
@@ -392,6 +483,26 @@ impl GitDriver {
             .args(["-C", repo_str, "rev-parse", "--short", "HEAD"])
             .output()?;
         let commit_sha = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
+
+        if let Ok(db) = crate::db::D1Database::open(db_path.to_str().unwrap()) {
+            let act = crate::db::ActivityRecord {
+                id: format!("act_{}", chrono::Utc::now().timestamp_millis()),
+                site_id: site_id.to_string(),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                actor: "briefcase@localhost".to_string(),
+                action: "git_release".to_string(),
+                collection: "_git".to_string(),
+                document_id: tag.to_string(),
+                document_title: Some(format!("Release {}", tag)),
+                details: Some(json!({
+                    "tag": tag,
+                    "commitSha": commit_sha,
+                    "branch": self.branch,
+                    "pushed": push,
+                }).to_string()),
+            };
+            let _ = db.insert_activity_if_not_exists(&act);
+        }
 
         Ok(commit_sha)
     }
@@ -925,7 +1036,7 @@ mod tests {
             .with_content_subpath("content".to_string())
             .with_site_id(Some("test-site".to_string()));
 
-        let release_res = driver.release_direct(&db_file, "release-direct-v1", "release directly", true);
+        let release_res = driver.release_direct(&db_file, "release-direct-v1", "release directly", true, false);
         assert!(release_res.is_ok(), "release_direct failed: {:?}", release_res.err());
 
         // 5. Verify local working tree has the exported file directly

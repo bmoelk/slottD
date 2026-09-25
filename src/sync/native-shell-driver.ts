@@ -95,6 +95,8 @@ export class NativeShellGitDriver implements GitDriver {
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
+    force?: boolean;
+    useLocal?: boolean;
     author?: { name: string; email: string };
   }): Promise<GitReleaseResult> {
     let bridgeRes: Response;
@@ -110,6 +112,8 @@ export class NativeShellGitDriver implements GitDriver {
           tag: options.tag,
           message: options.message,
           push: options.push !== false,
+          force: options.force === true || options.useLocal === true,
+          useLocal: options.useLocal === true,
           siteId: this.siteId,
         }),
         signal: AbortSignal.timeout(30000),
@@ -132,6 +136,15 @@ export class NativeShellGitDriver implements GitDriver {
     }
 
     const errJson: any = await bridgeRes.json().catch(() => ({}));
+    if (bridgeRes.status === 409 || errJson.conflict) {
+      const conflictErr: any = new Error(errJson.message || 'Upstream conflict detected');
+      conflictErr.status = 409;
+      conflictErr.conflict = true;
+      conflictErr.conflictingFiles = errJson.conflictingFiles || [];
+      conflictErr.remoteCommits = errJson.remoteCommits;
+      throw conflictErr;
+    }
+
     throw new Error(
       errJson.error || errJson.message || `Git Bridge release failed with HTTP ${bridgeRes.status} ${bridgeRes.statusText}`
     );

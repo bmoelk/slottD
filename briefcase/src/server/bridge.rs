@@ -273,6 +273,9 @@ Connection: close\r\n\
             git = git.with_remote(req_url);
         }
 
+        let force = parsed.get("force").and_then(|v| v.as_bool()).unwrap_or(false)
+            || parsed.get("useLocal").and_then(|v| v.as_bool()).unwrap_or(false);
+
         let has_local_git = target_repo.join(".git").exists();
         let release_result = if has_local_git {
             log_msg(
@@ -280,7 +283,7 @@ Connection: close\r\n\
                 secondary,
                 format!("📂 [Git Bridge] Releasing directly in local repository: {:?}", target_repo),
             );
-            git.release_direct(db_path, &tag, &message, push)
+            git.release_direct(db_path, &tag, &message, push, force)
         } else {
             log_msg(
                 logs,
@@ -324,14 +327,18 @@ Connection: close\r\n\
                 return Ok(());
             }
             Err(e) => {
+                let err_str = e.to_string();
+                let is_conflict = err_str.contains("UPSTREAM_CONFLICT");
+                let status_code = if is_conflict { 409 } else { 500 };
                 let err_msg = format!("Failed to create release: {}", e);
                 log_msg(logs, secondary, format!("❌ [Git Bridge] {}", err_msg));
                 let resp = json!({
                     "success": false,
+                    "conflict": is_conflict,
                     "error": err_msg,
-                    "message": e.to_string(),
+                    "message": err_str,
                 });
-                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+                send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
                 return Ok(());
             }
         }
