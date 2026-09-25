@@ -182,12 +182,17 @@ export async function getSiteContext(c: any, db: any) {
     } catch {}
   }
 
-  if (availableSites.length > 0 && (!activeSite || !availableSites.includes(activeSite))) {
+  if (activeSite) {
+    activeSite = normalizeSiteId(activeSite);
+    if (!availableSites.includes(activeSite)) {
+      availableSites.push(activeSite);
+    }
+  } else if (availableSites.length > 0) {
     activeSite = availableSites[0];
-  } else if (availableSites.length === 0) {
-    availableSites = activeSite ? [activeSite] : [];
+  } else {
+    activeSite = 'default';
+    availableSites = ['default'];
   }
-  activeSite = activeSite || (availableSites[0] ?? '');
   activeFavicon = siteFavicons[activeSite];
 
   return { activeSite, availableSites, activeFavicon, siteFavicons };
@@ -1100,8 +1105,11 @@ adminRouter.get('/git', async (c) => {
 // ── 10. Fetch Remote Tags (/admin/git/fetch) ──────────────────────────────────
 adminRouter.post('/git/fetch', async (c) => {
   const db = createDb(c.env.DB);
+  const requestedSite = (c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const repoInfo = await resolveDeploymentRepo(c.env, siteContext.activeSite);
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   if (!repoInfo.hasRemote) {
     return c.json(
@@ -1123,7 +1131,7 @@ adminRouter.post('/git/fetch', async (c) => {
       isMonorepo: repoInfo.isMonorepo,
       contentPath: repoInfo.contentPath,
       gitTopLevel: repoInfo.gitTopLevel,
-      siteId: siteContext.activeSite,
+      siteId: activeSite,
     });
 
     const tags = await driver.listTags();
@@ -1151,8 +1159,10 @@ adminRouter.post('/git/release', async (c) => {
   const tag = (body.tag as string) || `release-${Date.now()}`;
   const message = (body.message as string) || `chore(content): release snapshot ${tag}`;
 
+  const requestedSite = (body.siteId || body.site_id || c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   try {
@@ -1262,11 +1272,13 @@ adminRouter.post('/git/release', async (c) => {
 // ── 11.5. Setup / Adopt Local Repository (/admin/git/setup-repo) ──────────────
 adminRouter.post('/git/setup-repo', async (c) => {
   const db = createDb(c.env.DB);
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const requestedSite = (body.siteId || body.site_id || c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
-  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const repoPath = body.repoPath?.trim();
   const remoteUrl = body.remoteUrl?.trim() || repoInfo.remoteUrl;
   const branch = body.branch?.trim() || repoInfo.branch || 'main';
@@ -1311,8 +1323,10 @@ adminRouter.post('/git/diff', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
+  const requestedSite = (body.siteId || body.site_id || c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   if (!tag) {
@@ -1372,8 +1386,10 @@ adminRouter.post('/git/load', async (c) => {
   const db = createDb(c.env.DB);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
   const tag = body.tag as string;
+  const requestedSite = (body.siteId || body.site_id || c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
 
   if (!tag) {
@@ -1413,8 +1429,10 @@ adminRouter.post('/git/load', async (c) => {
 // ── 14. Direct ZIP Archive Export (/admin/git/export-zip) ──────────────────────
 adminRouter.get('/git/export-zip', async (c) => {
   const db = createDb(c.env.DB);
+  const requestedSite = (c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const items = await exportToGitFormat(db, undefined, activeSite);
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
   const contentPath = repoInfo.contentPath !== undefined ? repoInfo.contentPath : '';
@@ -1436,8 +1454,10 @@ adminRouter.get('/git/export-zip', async (c) => {
 // ── 15. Direct JSON Backup Download (/admin/git/backup) ───────────────────────
 adminRouter.get('/git/backup', async (c) => {
   const db = createDb(c.env.DB);
+  const requestedSite = (c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
   const siteContext = await getSiteContext(c, db);
-  const activeSite = siteContext.activeSite;
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const docs = await db.selectFrom('documents').where('site_id', '=', activeSite).selectAll().execute();
   const media = await db.selectFrom('media').where('site_id', '=', activeSite).selectAll().execute();
 
@@ -1477,13 +1497,12 @@ adminRouter.get('/docs', async (c) => {
   return c.html(renderDocsView(user, siteContext));
 });
 
-adminRouter.get('/help', (c) => c.redirect('/admin/docs'));
-
 // ── 17. Multi-Website Management (/admin/sites) ──────────────────────────────
 adminRouter.get('/sites/switch', async (c) => {
-  const targetSite = normalizeSiteId(c.req.query('site_id') || 'default');
+  const targetSite = normalizeSiteId(c.req.query('site_id') || c.req.query('siteId') || 'default');
   const redirect = (c.req.query('redirect') || '/admin').trim();
-  c.header('Set-Cookie', `slottd_site=${targetSite}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  c.header('Set-Cookie', `slottd_active_site=${targetSite}; Path=/; SameSite=Lax; Max-Age=2592000`);
+  c.header('Set-Cookie', `slottd_site=${targetSite}; Path=/; SameSite=Lax; Max-Age=2592000`, { append: true });
   return c.redirect(redirect, 302);
 });
 
@@ -1579,6 +1598,7 @@ adminRouter.post('/sites/rename', async (c) => {
     const activeSite = c.get('siteId') || (await resolveSiteId(c));
     if (activeSite === oldSiteId.toLowerCase()) {
       c.header('Set-Cookie', `slottd_active_site=${encodeURIComponent(newSiteId.toLowerCase())}; Path=/; Max-Age=31536000`);
+      c.header('Set-Cookie', `slottd_site=${encodeURIComponent(newSiteId.toLowerCase())}; Path=/; Max-Age=31536000`, { append: true });
     }
     return c.redirect('/admin/sites?renamed=1');
   } catch (err: any) {

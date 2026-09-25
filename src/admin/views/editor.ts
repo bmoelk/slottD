@@ -536,7 +536,7 @@ export function renderEditorView(
 
             if (isBypassable && !payload.force) {
               const warningMsg = (parsedErr && parsedErr.message) || (parsedErr && parsedErr.errors && parsedErr.errors[0] && parsedErr.errors[0].message) || 'Validation constraint encountered.';
-              if (confirm('Validation Constraint Encountered:\n\n' + warningMsg + '\n\nThis check is bypassable. Would you like to force save and override this check?')) {
+              if (confirm('Validation Constraint Encountered:\\n\\n' + warningMsg + '\\n\\nThis check is bypassable. Would you like to force save and override this check?')) {
                 payload.force = true;
                 if (forceCheckbox) forceCheckbox.checked = true;
                 const retryQueryParam = itemSiteQuery ? (itemSiteQuery + '&force=true') : '?force=true';

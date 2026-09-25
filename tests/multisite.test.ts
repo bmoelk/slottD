@@ -97,10 +97,10 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       } as any);
       expect(site5).toBe('cookie-site.com'); // Fell through to cookie because header was ignored
 
-      // 6. Cookie precedence over host
+      // 6. Cookie precedence: slottd_active_site takes precedence over slottd_site
       const req6 = new Request('http://host-domain.com/items/posts', {
         headers: {
-          cookie: 'slottd_site=cookie-site.com',
+          cookie: 'slottd_site=stale-cookie.com; slottd_active_site=fresh-active.com',
         },
       });
       const site6 = await resolveSiteId({
@@ -112,7 +112,44 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
         },
         env: {},
       } as any);
-      expect(site6).toBe('cookie-site.com');
+      expect(site6).toBe('fresh-active.com');
+
+      // 6.1. Explicit c.get('siteId') takes highest precedence
+      const siteContextExplicit = await resolveSiteId({
+        get: (k: string) => (k === 'siteId' ? 'explicit-context.com' : null),
+        req: {
+          header: () => 'slottd_active_site=cookie.com',
+          query: () => 'query.com',
+          raw: req6,
+        },
+        env: {},
+      } as any);
+      expect(siteContextExplicit).toBe('explicit-context.com');
+
+      // 6.2. Query parameter aliases (?siteId= and ?site=)
+      const reqAlias1 = new Request('http://host-domain.com/items/posts?siteId=alias-site-1.com');
+      const siteAlias1 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: () => null,
+          query: (k: string) => new URL(reqAlias1.url).searchParams.get(k),
+          raw: reqAlias1,
+        },
+        env: {},
+      } as any);
+      expect(siteAlias1).toBe('alias-site-1.com');
+
+      const reqAlias2 = new Request('http://host-domain.com/items/posts?site=alias-site-2.com');
+      const siteAlias2 = await resolveSiteId({
+        get: () => null,
+        req: {
+          header: () => null,
+          query: (k: string) => new URL(reqAlias2.url).searchParams.get(k),
+          raw: reqAlias2,
+        },
+        env: {},
+      } as any);
+      expect(siteAlias2).toBe('alias-site-2.com');
 
       // 7. Fallback to DEFAULT_SITE_ID env variable
       const req7 = new Request('http://localhost:8787/items/posts');
@@ -419,6 +456,68 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(executed.some((s) => s.includes('DELETE FROM system_site_settings'))).toBe(true);
       expect(executed.some((s) => s.includes('DELETE FROM "documents" WHERE site_id = \'obsolete.dev\''))).toBe(true);
       expect(executed.some((s) => s.includes('DELETE FROM "media" WHERE site_id = \'obsolete.dev\''))).toBe(true);
+    });
+  });
+
+  describe('getSiteContext & Git Pipeline Site Resolution Guardrails', () => {
+    it('preserves explicitly requested site without clobbering to availableSites[0]', async () => {
+      const { getSiteContext } = await import('../src/admin/index.js');
+      const mockD1: any = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({
+            // Mock sites returning only drawdown.pro
+            results: [{ site_id: 'drawdown.pro', key: 'git_remote_url', value: 'https://github.com/drawdown' }],
+            meta: {},
+          }),
+          first: vi.fn().mockResolvedValue(null),
+          raw: vi.fn().mockResolvedValue([]),
+        })),
+      };
+      const db = createDb(mockD1);
+
+      // Context explicitly has siteId = 'brainendeavor.com' (even though D1 listSites only returned drawdown.pro)
+      const mockCtx: any = {
+        get: (k: string) => (k === 'siteId' ? 'brainendeavor.com' : null),
+        req: {
+          header: () => null,
+          query: () => null,
+          raw: new Request('http://localhost:8787/admin/git'),
+        },
+      };
+
+      const ctx = await getSiteContext(mockCtx, db);
+      expect(ctx.activeSite).toBe('brainendeavor.com');
+      expect(ctx.availableSites).toContain('brainendeavor.com');
+      expect(ctx.availableSites).toContain('drawdown.pro');
+    });
+
+    it('falls back to availableSites[0] only when activeSite is completely empty', async () => {
+      const { getSiteContext } = await import('../src/admin/index.js');
+      const mockD1: any = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({
+            results: [{ site_id: 'drawdown.pro', key: 'git_remote_url', value: 'https://github.com/drawdown' }],
+            meta: {},
+          }),
+          first: vi.fn().mockResolvedValue(null),
+          raw: vi.fn().mockResolvedValue([]),
+        })),
+      };
+      const db = createDb(mockD1);
+
+      const mockCtx: any = {
+        get: () => null,
+        req: {
+          header: () => null,
+          query: () => null,
+          raw: new Request('http://localhost:8787/admin/git'),
+        },
+      };
+
+      const ctx = await getSiteContext(mockCtx, db);
+      expect(ctx.activeSite).toBe('drawdown.pro');
     });
   });
 });

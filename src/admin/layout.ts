@@ -48,12 +48,14 @@ export function renderLayout(
       </style>
       <script>
         window.switchSite = function(newSite) {
+          const cleanSite = decodeURIComponent(newSite || '').trim();
           try {
-            sessionStorage.setItem('slottd_tab_site', newSite);
+            sessionStorage.setItem('slottd_tab_site', cleanSite);
           } catch(e) {}
-          document.cookie = 'slottd_active_site=' + encodeURIComponent(newSite) + '; path=/; max-age=31536000';
+          document.cookie = 'slottd_active_site=' + encodeURIComponent(cleanSite) + '; path=/; max-age=31536000';
+          document.cookie = 'slottd_site=' + encodeURIComponent(cleanSite) + '; path=/; max-age=31536000';
           const url = new URL(window.location.href);
-          url.searchParams.set('site_id', newSite);
+          url.searchParams.set('site_id', cleanSite);
           url.searchParams.delete('site');
 
           // If on an editor path (/admin/content/:collection/:id), switching sites routes to collection root
@@ -98,7 +100,7 @@ export function renderLayout(
           </a>
           <div class="site-switcher" style="display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.06); padding: 3px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14);" title="Active Website Context">
             ${renderFavicon(siteContext?.activeSite || '', 14, siteContext?.activeFavicon)}
-            <select onchange="window.switchSite ? window.switchSite(this.value) : (document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000', window.location.reload())" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
+            <select onchange="window.switchSite ? window.switchSite(this.value) : (document.cookie='slottd_active_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000', document.cookie='slottd_site='+encodeURIComponent(this.value)+'; path=/; max-age=31536000', window.location.reload())" style="background: transparent; color: #38bdf8; border: none; font-size: 12px; font-weight: 600; cursor: pointer; outline: none;">
               ${(siteContext?.availableSites && siteContext.availableSites.length > 0 ? siteContext.availableSites : [siteContext?.activeSite || 'default']).map(s => html`<option value="${s}" ${s === (siteContext?.activeSite || 'default') ? 'selected' : ''} style="background: #1e293b; color: #f8fafc;">${s}</option>`)}
             </select>
           </div>

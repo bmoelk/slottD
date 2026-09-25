@@ -98,16 +98,14 @@ export async function syncCollectionView(
     'updated_at',
   ].join(',\n    ');
 
-  const viewSql = `
-    DROP VIEW IF EXISTS "${collection}";
+  await sql.raw(`DROP VIEW IF EXISTS "${collection}"`).execute(db);
+  await sql.raw(`
     CREATE VIEW "${collection}" AS
     SELECT 
       ${selectColumns}
     FROM documents
-    WHERE collection = '${collection}';
-  `;
-
-  await sql.raw(viewSql).execute(db);
+    WHERE collection = '${collection}'
+  `).execute(db);
 }
 
 /**

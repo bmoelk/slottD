@@ -37,6 +37,14 @@ function getCookie(header: string | undefined, name: string): string | null {
  * Resolves the active site identifier for the incoming request using a rigid priority hierarchy.
  */
 export async function resolveSiteId(c: Context<any>): Promise<string> {
+  // 0. Explicit Context Site ID (set by route handlers via c.set('siteId', ...))
+  if (typeof (c as any)?.get === 'function') {
+    const explicit = (c as any).get('siteId');
+    if (explicit && typeof explicit === 'string' && explicit.trim()) {
+      return normalizeSiteId(explicit.trim());
+    }
+  }
+
   // 1. Site-scoped Authenticated User / Bearer Token
   let user = typeof (c as any)?.get === 'function' ? (c as any).get('user') : null;
   if (!user && c.req && typeof c.req.header === 'function') {
@@ -71,15 +79,18 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     }
   }
 
-  // 3. Standard Query parameter (?site_id=domain.com)
-  const querySite = typeof c.req?.query === 'function' ? c.req.query('site_id') : null;
-  if (querySite) {
-    return normalizeSiteId(querySite);
+  // 3. Standard Query parameter (?site_id=domain.com or ?siteId=... or ?site=...)
+  if (typeof c.req?.query === 'function') {
+    const querySite = c.req.query('site_id') || c.req.query('siteId') || c.req.query('site');
+    if (querySite && typeof querySite === 'string' && querySite.trim()) {
+      return normalizeSiteId(querySite.trim());
+    }
   }
 
   // 4. Studio active session cookie (set by navbar dropdown in Admin UI)
+  // 'slottd_active_site' is updated directly by client JS and takes precedence over 'slottd_site'
   const rawCookie = c.req.header('cookie') || c.req.raw?.headers?.get('cookie') || '';
-  const cookieSite = getCookie(rawCookie, 'slottd_site') || getCookie(rawCookie, 'slottd_active_site');
+  const cookieSite = getCookie(rawCookie, 'slottd_active_site') || getCookie(rawCookie, 'slottd_site');
   if (cookieSite) {
     return normalizeSiteId(cookieSite);
   }

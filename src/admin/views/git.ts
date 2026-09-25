@@ -61,7 +61,7 @@ export function renderGitView(
     async function fetchRemoteTags() {
       appendLog('$ git fetch --all --tags origin', 'command');
       try {
-        const res = await fetch('/admin/git/fetch', { method: 'POST' });
+        const res = await fetch('/admin/git/fetch?site_id=' + encodeURIComponent('${activeSite}'), { method: 'POST' });
         const json = await res.json();
         if (res.ok) {
           appendLog('✅ ' + (json.message || 'Remote tags successfully fetched.'), 'success');
@@ -87,10 +87,10 @@ export function renderGitView(
       if (!chosenPath || !chosenPath.trim()) return;
       appendLog('$ git setup-repo --path ' + chosenPath.trim(), 'command');
       try {
-        const res = await fetch('/admin/git/setup-repo', {
+        const res = await fetch('/admin/git/setup-repo?site_id=' + encodeURIComponent('${activeSite}'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repoPath: chosenPath.trim() })
+          body: JSON.stringify({ siteId: '${activeSite}', repoPath: chosenPath.trim() })
         });
         const json = await res.json();
         if (res.ok) {
@@ -219,10 +219,11 @@ export function renderGitView(
       appendLog('$ pipeline ' + modeLabel + ' ' + steps.join(' -> '), 'command');
 
       try {
-        const res = await fetch('/admin/git/release', {
+        const res = await fetch('/admin/git/release?site_id=' + encodeURIComponent('${activeSite}'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            siteId: '${activeSite}',
             exportFiles,
             createTag,
             pushToRemote,
@@ -264,10 +265,10 @@ export function renderGitView(
 
       appendLog('$ git diff ' + tag + ' (Comparing active D1 against Git tag...)', 'command');
       try {
-        const res = await fetch('/admin/git/diff', {
+        const res = await fetch('/admin/git/diff?site_id=' + encodeURIComponent('${activeSite}'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tag })
+          body: JSON.stringify({ siteId: '${activeSite}', tag })
         });
         const json = await res.json();
         if (res.ok) {
@@ -303,10 +304,10 @@ export function renderGitView(
 
       appendLog('$ git checkout ' + tag + ' (Restoring D1 records from Git tag...)', 'command');
       try {
-        const res = await fetch('/admin/git/load', {
+        const res = await fetch('/admin/git/load?site_id=' + encodeURIComponent('${activeSite}'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tag })
+          body: JSON.stringify({ siteId: '${activeSite}', tag })
         });
         const json = await res.json();
         if (res.ok) {
@@ -323,7 +324,7 @@ export function renderGitView(
 
     function exportFilesZip() {
       appendLog('Generating ZIP archive with serialized collections and README...', 'info');
-      const downloadUrl = '/admin/git/export-zip';
+      const downloadUrl = '/admin/git/export-zip?site_id=' + encodeURIComponent('${activeSite}');
       const link = document.createElement('a');
       link.href = downloadUrl;
       link.download = '${activeSite}-content-' + new Date().toISOString().slice(0,10) + '.zip';
@@ -335,7 +336,7 @@ export function renderGitView(
 
     function downloadBackupJson() {
       appendLog('Generating JSON backup download for ' + '${activeSite}' + '...', 'info');
-      const downloadUrl = '/admin/git/backup';
+      const downloadUrl = '/admin/git/backup?site_id=' + encodeURIComponent('${activeSite}');
       const link = document.createElement('a');
       link.href = downloadUrl;
       link.download = 'slottd-backup-' + '${activeSite}' + '-' + new Date().toISOString().slice(0,10) + '.json';
