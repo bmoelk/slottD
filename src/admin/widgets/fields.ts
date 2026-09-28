@@ -50,8 +50,9 @@ export function renderFieldWidget(
         </div>
         ${renderMediaPickerWidget(field, String(val))}
         ${isDraftModified ? html`
-          <div style="font-size: 11px; color: #94a3b8; margin-top: -6px; margin-bottom: 12px;">
-            Live Published Asset: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue || '(empty)')}</code>
+          <div style="font-size: 11px; color: #94a3b8; margin-top: -6px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>Live Published Asset: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue || '(empty)')}</code></div>
+            <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')" title="Copy live published asset into draft">⎘ Copy from Published</button>
           </div>
         ` : ''}
       </div>
@@ -76,8 +77,9 @@ export function renderFieldWidget(
           `)}
         </select>
         ${isDraftModified ? html`
-          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
-            Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue ?? '(empty)')}</code>
+          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue ?? '(empty)')}</code></div>
+            <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')" title="Copy live published value into draft">⎘ Copy from Published</button>
           </div>
         ` : ''}
       </div>
@@ -100,8 +102,9 @@ export function renderFieldWidget(
         </div>
         <textarea id="${field.name}" name="${field.name}" class="input-textarea repeater-input" rows="5">${jsonStr}</textarea>
         ${isDraftModified ? html`
-          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
-            Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${typeof draftMeta?.publishedValue === 'object' ? JSON.stringify(draftMeta?.publishedValue) : String(draftMeta?.publishedValue ?? '(empty)')}</code>
+          <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${typeof draftMeta?.publishedValue === 'object' ? JSON.stringify(draftMeta?.publishedValue) : String(draftMeta?.publishedValue ?? '(empty)')}</code></div>
+            <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')" title="Copy live published value into draft">⎘ Copy from Published</button>
           </div>
         ` : ''}
       </div>
@@ -129,8 +132,9 @@ export function renderFieldWidget(
       </div>
       <input type="text" id="${field.name}" name="${field.name}" value="${val}" class="input-text" />
       ${isDraftModified ? html`
-        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px;">
-          Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue ?? '(empty)')}</code>
+        <div style="font-size: 11px; color: #94a3b8; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+          <div>Live Published: <code style="color: #cbd5e1; background: #090d16; padding: 2px 6px; border-radius: 4px; font-family: monospace;">${String(draftMeta?.publishedValue ?? '(empty)')}</code></div>
+          <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')" title="Copy live published value into draft">⎘ Copy from Published</button>
         </div>
       ` : ''}
     </div>

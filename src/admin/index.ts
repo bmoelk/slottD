@@ -27,8 +27,16 @@ import { renderLoginView } from './views/login.js';
 import { renameSite, listSites, registerSite, deleteSite, cacheSiteFavicon } from './sites.js';
 import { resolveSiteId, normalizeSiteId } from '../auth/site.js';
 import { syncCollectionView } from '../api/views.js';
-import { exportToGitFormat, serializeToFiles, publishReleaseToGitHub, hydrateFromGit } from '../sync/git-sync.js';
-import { getGitDriver, normalizeGitUrl } from '../sync/driver.js';
+import {
+  exportToGitFormat,
+  serializeToFiles,
+  publishReleaseToGitHub,
+  hydrateFromGit,
+  synthesizeConventionalCommit,
+  stashUnreleasedAsDrafts,
+  getUnreleasedDocuments,
+} from '../sync/git-sync.js';
+import { getGitDriver, normalizeGitUrl, type GitDriver, type TagDetails } from '../sync/driver.js';
 import { computeContentDiff } from '../sync/diff.js';
 import { logActivity } from '../db/audit.js';
 import { ALPINE_VENDOR_JS } from './vendor/alpine.js';
@@ -123,6 +131,19 @@ async function resolveDeploymentRepo(env?: Env, siteId?: string): Promise<{
         if (dec) token = dec;
       }
     } catch {}
+  }
+
+  // 3.5 Check default workstation neutral repo path: /Users/bmo/code/websites-git-repos/${siteId}
+  if (siteId) {
+    const defaultSiteRepo = `/Users/bmo/code/websites-git-repos/${siteId}`;
+    if (fs && (fs as any).existsSync) {
+      if ((fs as any).existsSync(`${defaultSiteRepo}/.git`)) {
+        chosenPath = defaultSiteRepo;
+      }
+    } else {
+      // In Worker isolate (where fs is unavailable), default chosenPath to the workstation site repo
+      chosenPath = defaultSiteRepo;
+    }
   }
 
   if (!chosenPath || chosenPath === '/') {
@@ -1020,6 +1041,56 @@ adminRouter.get('/logs', async (c) => {
   return c.html(renderLogsView(logs, user, siteContext));
 });
 
+async function resolveTagDetails(
+  db: any,
+  driver: GitDriver | null,
+  tag: string,
+  activeSite: string
+): Promise<TagDetails | null> {
+  if (!tag) return null;
+
+  // 1. Try git driver (NativeShellGitDriver via bridge or Briefcase) first to retrieve real git commit & annotated tag changelog
+  if (driver && typeof driver.getTagDetails === 'function') {
+    try {
+      const details = await driver.getTagDetails(tag);
+      if (details && details.message && (details.commitSha || details.message !== `Release ${tag}`)) {
+        return details;
+      }
+    } catch {}
+  }
+
+  // 2. Try D1 activity_log for a git_release record matching this tag
+  try {
+    const actRow: any = await db
+      .selectFrom('activity_log')
+      .where('site_id', '=', activeSite)
+      .where('action', '=', 'git_release')
+      .where('document_id', '=', tag)
+      .orderBy('timestamp', 'desc')
+      .selectAll()
+      .executeTakeFirst();
+
+    if (actRow) {
+      let details: any = {};
+      try {
+        details = typeof actRow.details === 'string' ? JSON.parse(actRow.details) : actRow.details || {};
+      } catch {}
+
+      if (details.commitMessage || actRow.document_title) {
+        return {
+          tag,
+          commitSha: details.commitSha,
+          message: details.commitMessage || actRow.document_title || `Release ${tag}`,
+          author: actRow.actor,
+          date: actRow.timestamp ? new Date(Number(actRow.timestamp)).toISOString() : undefined,
+        };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 // ── 9. Git Operations Center (/admin/git) ────────────────────────────────────
 adminRouter.get('/sync', (c) => c.redirect('/admin/git'));
 
@@ -1034,6 +1105,8 @@ adminRouter.get('/git', async (c) => {
   let mediaCount = 0;
   let collectionCount = 0;
   let tags: string[] = [];
+  let driver: GitDriver | null = null;
+  let engineName = 'isomorphic-git';
 
   try {
     const docRows = await db
@@ -1055,13 +1128,10 @@ adminRouter.get('/git', async (c) => {
     mediaCount = Number(mediaRows?.count) || 0;
   } catch {}
 
-  let engineName = 'isomorphic-git';
-
   // List tags using universal driver or local Git bridge
-  if (repoInfo.hasRemote) {
-    let bridgeLoaded = false;
+  if (c.env.ENVIRONMENT !== 'production' || repoInfo.hasRemote || repoInfo.path) {
     try {
-      const driver = await getGitDriver({
+      driver = await getGitDriver({
         url: repoInfo.remoteUrl,
         branch: repoInfo.branch,
         token: repoInfo.token,
@@ -1079,6 +1149,11 @@ adminRouter.get('/git', async (c) => {
     }
   }
 
+  let initialTagDetails: TagDetails | null = null;
+  if (tags.length > 0) {
+    initialTagDetails = await resolveTagDetails(db, driver, tags[0], activeSite);
+  }
+
   return c.html(
     renderGitView(
       {
@@ -1092,6 +1167,7 @@ adminRouter.get('/git', async (c) => {
         collectionCount,
         mediaCount,
         tags,
+        initialTagDetails,
         isMonorepo: repoInfo.isMonorepo,
         contentPath: repoInfo.contentPath,
         gitTopLevel: repoInfo.gitTopLevel,
@@ -1146,6 +1222,70 @@ adminRouter.post('/git/fetch', async (c) => {
   }
 });
 
+// ── 10.5. Suggest Conventional Commit Message (/admin/git/suggest-commit) ──────
+adminRouter.get('/git/suggest-commit', async (c) => {
+  const db = createDb(c.env.DB);
+  const siteContext = await getSiteContext(c, db);
+  const siteId = (c.req.query('site_id') || c.req.query('siteId') || siteContext.activeSite || 'default').toLowerCase().trim();
+  const tag = c.req.query('tag') || undefined;
+
+  try {
+    const result = await synthesizeConventionalCommit(db, siteId, tag);
+    return c.json({
+      success: true,
+      siteId,
+      ...result,
+    });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+// ── 10.6. Retrieve Git Tag Commit Details & Changelog (/admin/git/tag-details) ─
+adminRouter.get('/git/tag-details', async (c) => {
+  const db = createDb(c.env.DB);
+  const requestedSite = (c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
+  if (requestedSite) c.set('siteId', requestedSite);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
+  const tag = (c.req.query('tag') || '').trim();
+
+  if (!tag) {
+    return c.json({ success: false, error: 'Tag parameter is required.' }, 400);
+  }
+
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
+  let driver: GitDriver | null = null;
+  if (c.env.ENVIRONMENT !== 'production' || repoInfo.hasRemote || repoInfo.path) {
+    try {
+      driver = await getGitDriver({
+        url: repoInfo.remoteUrl,
+        branch: repoInfo.branch,
+        token: repoInfo.token,
+        repoPath: repoInfo.path,
+        isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
+        siteId: activeSite,
+      });
+    } catch {}
+  }
+
+  const tagDetails = await resolveTagDetails(db, driver, tag, activeSite);
+  if (!tagDetails) {
+    return c.json({
+      success: true,
+      tagDetails: {
+        tag,
+        message: `Release ${tag}\n\n(No detailed commit notes recorded for this tag)`,
+      },
+    });
+  }
+
+  return c.json({ success: true, tagDetails });
+});
+
 // ── 11. Create Git Release & Export Pipeline (/admin/git/release) ─────────────
 adminRouter.post('/git/release', async (c) => {
   const db = createDb(c.env.DB);
@@ -1168,7 +1308,16 @@ adminRouter.post('/git/release', async (c) => {
   try {
     const items = await exportToGitFormat(db, undefined, activeSite);
     const contentPath = repoInfo.contentPath !== undefined ? repoInfo.contentPath : '';
-    const files = serializeToFiles(items, contentPath, activeSite, repoInfo.isMonorepo, true);
+    let activities: any[] = [];
+    try {
+      activities = await db
+        .selectFrom('activity_log')
+        .where('site_id', '=', activeSite)
+        .selectAll()
+        .orderBy('timestamp', 'asc')
+        .execute();
+    } catch {}
+    const files = serializeToFiles(items, contentPath, activeSite, repoInfo.isMonorepo, true, activities);
 
     // Execute onBeforePublish pre-release verification if configured and tagging/publishing
     const appConfig = getSlottdConfig();
@@ -1242,13 +1391,37 @@ adminRouter.post('/git/release', async (c) => {
         email: user?.email || (c.env as any).OPERATOR_EMAIL || 'operator@slottd.dev',
       };
 
+      const force = body.force === true || body.useLocal === true;
       const result = await driver.createRelease({
         tag: createTag ? tag : undefined,
         message,
         files: exportFiles ? files : [],
         push,
+        force,
+        useLocal: force,
         author,
       });
+
+      // Record first-class git_release event in activity_log for unreleased window tracking & changelogs
+      if (createTag && tag) {
+        await logActivity(db, {
+          siteId: activeSite,
+          actor: author.email,
+          action: 'git_release',
+          collection: '_git',
+          documentId: tag,
+          documentTitle: `Release ${tag}`,
+          details: {
+            tag,
+            commitSha: result.commitSha,
+            commitMessage: message,
+            branch: repoInfo.branch,
+            documentCount: items.length,
+            pushed: push,
+            forced: force,
+          },
+        });
+      }
 
       return c.json({
         success: true,
@@ -1265,8 +1438,151 @@ adminRouter.post('/git/release', async (c) => {
       command: releaseCmd,
     });
   } catch (err: any) {
+    if (err.conflict || err.status === 409 || err.message?.includes('UPSTREAM_CONFLICT')) {
+      return c.json(
+        {
+          success: false,
+          conflict: true,
+          conflictingFiles: err.conflictingFiles || [],
+          remoteCommits: err.remoteCommits,
+          error: err.message,
+          message: err.message,
+          choices: [
+            { action: 'use_local', label: 'Overwrite Remote (Use Local Content)' },
+            { action: 'stash_draft', label: 'Save as Draft (Safe Upstream Ingestion)' },
+          ],
+        },
+        409
+      );
+    }
     return c.json({ error: err.message }, 500);
   }
+});
+
+// ── 11.2. Resolve Git Conflict (/admin/git/resolve-conflict) ──────────────────
+adminRouter.post('/git/resolve-conflict', async (c) => {
+  const db = createDb(c.env.DB);
+  const siteContext = await getSiteContext(c, db);
+  const activeSite = siteContext.activeSite;
+  const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
+
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, any>;
+  const action = body.action as string; // 'use_local' | 'stash_draft'
+  const user = await getAuthenticatedUser(c);
+  const actor = user?.email || (c.env as any).OPERATOR_EMAIL || 'operator@slottd.dev';
+
+  if (action === 'use_local') {
+    // Choice 1: Operator declares local version of content authoritative -> force release and push
+    const tag = (body.tag as string) || `release-${Date.now()}`;
+    const message = (body.message as string) || `chore(content): release snapshot ${tag} (forced local content resolution)`;
+
+    try {
+      const items = await exportToGitFormat(db, undefined, activeSite);
+      const contentPath = repoInfo.contentPath !== undefined ? repoInfo.contentPath : '';
+      let activities: any[] = [];
+      try {
+        activities = await db
+          .selectFrom('activity_log')
+          .where('site_id', '=', activeSite)
+          .selectAll()
+          .orderBy('timestamp', 'asc')
+          .execute();
+      } catch {}
+      const files = serializeToFiles(items, contentPath, activeSite, repoInfo.isMonorepo, true, activities);
+
+      const driver = await getGitDriver({
+        url: repoInfo.remoteUrl,
+        branch: repoInfo.branch,
+        token: repoInfo.token,
+        repoPath: repoInfo.path,
+        isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
+        siteId: activeSite,
+      });
+
+      const result = await driver.createRelease({
+        tag,
+        message,
+        files,
+        push: true,
+        force: true,
+        useLocal: true,
+        author: {
+          name: user?.name || 'SlottD Operator',
+          email: actor,
+        },
+      });
+
+      await logActivity(db, {
+        siteId: activeSite,
+        actor,
+        action: 'git_release',
+        collection: '_git',
+        documentId: tag,
+        documentTitle: `Release ${tag} (Forced Local Content)`,
+        details: {
+          tag,
+          commitSha: result.commitSha,
+          commitMessage: message,
+          forced: true,
+          resolvedAction: 'use_local',
+        },
+      });
+
+      return c.json({
+        success: true,
+        message: `Local version of content pushed to remote as authoritative (${result.commitSha.slice(0, 7)})!`,
+        output: result.message,
+      });
+    } catch (err: any) {
+      return c.json({ success: false, error: err.message }, 500);
+    }
+  }
+
+  if (action === 'stash_draft') {
+    // Choice 2: Save as Draft (Safe Upstream Ingestion)
+    // 1. Snapshot existing drafts to directus_versions and stash local edits into draft_data
+    const stashRes = await stashUnreleasedAsDrafts(db, activeSite, actor);
+
+    // 2. Fetch and hydrate remote content into published data
+    let hydrationOutput = '';
+    try {
+      const driver = await getGitDriver({
+        url: repoInfo.remoteUrl,
+        branch: repoInfo.branch,
+        token: repoInfo.token,
+        repoPath: repoInfo.path,
+        isProduction: c.env.ENVIRONMENT === 'production',
+        isMonorepo: repoInfo.isMonorepo,
+        contentPath: repoInfo.contentPath,
+        gitTopLevel: repoInfo.gitTopLevel,
+        siteId: activeSite,
+      });
+
+      const tags = await driver.listTags();
+      const latestTag = tags[0];
+      if (latestTag) {
+        const remoteItems = await driver.loadTagContent(latestTag);
+        const { inserted, updated } = await hydrateFromGit(db, remoteItems, 1, activeSite);
+        hydrationOutput = `Ingested remote content from tag '${latestTag}' (${inserted} inserted, ${updated} updated).`;
+      }
+    } catch (hydrateErr: any) {
+      hydrationOutput = `Hydration notice: ${hydrateErr.message}`;
+    }
+
+    return c.json({
+      success: true,
+      message: `Conflict resolved safely: ${stashRes.count} document(s) preserved as working drafts (${stashRes.snapshottedVersions} prior draft(s) snapshotted to versions). Remote content ingested into published state.`,
+      output: hydrationOutput,
+      stashedCount: stashRes.count,
+      snapshottedVersions: stashRes.snapshottedVersions,
+      documents: stashRes.documents,
+    });
+  }
+
+  return c.json({ error: "Invalid action. Supported actions: 'use_local' or 'stash_draft'" }, 400);
 });
 
 // ── 11.5. Setup / Adopt Local Repository (/admin/git/setup-repo) ──────────────
@@ -1388,6 +1704,8 @@ adminRouter.post('/git/load', async (c) => {
   const tag = body.tag as string;
   const requestedSite = (body.siteId || body.site_id || c.req.query('site_id') || c.req.query('site') || c.req.query('siteId') || '').trim();
   if (requestedSite) c.set('siteId', requestedSite);
+  const force = body.force === true;
+  const stashDrafts = body.stashDrafts === true;
   const siteContext = await getSiteContext(c, db);
   const activeSite = requestedSite ? normalizeSiteId(requestedSite) : siteContext.activeSite;
   const repoInfo = await resolveDeploymentRepo(c.env, activeSite);
@@ -1399,6 +1717,39 @@ adminRouter.post('/git/load', async (c) => {
   try {
     if (!repoInfo.hasRemote && !repoInfo.path) {
       return c.json({ error: 'No Git remote or repository path configured. Configure a remote URL in Sites Hub first.' }, 400);
+    }
+
+    const user = await getAuthenticatedUser(c);
+    const actor = user?.email || (c.env as any).OPERATOR_EMAIL || 'operator@slottd.dev';
+
+    // Pre-Hydration Tag Restore Guard: Check for unreleased local content edits
+    if (!force && !stashDrafts) {
+      const unreleased = await getUnreleasedDocuments(db, activeSite);
+      if (unreleased.length > 0) {
+        return c.json(
+          {
+            success: false,
+            conflict: true,
+            requiresConfirmation: true,
+            unreleasedCount: unreleased.length,
+            unreleasedDocuments: unreleased,
+            message: `You have ${unreleased.length} unreleased changes in your local version of content that would be overwritten by loading tag '${tag}'.`,
+            choices: [
+              { action: 'stash_draft', label: 'Stash Unreleased Edits as Drafts & Load Tag (Safe)' },
+              { action: 'overwrite', label: 'Overwrite Local Content (Force)' },
+            ],
+          },
+          409
+        );
+      }
+    }
+
+    let stashSummary = '';
+    if (stashDrafts) {
+      const stashRes = await stashUnreleasedAsDrafts(db, activeSite, actor);
+      if (stashRes.count > 0) {
+        stashSummary = ` Stashed ${stashRes.count} unreleased local document(s) as working drafts (${stashRes.snapshottedVersions} prior draft(s) snapshotted to versions).`;
+      }
     }
 
     const driver = await getGitDriver({
@@ -1418,7 +1769,7 @@ adminRouter.post('/git/load', async (c) => {
 
     return c.json({
       success: true,
-      message: `Successfully loaded and restored ${items.length} documents from Git tag '${tag}' into D1 for site '${activeSite}' (${driver.engineName})!`,
+      message: `Successfully loaded and restored ${items.length} documents from Git tag '${tag}' into D1 for site '${activeSite}' (${driver.engineName})!${stashSummary}`,
       data: { count: items.length, inserted, updated },
     });
   } catch (err: any) {

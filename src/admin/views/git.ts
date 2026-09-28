@@ -1,6 +1,7 @@
 import { html, raw } from 'hono/html';
 import { renderLayout } from '../layout.js';
 import { renderInfoBubble, renderFavicon } from '../ui.js';
+import type { TagDetails } from '../../sync/driver.js';
 
 export interface GitViewData {
   environment: string;
@@ -13,6 +14,7 @@ export interface GitViewData {
   collectionCount: number;
   mediaCount: number;
   tags: string[];
+  initialTagDetails?: TagDetails | null;
   isMonorepo?: boolean;
   contentPath?: string;
   contentSubpath?: string;
@@ -70,6 +72,7 @@ export function renderGitView(
             const select = document.getElementById('tagSelect');
             if (select) {
               select.innerHTML = json.tags.map(t => '<option value="' + t + '">' + t + '</option>').join('');
+              onTagSelectChange();
             }
           }
         } else {
@@ -192,7 +195,199 @@ export function renderGitView(
       });
     }
 
-    async function runGitPipeline(dryRun = false, forcePublish = false) {
+    function showReleaseConflictModal(conflictData, tag, msg) {
+      let modal = document.getElementById('slottdConflictModal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'slottdConflictModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.8);backdrop-filter:blur(4px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+        document.body.appendChild(modal);
+      }
+
+      const files = conflictData.conflictingFiles || [];
+      const count = files.length || 'multiple';
+
+      modal.innerHTML = \`
+        <div style="background:#1e293b;border:1px solid rgba(239,68,68,0.3);border-radius:12px;max-width:640px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);display:flex;flex-direction:column;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;">
+          <div style="padding:20px 24px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:space-between;background:rgba(239,68,68,0.1);">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:22px;">⚡</span>
+              <div>
+                <h3 style="margin:0;font-size:17px;font-weight:700;color:#fca5a5;">Upstream Conflict Detected</h3>
+                <span style="font-size:12px;color:#cbd5e1;">Remote repository has advanced with conflicting edits in \${count} document(s).</span>
+              </div>
+            </div>
+            <button type="button" id="closeConflictModal" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px;">✕</button>
+          </div>
+
+          <div style="padding:24px;display:flex;flex-direction:column;gap:16px;font-size:13px;line-height:1.5;">
+            <p style="margin:0;color:#e2e8f0;">
+              Upstream changes overlap with documents that have unreleased edits in your local version of content. Choose how you would like to resolve this conflict:
+            </p>
+
+            \${files.length > 0 ? \`
+              <div style="background:#090d16;border:1px solid #334155;border-radius:8px;padding:12px 16px;max-height:140px;overflow-y:auto;">
+                <strong style="color:#cbd5e1;display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Conflicting Files:</strong>
+                <ul style="margin:0;padding-left:18px;color:#94a3b8;font-family:monospace;font-size:12px;display:flex;flex-direction:column;gap:4px;">
+                  \${files.map(f => \`<li>\${f}</li>\`).join('')}
+                </ul>
+              </div>
+            \` : ''}
+
+            <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px;">
+              <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);border-radius:8px;padding:14px;cursor:pointer;" id="optStashDraft">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <strong style="color:#34d399;font-size:14px;">[2] Save as Draft (Safe Upstream Ingestion) — Recommended</strong>
+                  <span style="background:#064e3b;color:#34d399;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #059669;">Zero Data Loss</span>
+                </div>
+                <p style="margin:0;color:#cbd5e1;font-size:12px;line-height:1.4;">
+                  Ingests remote updates into live published content, while safely retaining your unreleased edits as working drafts. Any existing working draft is automatically snapshotted to version history before stashing.
+                </p>
+              </div>
+
+              <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:14px;cursor:pointer;" id="optUseLocal">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <strong style="color:#f87171;font-size:14px;">[1] Overwrite Remote (Use Local Content)</strong>
+                  <span style="background:#450a0a;color:#fca5a5;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #dc2626;">Authoritative</span>
+                </div>
+                <p style="margin:0;color:#cbd5e1;font-size:12px;line-height:1.4;">
+                  Declares your local version of content authoritative, overwriting remote changes with a lease-checked force push.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div style="padding:16px 24px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:flex-end;gap:12px;background:rgba(0,0,0,0.2);">
+            <button type="button" id="btnCancelConflict" style="padding:8px 16px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#cbd5e1;cursor:pointer;font-size:13px;font-weight:500;">
+              Cancel
+            </button>
+          </div>
+        </div>
+      \`;
+
+      modal.style.display = 'flex';
+
+      const closeModal = () => { modal.style.display = 'none'; };
+      document.getElementById('closeConflictModal')?.addEventListener('click', closeModal);
+      document.getElementById('btnCancelConflict')?.addEventListener('click', closeModal);
+
+      document.getElementById('optUseLocal')?.addEventListener('click', async () => {
+        closeModal();
+        appendLog('$ pipeline [Force Local Content Override] -> Overwriting remote with local content...', 'command');
+        await runGitPipeline(false, false, true);
+      });
+
+      document.getElementById('optStashDraft')?.addEventListener('click', async () => {
+        closeModal();
+        appendLog('$ git resolve-conflict --action stash_draft (Converting local edits to working drafts)...', 'command');
+        try {
+          const res = await fetch('/admin/git/resolve-conflict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'stash_draft' })
+          });
+          const json = await res.json();
+          if (res.ok) {
+            appendLog('✅ ' + json.message, 'success');
+            if (json.output) appendLog(json.output, 'info');
+            setTimeout(() => window.location.reload(), 1500);
+          } else {
+            appendLog('❌ Failed to resolve conflict: ' + (json.error || res.statusText), 'error');
+          }
+        } catch (e) {
+          appendLog('❌ Conflict resolution error: ' + e.message, 'error');
+        }
+      });
+    }
+
+    function showRestoreGuardModal(guardData, tag) {
+      let modal = document.getElementById('slottdRestoreGuardModal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'slottdRestoreGuardModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.8);backdrop-filter:blur(4px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+        document.body.appendChild(modal);
+      }
+
+      const docs = guardData.unreleasedDocuments || [];
+      const count = guardData.unreleasedCount || docs.length;
+
+      modal.innerHTML = \`
+        <div style="background:#1e293b;border:1px solid rgba(245,158,11,0.3);border-radius:12px;max-width:640px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 25px 50px -12px rgba(0,0,0,0.6);display:flex;flex-direction:column;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;">
+          <div style="padding:20px 24px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:space-between;background:rgba(245,158,11,0.1);">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-size:22px;">🛡️</span>
+              <div>
+                <h3 style="margin:0;font-size:17px;font-weight:700;color:#fde68a;">Pre-Hydration Tag Restore Guard</h3>
+                <span style="font-size:12px;color:#cbd5e1;">Unreleased changes detected in \${count} document(s).</span>
+              </div>
+            </div>
+            <button type="button" id="closeRestoreGuardModal" style="background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:4px;">✕</button>
+          </div>
+
+          <div style="padding:24px;display:flex;flex-direction:column;gap:16px;font-size:13px;line-height:1.5;">
+            <p style="margin:0;color:#e2e8f0;">
+              You have <strong>\${count} unreleased changes</strong> in your local version of content. Loading tag <code>\${tag}</code> will replace published content. Choose how you would like to proceed:
+            </p>
+
+            \${docs.length > 0 ? \`
+              <div style="background:#090d16;border:1px solid #334155;border-radius:8px;padding:12px 16px;max-height:130px;overflow-y:auto;">
+                <strong style="color:#cbd5e1;display:block;margin-bottom:6px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Unreleased Documents:</strong>
+                <ul style="margin:0;padding-left:18px;color:#94a3b8;font-family:monospace;font-size:12px;display:flex;flex-direction:column;gap:4px;">
+                  \${docs.map(d => \`<li>\${d.collection}/\${d.slug} (\${d.title})</li>\`).join('')}
+                </ul>
+              </div>
+            \` : ''}
+
+            <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px;">
+              <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);border-radius:8px;padding:14px;cursor:pointer;" id="optRestoreStashDraft">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <strong style="color:#34d399;font-size:14px;">[1] Stash Unreleased Edits as Drafts & Load Tag (Safe) — Recommended</strong>
+                  <span style="background:#064e3b;color:#34d399;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #059669;">Protected</span>
+                </div>
+                <p style="margin:0;color:#cbd5e1;font-size:12px;line-height:1.4;">
+                  Your unreleased local work is safely converted into working drafts before loading tag <code>\${tag}</code>. Any existing drafts are snapshotted to version history.
+                </p>
+              </div>
+
+              <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:14px;cursor:pointer;" id="optRestoreForceOverwrite">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <strong style="color:#f87171;font-size:14px;">[2] Overwrite Local Content (Force)</strong>
+                  <span style="background:#450a0a;color:#fca5a5;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #dc2626;">Destructive</span>
+                </div>
+                <p style="margin:0;color:#cbd5e1;font-size:12px;line-height:1.4;">
+                  Discards unreleased edits in local content and replaces records completely with the snapshot from tag <code>\${tag}</code>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div style="padding:16px 24px;border-top:1px solid rgba(255,255,255,0.1);display:flex;justify-content:flex-end;gap:12px;background:rgba(0,0,0,0.2);">
+            <button type="button" id="btnCancelRestoreGuard" style="padding:8px 16px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:#cbd5e1;cursor:pointer;font-size:13px;font-weight:500;">
+              Cancel
+            </button>
+          </div>
+        </div>
+      \`;
+
+      modal.style.display = 'flex';
+
+      const closeModal = () => { modal.style.display = 'none'; };
+      document.getElementById('closeRestoreGuardModal')?.addEventListener('click', closeModal);
+      document.getElementById('btnCancelRestoreGuard')?.addEventListener('click', closeModal);
+
+      document.getElementById('optRestoreStashDraft')?.addEventListener('click', async () => {
+        closeModal();
+        await executeRestore(false, true);
+      });
+
+      document.getElementById('optRestoreForceOverwrite')?.addEventListener('click', async () => {
+        closeModal();
+        await executeRestore(true, false);
+      });
+    }
+
+    async function runGitPipeline(dryRun = false, forcePublish = false, force = false) {
       const exportFiles = document.getElementById('opExportFiles')?.checked || false;
       const createTag = document.getElementById('opCreateTag')?.checked || false;
       const pushToRemote = document.getElementById('opPushRemote')?.checked || false;
@@ -214,7 +409,7 @@ export function renderGitView(
       const steps = [];
       if (exportFiles) steps.push('Export Files');
       if (createTag) steps.push('Commit & Tag (' + tag + ')');
-      if (pushToRemote) steps.push('Push Remote');
+      if (pushToRemote) steps.push('Push Remote' + (force ? ' (Force)' : ''));
 
       appendLog('$ pipeline ' + modeLabel + ' ' + steps.join(' -> '), 'command');
 
@@ -230,7 +425,9 @@ export function renderGitView(
             dryRun,
             tag,
             message: msg,
-            forcePublish
+            forcePublish,
+            force,
+            useLocal: force,
           })
         });
 
@@ -244,9 +441,12 @@ export function renderGitView(
           if (json.command) {
             appendLog('Terminal Equivalent:\\n' + json.command, 'command');
           }
+        } else if (res.status === 409 && json.conflict) {
+          appendLog('⚠️ Upstream conflict detected: ' + (json.message || json.error), 'warn');
+          showReleaseConflictModal(json, tag, msg);
         } else if (res.status === 422 && json.requiresConfirmation) {
           appendLog('⚠️ Pre-release verification reported findings: ' + (json.message || json.error), 'warn');
-          showVerificationSummaryModal(json.report, () => runGitPipeline(dryRun, true));
+          showVerificationSummaryModal(json.report, () => runGitPipeline(dryRun, true, force));
         } else {
           appendLog('❌ Operation failed: ' + (json.error || res.statusText), 'error');
           if (json.output) appendLog(json.output, 'error');
@@ -292,28 +492,33 @@ export function renderGitView(
       }
     }
 
-    async function executeRestore() {
+    async function executeRestore(force = false, stashDrafts = false) {
       const tag = document.getElementById('tagSelect')?.value;
       if (!tag) {
         alert('Please select a Git release tag to import (or click Fetch Remote Tags first).');
         return;
       }
 
-      const confirmed = confirm('Are you sure you want to load and restore D1 database content from Git tag "' + tag + '"?');
-      if (!confirmed) return;
+      if (!force && !stashDrafts) {
+        const confirmed = confirm('Are you sure you want to load and restore content from Git tag "' + tag + '"?');
+        if (!confirmed) return;
+      }
 
-      appendLog('$ git checkout ' + tag + ' (Restoring D1 records from Git tag...)', 'command');
+      appendLog('$ git checkout ' + tag + ' (Restoring records from Git tag...)', 'command');
       try {
         const res = await fetch('/admin/git/load?site_id=' + encodeURIComponent('${activeSite}'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ siteId: '${activeSite}', tag })
+          body: JSON.stringify({ siteId: '${activeSite}', tag, force, stashDrafts })
         });
         const json = await res.json();
         if (res.ok) {
           appendLog('✅ ' + json.message, 'success');
           if (json.output) appendLog(json.output, 'info');
           setTimeout(() => window.location.reload(), 2000);
+        } else if (res.status === 409 && json.conflict) {
+          appendLog('⚠️ Pre-hydration guard: unreleased local edits detected.', 'warn');
+          showRestoreGuardModal(json, tag);
         } else {
           appendLog('❌ Restore failed: ' + (json.error || res.statusText), 'error');
         }
@@ -345,6 +550,160 @@ export function renderGitView(
       document.body.removeChild(link);
       appendLog('JSON backup download initiated.', 'success');
     }
+
+    async function refreshSuggestedCommit() {
+      const tag = (document.getElementById('releaseTagName')?.value || '').trim();
+      const msgArea = document.getElementById('releaseCommitMsg');
+      const btn = document.getElementById('btnRefreshCommitMsg');
+      if (btn) btn.textContent = '⏳ Synthesizing...';
+      try {
+        const url = '/admin/git/suggest-commit?site_id=' + encodeURIComponent('${activeSite}') + (tag ? '&tag=' + encodeURIComponent(tag) : '');
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.commitMessage && msgArea) {
+          msgArea.value = data.commitMessage;
+          appendLog('✨ Synthesized Conventional Commit from ' + (data.itemsCount || 0) + ' unreleased content activities.', 'info');
+        }
+      } catch (e) {
+        console.warn('Failed to synthesize commit message:', e);
+      } finally {
+        if (btn) btn.textContent = '✨ Synthesize from Activity';
+      }
+    }
+
+    const tagDetailsCache = {};
+    const initialTagDetails = ${data.initialTagDetails ? JSON.stringify(data.initialTagDetails) : 'null'};
+    if (initialTagDetails && initialTagDetails.tag) {
+      tagDetailsCache[initialTagDetails.tag] = initialTagDetails;
+    }
+
+    function renderTagDetails(details) {
+      const msgPre = document.getElementById('tagMessageContent');
+      const tagBadge = document.getElementById('tagDetailsBadge');
+      const shaBadge = document.getElementById('tagShaBadge');
+      const authorDateBadge = document.getElementById('tagAuthorDateBadge');
+
+      if (!details) {
+        if (msgPre) msgPre.textContent = 'No Git release tag selected.';
+        if (tagBadge) tagBadge.textContent = 'None';
+        if (shaBadge) shaBadge.style.display = 'none';
+        if (authorDateBadge) authorDateBadge.style.display = 'none';
+        return;
+      }
+
+      if (tagBadge) tagBadge.textContent = details.tag || 'Selected';
+      if (msgPre) {
+        msgPre.textContent = details.message || ('Release ' + (details.tag || ''));
+      }
+
+      if (shaBadge) {
+        if (details.commitSha) {
+          shaBadge.textContent = details.commitSha.slice(0, 7);
+          shaBadge.style.display = 'inline-block';
+        } else {
+          shaBadge.style.display = 'none';
+        }
+      }
+
+      if (authorDateBadge) {
+        const parts = [];
+        if (details.author) parts.push('by ' + details.author);
+        if (details.date) {
+          try {
+            parts.push(new Date(details.date).toLocaleDateString());
+          } catch {
+            parts.push(details.date);
+          }
+        }
+        if (parts.length > 0) {
+          authorDateBadge.textContent = parts.join(' • ');
+          authorDateBadge.style.display = 'inline-block';
+        } else {
+          authorDateBadge.style.display = 'none';
+        }
+      }
+    }
+
+    async function loadTagDetails(tag) {
+      if (!tag) {
+        renderTagDetails(null);
+        return;
+      }
+
+      if (tagDetailsCache[tag]) {
+        renderTagDetails(tagDetailsCache[tag]);
+        return;
+      }
+
+      const msgPre = document.getElementById('tagMessageContent');
+      if (msgPre) msgPre.textContent = 'Loading tag commit message...';
+
+      try {
+        const res = await fetch('/admin/git/tag-details?tag=' + encodeURIComponent(tag) + '&site_id=' + encodeURIComponent('${activeSite}'), {
+          headers: { 'Accept': 'application/json' },
+          credentials: 'include'
+        });
+        const json = await res.json();
+        if (res.ok && json.success && json.tagDetails) {
+          tagDetailsCache[tag] = json.tagDetails;
+          renderTagDetails(json.tagDetails);
+        } else {
+          const fallback = {
+            tag,
+            message: 'Release ' + tag + '\\n\\n(No detailed commit notes recorded for this tag)'
+          };
+          tagDetailsCache[tag] = fallback;
+          renderTagDetails(fallback);
+        }
+      } catch (err) {
+        const errFallback = {
+          tag,
+          message: 'Failed to load details for tag ' + tag + ': ' + err.message
+        };
+        renderTagDetails(errFallback);
+      }
+    }
+
+    async function onTagSelectChange() {
+      const select = document.getElementById('tagSelect');
+      if (!select) return;
+      const tag = select.value;
+      await loadTagDetails(tag);
+    }
+
+    function copyTagMessage() {
+      const msgPre = document.getElementById('tagMessageContent');
+      const btn = document.getElementById('btnCopyTagMsg');
+      if (!msgPre) return;
+      const text = msgPre.textContent || '';
+      if (!text) return;
+
+      navigator.clipboard.writeText(text).then(() => {
+        if (btn) {
+          const original = btn.textContent;
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = original; }, 1500);
+        }
+      }).catch(() => {
+        alert('Failed to copy to clipboard.');
+      });
+    }
+
+    window.onTagSelectChange = onTagSelectChange;
+    window.copyTagMessage = copyTagMessage;
+    window.loadTagDetails = loadTagDetails;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      refreshSuggestedCommit();
+      const select = document.getElementById('tagSelect');
+      if (select) {
+        select.addEventListener('change', onTagSelectChange);
+      }
+      if (!initialTagDetails) {
+        const curTag = select?.value;
+        if (curTag) loadTagDetails(curTag);
+      }
+    });
   `;
 
   return renderLayout('Git Center — SlottD Studio', 'git', user, html`
@@ -456,12 +815,17 @@ export function renderGitView(
             <div id="tagInputsGroup" style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; transition: opacity 0.2s;">
               <div>
                 <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Release Tag Name</label>
-                <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+                <input type="text" id="releaseTagName" class="input-search" value="${defaultTag}" onchange="refreshSuggestedCommit()" style="width: 100%; box-sizing: border-box;" />
               </div>
 
               <div>
-                <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: #cbd5e1;">Commit Message</label>
-                <input type="text" id="releaseCommitMsg" class="input-search" value="chore(content): release snapshot ${defaultTag}" style="width: 100%; box-sizing: border-box;" />
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <label style="font-size: 12px; font-weight: 600; color: #cbd5e1;">Commit Message</label>
+                  <button type="button" id="btnRefreshCommitMsg" onclick="refreshSuggestedCommit()" style="background: none; border: none; color: #38bdf8; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; padding: 0;">
+                    ✨ Synthesize from Activity
+                  </button>
+                </div>
+                <textarea id="releaseCommitMsg" class="input-search" rows="6" style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; line-height: 1.4; resize: vertical;">chore(content): release snapshot ${defaultTag}</textarea>
               </div>
             </div>
 
@@ -512,46 +876,73 @@ export function renderGitView(
 
       <!-- TAB 2: IMPORT & RESTORE -->
       <div x-show="gitTab === 'import'" x-cloak>
-        <div class="card" style="padding: 24px; max-width: 800px;">
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+        <div class="card" style="padding: 24px; max-width: 900px;">
+          <!-- Unified Header -->
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; gap: 16px;">
             <div>
-              <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc;">
-                Compare & Restore Content from Git Tag
+              <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
+                <span>Compare & Restore Content from Git Release</span>
               </h3>
-              <p style="margin: 2px 0 0 0; font-size: 12px; color: #94a3b8;">
-                Safe-by-default: preview diffs against active D1 database records before restoring content into <code>${activeSite}</code>.
+              <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
+                Select a Git release tag to inspect its commit changelog, preview diffs against active D1 database records, and restore content into <code>${activeSite}</code>.
               </p>
             </div>
+            <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
+              Fetch Remote Tags
+            </button>
           </div>
 
-          <div style="display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px;">
-            <div>
-              <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Select Git Release Tag</label>
-              <div style="display: flex; gap: 8px;">
-                <select id="tagSelect" class="select-control" style="flex: 1; height: 38px; box-sizing: border-box; background: #0b1120; border: 1px solid #334155; color: #f8fafc; border-radius: 6px; padding: 0 10px;">
-                  ${data.tags.length === 0 ? html`
-                    <option value="">No Git tags found (click Fetch Remote Tags or create one)</option>
-                  ` : data.tags.map((t, idx) => html`
-                    <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
-                  `)}
-                </select>
-                <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 14px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;" onclick="fetchRemoteTags()" title="Query remote Git tags via Smart HTTP">
-                  Fetch Remote Tags
-                </button>
+          <!-- Tag Selection Row -->
+          <div style="margin-bottom: 18px;">
+            <label for="tagSelect" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #cbd5e1;">Select Git Release Tag</label>
+            <select id="tagSelect" class="select-control" onchange="onTagSelectChange()" style="width: 100%; height: 38px; box-sizing: border-box; background: #0b1120; border: 1px solid #334155; color: #f8fafc; border-radius: 6px; padding: 0 10px; font-family: monospace; font-size: 13px;">
+              ${data.tags.length === 0 ? html`
+                <option value="">No Git tags found (click Fetch Remote Tags or create one)</option>
+              ` : data.tags.map((t, idx) => html`
+                <option value="${t}" ${idx === 0 ? 'selected' : ''}>${t}</option>
+              `)}
+            </select>
+          </div>
+
+          <!-- Unified Tag Commit Message & Changelog Box -->
+          <div style="background: #090d16; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 12px; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;">Tag Commit Message</span>
+                <span id="tagDetailsBadge" style="font-family: monospace; font-size: 11px; padding: 2px 8px; border-radius: 9999px; background: #1e293b; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">
+                  ${data.initialTagDetails?.tag || (data.tags[0] || 'No tag selected')}
+                </span>
+                <span id="tagShaBadge" style="${data.initialTagDetails?.commitSha ? 'display: inline-block;' : 'display: none;'} font-family: monospace; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #0f172a; border: 1px solid #334155; color: #f59e0b;">
+                  ${data.initialTagDetails?.commitSha ? data.initialTagDetails.commitSha.slice(0, 7) : ''}
+                </span>
+                <span id="tagAuthorDateBadge" style="${data.initialTagDetails?.author || data.initialTagDetails?.date ? 'display: inline-block;' : 'display: none;'} font-size: 11px; color: #64748b;">
+                  ${data.initialTagDetails?.author ? `by ${data.initialTagDetails.author}` : ''}${data.initialTagDetails?.date ? ` • ${new Date(data.initialTagDetails.date).toLocaleDateString()}` : ''}
+                </span>
               </div>
+              <button type="button" id="btnCopyTagMsg" class="btn-copy" onclick="copyTagMessage()" style="font-size: 11px; padding: 3px 10px; border-radius: 4px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #cbd5e1; cursor: pointer;">
+                Copy
+              </button>
             </div>
 
-            <div id="diffSummaryCard" style="display: none; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px;">
-              <strong style="color: #38bdf8;">Diff Preview Summary:</strong>
-              <pre id="diffSummaryContent" style="margin-top: 8px; color: #e2e8f0; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow-y: auto; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06);"></pre>
-            </div>
+            <!-- Preformatted Message Content -->
+            <pre id="tagMessageContent" style="margin: 0; color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; min-height: 100px; max-height: 300px; overflow-y: auto; background: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">${data.initialTagDetails?.message || (data.tags.length === 0 ? 'No Git release tags available.' : 'Loading tag commit message...')}</pre>
           </div>
 
-          <div style="display: flex; gap: 12px; align-items: center;">
-            <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 10px 16px; background: #10b981; border-color: #10b981; color: #0f172a; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;" onclick="executeRestore()">
+          <!-- Diff Preview Summary (Expandable on Dry Run) -->
+          <div id="diffSummaryCard" style="display: none; padding: 14px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; font-size: 12px; margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <strong style="color: #38bdf8;">Diff Preview Summary:</strong>
+              <button type="button" style="background: none; border: none; color: #94a3b8; font-size: 11px; cursor: pointer;" onclick="document.getElementById('diffSummaryCard').style.display = 'none';">Hide Diff</button>
+            </div>
+            <pre id="diffSummaryContent" style="margin: 0; color: #e2e8f0; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06);"></pre>
+          </div>
+
+          <!-- Actions associated with this unified box -->
+          <div style="display: flex; gap: 12px; align-items: center; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06);">
+            <button type="button" class="btn btn-primary" style="flex: 2; justify-content: center; font-size: 13px; padding: 11px 18px; background: #10b981; border-color: #10b981; color: #0f172a; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;" onclick="executeRestore()">
               Execute Import (Restore D1)
             </button>
-            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 6px;" onclick="previewGitDiff()">
+            <button type="button" class="btn btn-secondary" style="flex: 1; justify-content: center; font-size: 13px; padding: 11px 18px; display: inline-flex; align-items: center; gap: 6px;" onclick="previewGitDiff()">
               Preview Diff (Dry Run)
             </button>
           </div>

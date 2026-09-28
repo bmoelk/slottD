@@ -100,7 +100,7 @@ export function renderRichEditorWidget(
               data-field="${field.name}"
               class="input-textarea md-toolbar-textarea"
               rows="10"
-              oninput="const h = document.getElementById('${field.name}_hidden'); if (h) h.value = this.value; const r = document.getElementById('${field.name}_raw_textarea'); if (r) r.value = this.value; if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();"
+              oninput="const h = document.getElementById('${field.name}_hidden'); if (h) h.value = this.value; const r = document.getElementById('${field.name}_raw_textarea'); if (r) r.value = this.value; const sp = document.getElementById('${field.name}_split_draft_preview'); if (sp) sp.textContent = this.value; if (typeof window.updateDraftButtonState === 'function') window.updateDraftButtonState();"
             >${val}</textarea>
           ` : ''}
 
@@ -143,10 +143,38 @@ export function renderRichEditorWidget(
 
       ${isDraftModified ? html`
         <div class="field-live-diff" style="font-size: 11px; color: #94a3b8; margin-top: 8px; background: #090d16; border: 1px dashed #334155; padding: 8px 12px; border-radius: 6px;">
-          <div style="margin-bottom: 4px;">
-            <span style="font-weight: 600; color: #cbd5e1;">Live Published Value:</span>
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-weight: 600; color: #cbd5e1;">Live Published Value</span>
+              <span style="background: rgba(16, 185, 129, 0.15); color: #34d399; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(16, 185, 129, 0.3);">Published</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button type="button" class="btn btn-secondary" style="padding: 1px 8px; font-size: 11px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')" title="Copy live published content into working draft">
+                ⎘ Copy from Published
+              </button>
+              <button type="button" class="btn btn-secondary" id="${field.name}_split_btn" style="padding: 1px 8px; font-size: 11px; height: auto;" onclick="window.toggleLiveSplit('${field.name}')" title="Toggle side-by-side comparison pane">
+                ◫ Side-by-Side
+              </button>
+            </div>
           </div>
-          <div style="font-family: monospace; color: #94a3b8; white-space: pre-wrap; max-height: 90px; overflow-y: auto; line-height: 1.4;">${String(draftMeta?.publishedValue || '(empty)')}</div>
+          <div id="${field.name}_live_val_container" style="font-family: monospace; color: #94a3b8; white-space: pre-wrap; max-height: 90px; overflow-y: auto; line-height: 1.4;">${String(draftMeta?.publishedValue || '(empty)')}</div>
+        </div>
+
+        <!-- Side-by-Side Live Reference Split Pane -->
+        <div class="split-pane-wrapper" id="${field.name}_split_wrapper" style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+          <div style="background: #090d16; border: 1px solid #1e293b; border-radius: 6px; padding: 10px; display: flex; flex-direction: column;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-weight: 600; font-size: 11px; color: #10b981; display: flex; align-items: center; gap: 4px;">🌐 Live Published Reference</span>
+              <button type="button" class="btn btn-secondary" style="padding: 1px 6px; font-size: 10px; height: auto;" onclick="window.copyLiveToDraft('${field.name}')">⎘ Copy to Draft</button>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: #94a3b8; white-space: pre-wrap; max-height: 320px; overflow-y: auto; line-height: 1.45; flex: 1;">${String(draftMeta?.publishedValue || '(empty)')}</div>
+          </div>
+          <div style="background: #090d16; border: 1px solid #d97706; border-radius: 6px; padding: 10px; display: flex; flex-direction: column;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-weight: 600; font-size: 11px; color: #fb923c; display: flex; align-items: center; gap: 4px;">✏️ Working Draft (Editable Above)</span>
+            </div>
+            <div id="${field.name}_split_draft_preview" style="font-family: monospace; font-size: 12px; color: #e2e8f0; white-space: pre-wrap; max-height: 320px; overflow-y: auto; line-height: 1.45; flex: 1;">${String(val || '')}</div>
+          </div>
         </div>
       ` : ''}
     </div>

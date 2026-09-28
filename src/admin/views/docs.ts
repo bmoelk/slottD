@@ -349,6 +349,12 @@ fields=title,slug,summary,icon,linkUrl" \
                 <td><code>menuKey</code> + <code>parentSlug</code></td>
                 <td>Header navigation, nested dropdowns, and footer link trees with display ordering.</td>
               </tr>
+              <tr>
+                <td><code>authors</code></td>
+                <td><strong>Author / Profile</strong></td>
+                <td><code>slug</code></td>
+                <td>Authors, contributors, and team profiles with dual bio granularity (concise <code>about</code> summary vs. detailed <code>extendedBio</code> narrative) and structured career highlights.</td>
+              </tr>
             </tbody>
           </table>
         </section>
