@@ -1,4 +1,9 @@
 import type { ModelPack } from '../types.js';
+import {
+  verifyMediaExists,
+  validateRequiredFields,
+  composeHooks,
+} from '../hooks/builtins.js';
 
 export const blogPack: ModelPack = {
   name: '@slottd/pack-blog',
@@ -21,21 +26,56 @@ export const blogPack: ModelPack = {
         { name: 'author', type: 'TEXT', widget: 'text', label: 'Author ID / Name', required: true },
         { name: 'publishedAt', type: 'TEXT', widget: 'datetime', label: 'Publication Date' },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          verifyMediaExists(['heroImage']),
+          validateRequiredFields(['title', 'slug', 'content', 'author'])
+        ),
+        beforeUpdate: composeHooks(
+          verifyMediaExists(['heroImage'])
+        ),
+      },
     },
     authors: {
       name: 'authors',
-      displayName: 'Authors',
+      displayName: 'Authors & Profiles',
       icon: '✍️',
-      description: 'Article authors, team members, and contributors',
+      description: 'Authors, contributors, and team member profiles',
       schemaVersion: 1,
       fields: [
         { name: 'title', type: 'TEXT', widget: 'text', label: 'Full Name', required: true },
         { name: 'slug', type: 'TEXT', widget: 'slug', label: 'Handle / Slug', required: true },
-        { name: 'bio', type: 'TEXT', widget: 'textarea', label: 'Author Biography' },
+        { name: 'role', type: 'TEXT', widget: 'text', label: 'Professional Role / Title' },
+        { name: 'location', type: 'TEXT', widget: 'text', label: 'Location' },
+        { name: 'handle', type: 'TEXT', widget: 'text', label: 'User / Social Handle' },
+        { name: 'about', type: 'TEXT', widget: 'textarea', label: 'Short Bio / Byline' },
+        { name: 'bio', type: 'TEXT', widget: 'textarea', label: 'Biography' },
+        { name: 'extendedBio', type: 'TEXT', widget: 'markdown', label: 'Extended Biography' },
         { name: 'avatarUrl', type: 'TEXT', widget: 'media', label: 'Avatar Photo (R2)' },
         { name: 'email', type: 'TEXT', widget: 'text', label: 'Contact Email' },
         { name: 'websiteUrl', type: 'TEXT', widget: 'text', label: 'Website / Social URL' },
+        {
+          name: 'careerHighlights',
+          type: 'JSON',
+          widget: 'repeater',
+          label: 'Career Journey / Highlights',
+          items: [
+            { name: 'company', type: 'TEXT', widget: 'text', label: 'Company / Organization', required: true },
+            { name: 'role', type: 'TEXT', widget: 'text', label: 'Role / Title' },
+            { name: 'desc', type: 'TEXT', widget: 'textarea', label: 'Description', required: true },
+            { name: 'period', type: 'TEXT', widget: 'text', label: 'Time Period' },
+          ],
+        },
       ],
+      hooks: {
+        beforeCreate: composeHooks(
+          verifyMediaExists(['avatarUrl']),
+          validateRequiredFields(['title', 'slug'])
+        ),
+        beforeUpdate: composeHooks(
+          verifyMediaExists(['avatarUrl'])
+        ),
+      },
     },
   },
 };

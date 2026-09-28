@@ -18,7 +18,7 @@ export const slotwirePack: ModelPack = {
       name: 'pages',
       displayName: 'Content Pages',
       icon: '📄',
-      description: 'Master page containers (About, Philosophy, Legal, Custom narratives)',
+      description: 'Master page routing and content containers',
       schemaVersion: 1,
       fields: [
         { name: 'title', type: 'TEXT', widget: 'text', label: 'Page Title / Heading', required: true },
@@ -27,12 +27,9 @@ export const slotwirePack: ModelPack = {
         { name: 'subtitle', type: 'TEXT', widget: 'textarea', label: 'Page Subtitle' },
         { name: 'description', type: 'TEXT', widget: 'textarea', label: 'Meta Description (SEO)' },
         { name: 'content', type: 'TEXT', widget: 'markdown', label: 'Body Content (Markdown)', required: true },
-        { name: 'heroImage', type: 'TEXT', widget: 'media', label: 'Banner / Profile Image' },
-        { name: 'founderName', type: 'TEXT', widget: 'text', label: 'Founder Name' },
-        { name: 'founderRole', type: 'TEXT', widget: 'text', label: 'Founder Role' },
-        { name: 'founderLocation', type: 'TEXT', widget: 'text', label: 'Founder Location' },
-        { name: 'founderHandle', type: 'TEXT', widget: 'text', label: 'Founder Handle' },
-        { name: 'careerHighlights', type: 'TEXT', widget: 'markdown', label: 'Career Journey / Highlights' },
+        { name: 'authorSlug', type: 'TEXT', widget: 'text', label: 'Author Reference' },
+        { name: 'heroImage', type: 'TEXT', widget: 'media', label: 'Banner Image (R2)' },
+        { name: 'template', type: 'TEXT', widget: 'text', label: 'Layout Template' },
       ],
       hooks: {
         beforeCreate: composeHooks(
@@ -123,7 +120,7 @@ export const slotwirePack: ModelPack = {
       fields: [
         { name: 'title', type: 'TEXT', widget: 'text', label: 'Title', required: true },
         { name: 'slug', type: 'TEXT', widget: 'slug', label: 'Slug', required: true },
-        { name: 'galleryKey', type: 'TEXT', widget: 'text', label: 'Gallery Key (e.g. pottery, hardware)', required: true },
+        { name: 'galleryKey', type: 'TEXT', widget: 'text', label: 'Gallery Grouping Key', required: true },
         { name: 'pageSlug', type: 'TEXT', widget: 'text', label: 'Page Slug' },
         { name: 'alt', type: 'TEXT', widget: 'text', label: 'Image Alt Text', required: true },
         { name: 'imageUrl', type: 'TEXT', widget: 'media', label: 'Image Asset (R2)', required: true },
