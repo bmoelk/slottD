@@ -196,7 +196,10 @@ export async function getSiteContext(c: any, db: any) {
     }
   } catch {}
 
-  let activeSite = (c.get('siteId') as string);
+  const explicitContextSite = typeof c.get === 'function' ? (c.get('siteId') as string) : '';
+  const urlParamSite = (typeof c.req?.query === 'function' ? (c.req.query('site_id') || c.req.query('siteId') || c.req.query('site') || '') : '').trim();
+
+  let activeSite = explicitContextSite;
   if (!activeSite) {
     try {
       activeSite = await resolveSiteId(c);
@@ -206,7 +209,26 @@ export async function getSiteContext(c: any, db: any) {
   if (activeSite) {
     activeSite = normalizeSiteId(activeSite);
     if (!availableSites.includes(activeSite)) {
-      availableSites.push(activeSite);
+      // Allow adding to availableSites ONLY if explicitly requested via context or URL query param
+      const isExplicit = (explicitContextSite && normalizeSiteId(explicitContextSite) === activeSite) ||
+                         (urlParamSite && normalizeSiteId(urlParamSite) === activeSite);
+      if (isExplicit) {
+        availableSites.push(activeSite);
+      } else if (availableSites.length > 0) {
+        // Stale cookie or unverified referer: Fall back to hostDerived if registered, else availableSites[0]
+        let fallbackSite = availableSites[0];
+        try {
+          const rawHost = (typeof c.req?.header === 'function' ? c.req.header('host') : '') || '';
+          const host = rawHost.split(':')[0].toLowerCase();
+          const hostDerived = host.startsWith('cms.') && host.length > 4 ? host.slice(4) : host;
+          if (availableSites.includes(hostDerived)) {
+            fallbackSite = hostDerived;
+          }
+        } catch {}
+        activeSite = fallbackSite;
+      } else {
+        availableSites.push(activeSite);
+      }
     }
   } else if (availableSites.length > 0) {
     activeSite = availableSites[0];

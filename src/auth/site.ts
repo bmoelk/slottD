@@ -95,22 +95,12 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     return normalizeSiteId(cookieSite);
   }
 
-  // 4. Request Origin / Referer (e.g. https://example.com or https://client-brand.org)
-  const origin = c.req.header('origin') || c.req.header('referer');
-  let originHost = '';
-  if (origin) {
-    try {
-      const parsedUrl = new URL(origin);
-      const hostname = parsedUrl.hostname.toLowerCase();
-      if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
-        originHost = hostname;
-      }
-    } catch {}
-  }
+  const path = (c.req?.path || (c.req?.url ? new URL(c.req.url).pathname : '')).toLowerCase();
+  const isAdminRoute = path.startsWith('/admin');
 
-  // 5. Host Header Domain Mapping (e.g. cms.spectragql.dev -> spectragql.dev)
-  let rawHost = c.req.header('host') || '';
-  if (!rawHost && c.req.url) {
+  // 5. Host Header Domain Mapping (e.g. cms.brainendeavor.com -> brainendeavor.com)
+  let rawHost = (typeof c.req?.header === 'function' ? c.req.header('host') : '') || '';
+  if (!rawHost && c.req?.url) {
     try {
       rawHost = new URL(c.req.url).host;
     } catch {}
@@ -123,33 +113,63 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     hostDerived = host;
   }
 
-  // If a direct host or origin match is available
-  const candidateDomain = originHost || hostDerived;
-
-  // 6. Check Configurable Domain Referral Fallback (Disabled by default)
-  const allowReferral = c.env.ALLOW_DOMAIN_REFERRAL_FALLBACK === true || c.env.ALLOW_DOMAIN_REFERRAL_FALLBACK === 'true';
-  if (candidateDomain && allowReferral && c.env.DB) {
-    try {
-      const referralRow = (await c.env.DB.prepare(
-        'SELECT target_site_id FROM site_domain_referrals WHERE referral_domain = ?'
-      )
-        .bind(candidateDomain)
-        .first()) as { target_site_id: string } | null;
-
-      if (referralRow?.target_site_id) {
-        return normalizeSiteId(referralRow.target_site_id);
-      }
-    } catch {}
+  // 6. Request Origin (CORS API requests from frontend sites, e.g. https://brainendeavor.com)
+  // Note: Studio UI (/admin/*) MUST NEVER use Referer or Origin to determine active editing site.
+  let originHost = '';
+  if (!isAdminRoute && typeof c.req?.header === 'function') {
+    const origin = c.req.header('origin') || c.req.header('referer');
+    if (origin) {
+      try {
+        const parsedUrl = new URL(origin);
+        const hostname = parsedUrl.hostname.toLowerCase();
+        // Ignore localhost, internal, and Cloudflare Access / Zero Trust auth domains
+        if (
+          hostname &&
+          hostname !== 'localhost' &&
+          hostname !== '127.0.0.1' &&
+          !hostname.endsWith('.internal') &&
+          !hostname.endsWith('.cloudflareaccess.com')
+        ) {
+          originHost = hostname;
+        }
+      } catch {}
+    }
   }
 
-  if (candidateDomain) {
-    // Check if candidateDomain exists directly in system_site_settings
-    if (c.env.DB) {
+  // Candidate domains to evaluate against database verification
+  // Priority: If host starts with 'cms.', hostDerived is primary. For API requests, originHost is primary.
+  const candidates: string[] = [];
+  if (host.startsWith('cms.') && hostDerived) {
+    candidates.push(hostDerived);
+    if (originHost && originHost !== hostDerived) candidates.push(originHost);
+  } else {
+    if (originHost) candidates.push(originHost);
+    if (hostDerived && hostDerived !== originHost) candidates.push(hostDerived);
+  }
+
+  // 7. Verify candidates against referrals and system_site_settings (Database Baseline Check)
+  const allowReferral = c.env?.ALLOW_DOMAIN_REFERRAL_FALLBACK === true || c.env?.ALLOW_DOMAIN_REFERRAL_FALLBACK === 'true';
+  for (const candidate of candidates) {
+    if (candidate && allowReferral && c.env?.DB) {
+      try {
+        const referralRow = (await c.env.DB.prepare(
+          'SELECT target_site_id FROM site_domain_referrals WHERE referral_domain = ?'
+        )
+          .bind(candidate)
+          .first()) as { target_site_id: string } | null;
+
+        if (referralRow?.target_site_id) {
+          return normalizeSiteId(referralRow.target_site_id);
+        }
+      } catch {}
+    }
+
+    if (candidate && c.env?.DB) {
       try {
         const siteExists = (await c.env.DB.prepare(
           'SELECT site_id FROM system_site_settings WHERE site_id = ? LIMIT 1'
         )
-          .bind(candidateDomain)
+          .bind(candidate)
           .first()) as { site_id: string } | null;
 
         if (siteExists?.site_id) {
@@ -159,18 +179,21 @@ export async function resolveSiteId(c: Context<any>): Promise<string> {
     }
   }
 
-  // 7. Environment Default Site ID (if explicitly configured)
-  const defaultEnvSite = c.env.DEFAULT_SITE_ID || c.env.INITIAL_SITE_ID;
+  // 8. Environment Default Site ID (if explicitly configured)
+  const defaultEnvSite = c.env?.DEFAULT_SITE_ID || c.env?.INITIAL_SITE_ID;
   if (defaultEnvSite) {
     return normalizeSiteId(defaultEnvSite);
   }
 
-  // 8. If candidate domain was found, return it as the site identifier
-  if (candidateDomain) {
-    return normalizeSiteId(candidateDomain);
+  // 9. Host-derived fallback: If host starts with 'cms.' (e.g. cms.brainendeavor.com) or in non-DB environment,
+  // hostDerived represents the server's own canonical CMS host.
+  // Note: originHost from an external Referer/Origin is NEVER accepted without DB verification.
+  if (hostDerived && (host.startsWith('cms.') || !c.env?.DB)) {
+    return normalizeSiteId(hostDerived);
   }
 
-  // 9. Fail fast: No site context could be determined
+  // 10. Fail fast: No verified site context could be determined.
+  // Never blindly return an unverified candidate domain from incoming HTTP headers.
   throw new SiteResolutionError(
     'Missing site context. Please specify site_id in query parameter (?site_id=...), session cookie, or bearer token.'
   );

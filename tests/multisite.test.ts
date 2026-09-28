@@ -200,6 +200,108 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       const site = await resolveSiteId({ req: { header: (k: string) => req.headers.get(k), query: () => null, raw: req }, env: mockEnv } as any);
       expect(site).toBe('primary-brand.com');
     });
+
+    it('ignores external/Zero Trust Referer on /admin/* routes and resolves to host-derived site', async () => {
+      const mockEnv: any = {
+        DB: {
+          prepare: vi.fn().mockImplementation(() => ({
+            bind: vi.fn().mockImplementation((val: string) => ({
+              first: vi.fn().mockImplementation(async () => {
+                if (val === 'brainendeavor.com') {
+                  return { site_id: 'brainendeavor.com' };
+                }
+                return null;
+              }),
+            })),
+          })),
+        },
+      };
+
+      const req = new Request('https://cms.brainendeavor.com/admin/sites', {
+        headers: {
+          host: 'cms.brainendeavor.com',
+          referer: 'https://splitphase.io/cdn-cgi/access/login/cms.brainendeavor.com',
+        },
+      });
+
+      const site = await resolveSiteId({
+        req: {
+          path: '/admin/sites',
+          header: (k: string) => req.headers.get(k),
+          query: () => null,
+          raw: req,
+        },
+        env: mockEnv,
+      } as any);
+
+      expect(site).toBe('brainendeavor.com');
+    });
+
+    it('ignores *.cloudflareaccess.com auth domains on API routes and enforces DB baseline check', async () => {
+      const mockEnv: any = {
+        DB: {
+          prepare: vi.fn().mockImplementation(() => ({
+            bind: vi.fn().mockImplementation((val: string) => ({
+              first: vi.fn().mockImplementation(async () => {
+                if (val === 'brainendeavor.com') {
+                  return { site_id: 'brainendeavor.com' };
+                }
+                return null;
+              }),
+            })),
+          })),
+        },
+      };
+
+      const req = new Request('https://cms.brainendeavor.com/items/posts', {
+        headers: {
+          host: 'cms.brainendeavor.com',
+          referer: 'https://splitphase.cloudflareaccess.com/login',
+        },
+      });
+
+      const site = await resolveSiteId({
+        req: {
+          path: '/items/posts',
+          header: (k: string) => req.headers.get(k),
+          query: () => null,
+          raw: req,
+        },
+        env: mockEnv,
+      } as any);
+
+      expect(site).toBe('brainendeavor.com');
+    });
+
+    it('rejects unverified candidate domain when not registered in system_site_settings (Fail-Fast baseline)', async () => {
+      const mockEnv: any = {
+        DB: {
+          prepare: vi.fn().mockImplementation(() => ({
+            bind: vi.fn().mockReturnThis(),
+            first: vi.fn().mockResolvedValue(null),
+          })),
+        },
+      };
+
+      const req = new Request('https://unregistered-domain.com/items/posts', {
+        headers: {
+          host: 'unregistered-domain.com',
+          origin: 'https://unregistered-domain.com',
+        },
+      });
+
+      await expect(
+        resolveSiteId({
+          req: {
+            path: '/items/posts',
+            header: (k: string) => req.headers.get(k),
+            query: () => null,
+            raw: req,
+          },
+          env: mockEnv,
+        } as any)
+      ).rejects.toThrow(SiteResolutionError);
+    });
   });
 
   describe('Rigid Slot Isolation & Duplicate Slug Coexistence', () => {
@@ -518,6 +620,53 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
 
       const ctx = await getSiteContext(mockCtx, db);
       expect(ctx.activeSite).toBe('drawdown.pro');
+    });
+
+    it('rejects phantom sites from stale cookies and falls back to hostDerived registered site', async () => {
+      const { getSiteContext } = await import('../src/admin/index.js');
+      const mockD1: any = {
+        prepare: vi.fn().mockImplementation((sql: string) => ({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({
+            results: [{ site_id: 'brainendeavor.com', key: 'git_remote_url', value: 'https://github.com/brainendeavor' }],
+            meta: {},
+          }),
+          first: vi.fn().mockImplementation(async () => {
+            if (sql.includes('system_site_settings')) {
+              return { site_id: 'brainendeavor.com' };
+            }
+            return null;
+          }),
+          raw: vi.fn().mockResolvedValue([]),
+        })),
+      };
+      const db = createDb(mockD1);
+
+      // Stale cookie from splitphase.io on cms.brainendeavor.com
+      const mockCtx: any = {
+        get: () => null,
+        req: {
+          path: '/admin/sites',
+          header: (name: string) => {
+            if (name === 'cookie') return 'slottd_active_site=splitphase.io';
+            if (name === 'host') return 'cms.brainendeavor.com';
+            return null;
+          },
+          query: () => null,
+          raw: new Request('https://cms.brainendeavor.com/admin/sites', {
+            headers: {
+              cookie: 'slottd_active_site=splitphase.io',
+              host: 'cms.brainendeavor.com',
+            },
+          }),
+        },
+        env: { DB: mockD1 },
+      };
+
+      const ctx = await getSiteContext(mockCtx, db);
+      expect(ctx.activeSite).toBe('brainendeavor.com');
+      expect(ctx.availableSites).toEqual(['brainendeavor.com']);
+      expect(ctx.availableSites).not.toContain('splitphase.io');
     });
   });
 });
