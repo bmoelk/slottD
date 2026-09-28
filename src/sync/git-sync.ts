@@ -786,3 +786,53 @@ export async function stashUnreleasedAsDrafts(
     documents: affectedDocs,
   };
 }
+
+/**
+ * Verifies an HMAC-SHA256 signature for a raw body payload against a secret.
+ * Supports standard GitHub format (`sha256=<hex>`) or raw hex signature strings.
+ * Uses constant-time comparison to prevent timing attacks.
+ */
+export async function verifyHmacSignature(
+  rawBody: string,
+  signatureHeader: string | undefined | null,
+  secret: string
+): Promise<boolean> {
+  if (!signatureHeader || !secret) return false;
+
+  const cleanSignature = signatureHeader.startsWith('sha256=')
+    ? signatureHeader.slice(7).trim().toLowerCase()
+    : signatureHeader.trim().toLowerCase();
+
+  if (!cleanSignature) return false;
+
+  try {
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const sigBuffer = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      encoder.encode(rawBody)
+    );
+
+    const hashArray = Array.from(new Uint8Array(sigBuffer));
+    const expectedSignature = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+
+    if (cleanSignature.length !== expectedSignature.length) return false;
+    let mismatch = 0;
+    for (let i = 0; i < cleanSignature.length; i++) {
+      mismatch |= cleanSignature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
+    }
+    return mismatch === 0;
+  } catch (err) {
+    console.error('Error during HMAC signature verification:', err);
+    return false;
+  }
+}
+

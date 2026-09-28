@@ -4,9 +4,10 @@ import { itemsRouter } from './api/items.js';
 import { filesRouter } from './api/files.js';
 import { versionsRouter } from './api/versions.js';
 import { adminRouter } from './admin/ui.js';
-import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGitHub } from './sync/git-sync.js';
+import { hydrateFromGit, exportToGitFormat, serializeToFiles, publishReleaseToGitHub, verifyHmacSignature } from './sync/git-sync.js';
 import { getGitDriver } from './sync/driver.js';
 import { createDb } from './db/client.js';
+import { logActivity } from './db/audit.js';
 import { syncCollectionView } from './api/views.js';
 import { resolveSiteId, SiteResolutionError } from './auth/site.js';
 import { slotwirePack } from './packs/slotwire.js';
@@ -664,6 +665,196 @@ app.post('/ext/sync/pull', requireWriteAuth, async (c) => {
     inserted,
     updated,
     collections: Array.from(collections),
+  });
+});
+
+app.post('/ext/sync/webhook', async (c) => {
+  const rawBody = await c.req.text().catch(() => '');
+  let payload: any = {};
+  try {
+    payload = JSON.parse(rawBody || '{}');
+  } catch {
+    payload = {};
+  }
+
+  // 1. Resolve siteId from query param, header, payload, or standard context
+  const querySite = c.req.query('site') || c.req.query('siteId');
+  const headerSite = c.req.header('x-slottd-site');
+  const payloadSite = payload.siteId || payload.site;
+  let siteId = querySite || headerSite || payloadSite || (c as any).get('siteId');
+
+  if (!siteId) {
+    try {
+      siteId = await resolveSiteId(c);
+    } catch {
+      siteId = 'default';
+    }
+  }
+  siteId = siteId.toLowerCase().trim();
+
+  // 2. Fetch site settings from D1
+  const db = createDb(c.env.DB);
+  let siteSettings: Record<string, string> = {};
+  if (c.env.DB) {
+    try {
+      const rows = await db
+        .selectFrom('system_site_settings')
+        .where('site_id', '=', siteId)
+        .selectAll()
+        .execute();
+      for (const r of rows) siteSettings[r.key] = r.value;
+    } catch {}
+  }
+
+  // 3. Webhook Authentication / HMAC Verification
+  const sigHeader =
+    c.req.header('x-hub-signature-256') ||
+    c.req.header('x-signature-sha256') ||
+    c.req.header('x-slottd-signature');
+
+  const webhookSecret =
+    siteSettings.webhook_secret ||
+    siteSettings.github_webhook_secret ||
+    (c.env as any).GITHUB_WEBHOOK_SECRET ||
+    (c.env as any).GIT_SYNC_WEBHOOK_SECRET;
+
+  const authHeader = c.req.header('authorization');
+  const apiKeyHeader = c.req.header('x-api-key');
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : apiKeyHeader?.trim();
+
+  let isAuthenticated = false;
+
+  if (sigHeader && webhookSecret) {
+    isAuthenticated = await verifyHmacSignature(rawBody, sigHeader, webhookSecret);
+  } else if (bearerToken) {
+    const adminKey = (c.env as any).ADMIN_API_KEY || (c.env as any).ADMIN_PASSWORD;
+    if (adminKey && bearerToken === adminKey) {
+      isAuthenticated = true;
+    } else if (siteSettings.api_key && bearerToken === siteSettings.api_key) {
+      isAuthenticated = true;
+    }
+  }
+
+  if (!isAuthenticated) {
+    return c.json(
+      { error: 'Unauthorized: Invalid webhook signature or missing authentication' },
+      401
+    );
+  }
+
+  // 4. Branch / Ref filtering
+  const targetBranch = siteSettings.git_branch || (c.env as any).GIT_BRANCH || 'main';
+  const targetRef = `refs/heads/${targetBranch}`;
+
+  if (payload.ref) {
+    if (payload.deleted === true) {
+      return c.json({
+        success: true,
+        ignored: true,
+        message: `Ignoring branch deletion event for '${payload.ref}'`,
+      });
+    }
+
+    if (payload.ref !== targetRef && payload.ref !== targetBranch) {
+      return c.json({
+        success: true,
+        ignored: true,
+        message: `Ignoring push for non-target ref '${payload.ref}' (tracking '${targetRef}')`,
+      });
+    }
+  }
+
+  // 5. Ingest HEAD content from remote Git repository
+  const remoteUrl = siteSettings.git_remote_url || (c.env as any).GIT_REMOTE_URL;
+  if (!remoteUrl) {
+    return c.json({ error: `No Git remote repository configured for site '${siteId}'` }, 400);
+  }
+
+  const gitToken = siteSettings.git_token || (c.env as any).GIT_TOKEN || (c.env as any).GITHUB_TOKEN;
+
+  const driver = await getGitDriver({
+    url: remoteUrl,
+    branch: targetBranch,
+    token: gitToken,
+    repoPath: siteSettings.repo_path || (c.env as any).REPO_PATH,
+    contentPath: siteSettings.content_path ?? '',
+    isProduction: (c.env as any).ENVIRONMENT === 'production',
+    siteId,
+  });
+
+  const tag = payload.after || 'HEAD';
+  const items = await driver.loadTagContent(tag);
+  const { inserted, updated } = await hydrateFromGit(db, items, 1, siteId);
+
+  // Dynamically sync collection views
+  const collections = new Set<string>();
+  for (const it of items) {
+    if (it.collection) collections.add(it.collection);
+  }
+  for (const col of collections) {
+    try {
+      await syncCollectionView(db, col);
+    } catch {}
+  }
+
+  // 6. Dispatch Website Rebuild if DEPLOY_HOOK_URL is configured
+  const deployHookUrl = siteSettings.deploy_hook_url || (c.env as any).DEPLOY_HOOK_URL;
+  let rebuildTriggered = false;
+  let rebuildStatus: number | null = null;
+
+  if (deployHookUrl) {
+    try {
+      const rebuildRes = await fetch(deployHookUrl, {
+        method: 'POST',
+        headers: {
+          'User-Agent': 'SlottD-Webhook/1.0',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          event: 'slottd_sync_webhook',
+          siteId,
+          ref: payload.ref || targetRef,
+          commitSha: payload.after || null,
+          timestamp: Date.now(),
+        }),
+      });
+      rebuildTriggered = rebuildRes.ok;
+      rebuildStatus = rebuildRes.status;
+    } catch (err: any) {
+      console.error(`Failed to trigger deploy hook URL for site '${siteId}':`, err.message);
+    }
+  }
+
+  // 7. Audit Activity Log
+  await logActivity(db, {
+    siteId,
+    actor: 'webhook',
+    action: 'webhook_site_rebuild',
+    collection: '_system',
+    documentId: 'webhook',
+    documentTitle: 'Git Push Sync & Rebuild',
+    details: JSON.stringify({
+      rebuildTriggered,
+      rebuildStatus,
+      deployHookConfigured: Boolean(deployHookUrl),
+      inserted,
+      updated,
+      ref: payload.ref || targetRef,
+      commitSha: payload.after || null,
+      collections: Array.from(collections),
+    }),
+  });
+
+  return c.json({
+    success: true,
+    siteId,
+    ref: payload.ref || targetRef,
+    itemCount: items.length,
+    inserted,
+    updated,
+    collections: Array.from(collections),
+    rebuildTriggered,
+    rebuildStatus,
   });
 });
 
