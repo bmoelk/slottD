@@ -352,6 +352,7 @@ mod tests {
 
         // Drop the listener to close the socket
         drop(listener);
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Now is_port_ready must return false
         assert!(!is_port_ready(port), "Port {} should be reported as not ready after drop", port);

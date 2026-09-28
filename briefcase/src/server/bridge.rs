@@ -351,6 +351,105 @@ Connection: close\r\n\
         return Ok(());
     }
 
+    // Check Deployment Readiness (/exec/deploy/check)
+    if method == "POST" && path == "/exec/deploy/check" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+        let is_mixed_mode = parsed.get("isMixedMode").and_then(|v| v.as_bool()).unwrap_or(true);
+        let unreleased_edits = parsed.get("unreleasedEdits").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let force = parsed.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let git = GitDriver::new(target_repo).with_site_id(req_site_id);
+
+        match git.check_deploy_readiness(is_mixed_mode, unreleased_edits, force) {
+            Ok(readiness) => {
+                let resp = json!({
+                    "success": true,
+                    "level": format!("{:?}", readiness.level),
+                    "allowed": readiness.allowed,
+                    "isMixedMode": readiness.is_mixed_mode,
+                    "unpushedCommits": readiness.unpushed_commits,
+                    "unpulledCommits": readiness.unpulled_commits,
+                    "unreleasedEdits": readiness.unreleased_edits,
+                    "message": readiness.message,
+                    "consequences": readiness.consequences,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Failed to evaluate deploy readiness: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Execute Deploy with Guardrails (/exec/deploy)
+    if method == "POST" && path == "/exec/deploy" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+        let is_mixed_mode = parsed.get("isMixedMode").and_then(|v| v.as_bool()).unwrap_or(true);
+        let unreleased_edits = parsed.get("unreleasedEdits").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let force = parsed.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        let git = GitDriver::new(target_repo).with_site_id(req_site_id.clone());
+
+        match git.check_deploy_readiness(is_mixed_mode, unreleased_edits, force) {
+            Ok(readiness) => {
+                if !readiness.allowed && !force {
+                    let resp = json!({
+                        "success": false,
+                        "level": format!("{:?}", readiness.level),
+                        "allowed": false,
+                        "blocked": true,
+                        "message": readiness.message,
+                        "consequences": readiness.consequences,
+                        "hint": "Pass force: true to override guardrails and deploy anyway."
+                    });
+                    send_json_response(&mut stream, 428, &resp.to_string(), cors_headers)?;
+                    return Ok(());
+                }
+
+                log_msg(
+                    logs,
+                    secondary,
+                    format!("🚀 [Deploy Bridge] Deployment authorized (level: {:?}, force: {}) for site: {:?}", readiness.level, force, req_site_id),
+                );
+
+                let resp = json!({
+                    "success": true,
+                    "level": format!("{:?}", readiness.level),
+                    "allowed": true,
+                    "forced": force && !readiness.consequences.is_empty(),
+                    "message": readiness.message,
+                    "consequences": readiness.consequences,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Deploy evaluation failed: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
     // 3. Execute Release (Export D1 + Git Commit, Tag, Push)
     if method == "POST" && path == "/exec/release" {
         let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);

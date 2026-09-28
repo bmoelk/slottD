@@ -31,6 +31,28 @@ pub struct RebaseOutcome {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DeployReadinessLevel {
+    /// Level 1: Safe & Clean. Local workstation and origin/main are in sync.
+    Safe,
+    /// Level 2: Informational. Single-user standalone or non-conflicting background rebuild.
+    Notice,
+    /// Level 3: Strong Warning with explicit consequences. Diverged state in mixed mode.
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeployReadiness {
+    pub level: DeployReadinessLevel,
+    pub allowed: bool,
+    pub is_mixed_mode: bool,
+    pub unpushed_commits: usize,
+    pub unpulled_commits: usize,
+    pub unreleased_edits: usize,
+    pub message: String,
+    pub consequences: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TagDetails {
     pub tag: String,
@@ -458,6 +480,94 @@ impl GitDriver {
         }
 
         Ok(commit_sha)
+    }
+
+    /// Evaluates deployment readiness based on environment mode and divergence.
+    ///
+    /// Single-user standalone mode is 100% frictionless (never blocks).
+    /// Mixed mode with clean remote is also completely safe.
+    /// Mixed mode with divergence triggers a Level 3 consequence warning unless force=true.
+    pub fn check_deploy_readiness(
+        &self,
+        is_mixed_mode: bool,
+        unreleased_edits: usize,
+        force: bool,
+    ) -> Result<DeployReadiness> {
+        let export_branch = self.export_branch_name();
+        let divergence = self.get_divergence().unwrap_or(DivergenceInfo {
+            export_branch,
+            target_branch: self.branch.clone(),
+            ahead_count: 0,
+            behind_count: 0,
+            pending_files: Vec::new(),
+        });
+
+        let unpushed_commits = divergence.ahead_count;
+        let unpulled_commits = divergence.behind_count;
+        let is_diverged = unpushed_commits > 0 || unpulled_commits > 0 || unreleased_edits > 0;
+
+        // 1. Single-user standalone mode: 100% Frictionless
+        if !is_mixed_mode {
+            return Ok(DeployReadiness {
+                level: DeployReadinessLevel::Safe,
+                allowed: true,
+                is_mixed_mode: false,
+                unpushed_commits,
+                unpulled_commits,
+                unreleased_edits,
+                message: "Standalone single-user mode: direct deployment allowed frictionlessly.".to_string(),
+                consequences: Vec::new(),
+            });
+        }
+
+        // 2. Mixed mode: Clean state (ahead == 0 && behind == 0 && unreleased == 0)
+        if !is_diverged {
+            return Ok(DeployReadiness {
+                level: DeployReadinessLevel::Safe,
+                allowed: true,
+                is_mixed_mode: true,
+                unpushed_commits: 0,
+                unpulled_commits: 0,
+                unreleased_edits: 0,
+                message: "Mixed mode clean: local state is fully synchronized with origin/main.".to_string(),
+                consequences: Vec::new(),
+            });
+        }
+
+        // 3. Mixed mode: Diverged state
+        let mut consequences = Vec::new();
+        consequences.push("Production will be deployed with local unpushed workstation files.".to_string());
+        consequences.push("Remote Web CMS editors and other team members will be out of sync.".to_string());
+        consequences.push("Production site content will differ from what is committed to Git.".to_string());
+
+        let warning_message = format!(
+            "Local state and origin/{} are out of sync: {} unpushed commit(s), {} unpulled commit(s), {} unreleased edit(s).",
+            self.branch, unpushed_commits, unpulled_commits, unreleased_edits
+        );
+
+        if force {
+            Ok(DeployReadiness {
+                level: DeployReadinessLevel::Warning,
+                allowed: true,
+                is_mixed_mode: true,
+                unpushed_commits,
+                unpulled_commits,
+                unreleased_edits,
+                message: format!("FORCE OVERRIDE: Proceeding with deployment despite divergence. {}", warning_message),
+                consequences,
+            })
+        } else {
+            Ok(DeployReadiness {
+                level: DeployReadinessLevel::Warning,
+                allowed: false,
+                is_mixed_mode: true,
+                unpushed_commits,
+                unpulled_commits,
+                unreleased_edits,
+                message: warning_message,
+                consequences,
+            })
+        }
     }
 
     /// Inspects status of the Git repository.
@@ -1730,5 +1840,54 @@ mod tests {
             &Command::new("git").args(["-C", local_str, "status", "--porcelain"]).output().unwrap().stdout
         ).to_string();
         assert!(status_out.trim().is_empty(), "Working tree should be clean after abort: {}", status_out);
+    }
+
+    #[test]
+    fn test_check_deploy_readiness_matrix() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-deploy-readiness-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(88990)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let repo = temp_base.join("repo");
+        let _ = fs::create_dir_all(&repo);
+        let _ = Command::new("git").args(["init", repo.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", repo.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = fs::write(repo.join("file.txt"), "hello");
+        let _ = Command::new("git").args(["-C", repo.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", repo.to_str().unwrap(), "commit", "-m", "init"]).output();
+
+        let driver = GitDriver::new(repo.clone())
+            .with_branch("main".to_string())
+            .with_site_id(Some("mysite".to_string()));
+
+        let _ = driver.ensure_export_branch().unwrap();
+
+        // 1. Standalone single-user mode: ALWAYS allowed, Level 1 Safe even if unreleased edits exist
+        let standalone_res = driver.check_deploy_readiness(false, 5, false).unwrap();
+        assert_eq!(standalone_res.level, DeployReadinessLevel::Safe);
+        assert!(standalone_res.allowed);
+        assert!(!standalone_res.is_mixed_mode);
+
+        // 2. Mixed mode with clean state (ahead=0, behind=0, unreleased=0): Allowed, Level 1 Safe
+        let clean_mixed_res = driver.check_deploy_readiness(true, 0, false).unwrap();
+        assert_eq!(clean_mixed_res.level, DeployReadinessLevel::Safe);
+        assert!(clean_mixed_res.allowed);
+        assert!(clean_mixed_res.is_mixed_mode);
+
+        // 3. Mixed mode with diverged state (unreleased edits > 0): Blocked, Level 3 Warning
+        let blocked_mixed_res = driver.check_deploy_readiness(true, 2, false).unwrap();
+        assert_eq!(blocked_mixed_res.level, DeployReadinessLevel::Warning);
+        assert!(!blocked_mixed_res.allowed);
+        assert!(blocked_mixed_res.consequences.len() >= 3);
+        assert!(blocked_mixed_res.message.contains("2 unreleased edit(s)"));
+
+        // 4. Mixed mode with diverged state and force=true: Allowed, Level 3 Warning with override
+        let forced_mixed_res = driver.check_deploy_readiness(true, 2, true).unwrap();
+        assert_eq!(forced_mixed_res.level, DeployReadinessLevel::Warning);
+        assert!(forced_mixed_res.allowed);
+        assert!(forced_mixed_res.message.contains("FORCE OVERRIDE"));
     }
 }

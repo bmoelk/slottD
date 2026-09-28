@@ -6,6 +6,6 @@ pub mod sync;
 
 pub use auth::KeyringStore;
 pub use db::D1Database;
-pub use git::{DivergenceInfo, GitDriver, GitStatusInfo, RebaseOutcome};
+pub use git::{DeployReadiness, DeployReadinessLevel, DivergenceInfo, GitDriver, GitStatusInfo, RebaseOutcome};
 pub use server::{BridgeServer, DualSupervisor, ManagedService, ServiceStatus, SiteRegistration, SiteRegistry};
 pub use sync::SyncEngine;
