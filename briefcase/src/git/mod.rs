@@ -3,13 +3,32 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GitStatusInfo {
     pub branch: String,
     pub remote: String,
     pub is_dirty: bool,
     pub dirty_files: Vec<String>,
     pub unpushed_commits: usize,
+    #[serde(default)]
+    pub divergence: Option<DivergenceInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DivergenceInfo {
+    pub export_branch: String,
+    pub target_branch: String,
+    pub ahead_count: usize,
+    pub behind_count: usize,
+    pub pending_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RebaseOutcome {
+    pub success: bool,
+    pub has_conflicts: bool,
+    pub conflicting_files: Vec<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -96,6 +115,351 @@ impl GitDriver {
         None
     }
 
+    /// Returns the standardized local export branch name for this site or branch.
+    /// e.g. "briefcase/splitphase.io" or "briefcase/main".
+    pub fn export_branch_name(&self) -> String {
+        if let Some(ref s) = self.site_id {
+            let clean = s.trim().to_lowercase().replace(' ', "-");
+            if !clean.is_empty() {
+                return format!("briefcase/{}", clean);
+            }
+        }
+        format!("briefcase/{}", self.branch)
+    }
+
+    /// Ensures the local export branch exists in the repository.
+    /// If missing, creates it from self.branch or HEAD without switching branches.
+    pub fn ensure_export_branch(&self) -> Result<String> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+        let export_branch = self.export_branch_name();
+
+        let check = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", "--verify", &format!("refs/heads/{}", export_branch)])
+            .output();
+
+        if let Ok(c) = check {
+            if c.status.success() {
+                return Ok(export_branch);
+            }
+        }
+
+        // Try creating from self.branch if it exists
+        let create_res = Command::new("git")
+            .args(["-C", repo_str, "branch", &export_branch, &self.branch])
+            .output();
+
+        match create_res {
+            Ok(o) if o.status.success() => Ok(export_branch),
+            _ => {
+                // Fallback: try creating from HEAD
+                let head_res = Command::new("git")
+                    .args(["-C", repo_str, "branch", &export_branch, "HEAD"])
+                    .output()?;
+                if head_res.status.success() {
+                    Ok(export_branch)
+                } else {
+                    anyhow::bail!(
+                        "Failed to create local export branch '{}': {}",
+                        export_branch,
+                        String::from_utf8_lossy(&head_res.stderr)
+                    );
+                }
+            }
+        }
+    }
+
+    /// Computes divergence telemetry between the local export branch and target upstream branch.
+    pub fn get_divergence(&self) -> Result<DivergenceInfo> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+        let export_branch = self.export_branch_name();
+        let target_branch = self.branch.clone();
+
+        let branch_exists = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", "--verify", &format!("refs/heads/{}", export_branch)])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !branch_exists {
+            return Ok(DivergenceInfo {
+                export_branch,
+                target_branch,
+                ahead_count: 0,
+                behind_count: 0,
+                pending_files: Vec::new(),
+            });
+        }
+
+        let remote_ref = format!("origin/{}", target_branch);
+        let has_remote_ref = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", "--verify", &remote_ref])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let base_ref = if has_remote_ref {
+            remote_ref
+        } else {
+            target_branch.clone()
+        };
+
+        let ahead_out = Command::new("git")
+            .args(["-C", repo_str, "rev-list", "--count", &format!("{}..{}", base_ref, export_branch)])
+            .output();
+        let ahead_count = ahead_out
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let behind_out = Command::new("git")
+            .args(["-C", repo_str, "rev-list", "--count", &format!("{}..{}", export_branch, base_ref)])
+            .output();
+        let behind_count = behind_out
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let diff_out = Command::new("git")
+            .args(["-C", repo_str, "diff", "--name-only", &format!("{}...{}", base_ref, export_branch)])
+            .output();
+        let pending_files = diff_out
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(DivergenceInfo {
+            export_branch,
+            target_branch,
+            ahead_count,
+            behind_count,
+            pending_files,
+        })
+    }
+
+    /// Extracts unmerged/conflicting files from `git status --porcelain`.
+    pub fn detect_conflicting_files(repo_str: &str) -> Vec<String> {
+        let status_out = Command::new("git")
+            .args(["-C", repo_str, "status", "--porcelain"])
+            .output();
+
+        if let Ok(out) = status_out {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|line| {
+                    line.starts_with("UU ")
+                        || line.starts_with("AA ")
+                        || line.starts_with("UD ")
+                        || line.starts_with("DU ")
+                        || line.starts_with("DD ")
+                        || line.starts_with("AU ")
+                        || line.starts_with("UA ")
+                })
+                .map(|line| line[3..].trim().to_string())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Fetches upstream and rebases the local export branch onto origin/<target_branch>.
+    pub fn rebase_export_branch(&self) -> Result<RebaseOutcome> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+        let export_branch = self.ensure_export_branch()?;
+        let target_branch = &self.branch;
+
+        // 1. Fetch remote if available
+        let _ = Command::new("git")
+            .args(["-C", repo_str, "fetch", "origin", target_branch])
+            .output();
+
+        // 2. Checkout the export branch
+        let checkout_res = Command::new("git")
+            .args(["-C", repo_str, "checkout", &export_branch])
+            .output()
+            .context("Failed to checkout export branch before rebase")?;
+        if !checkout_res.status.success() {
+            anyhow::bail!(
+                "Failed to checkout export branch '{}': {}",
+                export_branch,
+                String::from_utf8_lossy(&checkout_res.stderr)
+            );
+        }
+
+        // 3. Determine rebase target (origin/main if exists, else main)
+        let remote_ref = format!("origin/{}", target_branch);
+        let has_remote = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", "--verify", &remote_ref])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        let rebase_target = if has_remote {
+            remote_ref.as_str()
+        } else {
+            target_branch.as_str()
+        };
+
+        // 4. Run git rebase
+        let rebase_res = Command::new("git")
+            .args(["-C", repo_str, "rebase", rebase_target])
+            .output()
+            .context("Failed to execute git rebase")?;
+
+        if rebase_res.status.success() {
+            return Ok(RebaseOutcome {
+                success: true,
+                has_conflicts: false,
+                conflicting_files: Vec::new(),
+                message: format!("Successfully rebased '{}' onto '{}'", export_branch, rebase_target),
+            });
+        }
+
+        // Rebase failed or halted due to conflict
+        let conflicting_files = Self::detect_conflicting_files(repo_str);
+        let has_conflicts = !conflicting_files.is_empty();
+
+        let stderr_msg = String::from_utf8_lossy(&rebase_res.stderr).to_string();
+        let stdout_msg = String::from_utf8_lossy(&rebase_res.stdout).to_string();
+        let message = if has_conflicts {
+            format!("Rebase halted with {} conflicting file(s)", conflicting_files.len())
+        } else {
+            format!("Rebase failed: {}{}", stderr_msg, stdout_msg)
+        };
+
+        Ok(RebaseOutcome {
+            success: false,
+            has_conflicts,
+            conflicting_files,
+            message,
+        })
+    }
+
+    /// Continues an in-progress rebase after conflicts have been resolved and staged.
+    pub fn rebase_continue(&self) -> Result<RebaseOutcome> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+
+        // GIT_EDITOR=true to auto-accept default rebase commit messages
+        let mut cmd = Command::new("git");
+        cmd.args(["-C", repo_str, "rebase", "--continue"]);
+        cmd.env("GIT_EDITOR", "true");
+
+        let res = cmd.output().context("Failed to execute git rebase --continue")?;
+        if res.status.success() {
+            return Ok(RebaseOutcome {
+                success: true,
+                has_conflicts: false,
+                conflicting_files: Vec::new(),
+                message: "Rebase continued and completed cleanly.".to_string(),
+            });
+        }
+
+        let conflicting_files = Self::detect_conflicting_files(repo_str);
+        let has_conflicts = !conflicting_files.is_empty();
+        let stderr_msg = String::from_utf8_lossy(&res.stderr).to_string();
+
+        Ok(RebaseOutcome {
+            success: false,
+            has_conflicts,
+            conflicting_files,
+            message: format!("Rebase continue halted: {}", stderr_msg),
+        })
+    }
+
+    /// Aborts an in-progress rebase and resets to pre-rebase HEAD.
+    pub fn rebase_abort(&self) -> Result<()> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+        let res = Command::new("git")
+            .args(["-C", repo_str, "rebase", "--abort"])
+            .output()
+            .context("Failed to execute git rebase --abort")?;
+        if !res.status.success() {
+            anyhow::bail!("git rebase --abort failed: {}", String::from_utf8_lossy(&res.stderr));
+        }
+        Ok(())
+    }
+
+    /// Fast-forwards remote target_branch from the rebased export_branch,
+    /// advances local target_branch, and tags if requested.
+    /// Strictly NEVER pushes export_branch as a remote branch.
+    pub fn push_rebased_to_main(
+        &self,
+        tag: Option<&str>,
+        message: Option<&str>,
+        push: bool,
+        force: bool,
+    ) -> Result<String> {
+        let repo_str = self.repo_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid repo_path"))?;
+        let export_branch = self.export_branch_name();
+        let target_branch = &self.branch;
+
+        // 1. Get HEAD commit of export_branch
+        let rev_out = Command::new("git")
+            .args(["-C", repo_str, "rev-parse", &export_branch])
+            .output()
+            .context("Failed to resolve export branch commit")?;
+        if !rev_out.status.success() {
+            anyhow::bail!("Cannot push: export branch '{}' has no commit", export_branch);
+        }
+        let commit_sha = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
+
+        // 2. Advance local target_branch to match export_branch
+        let branch_update = Command::new("git")
+            .args(["-C", repo_str, "branch", "-f", target_branch, &export_branch])
+            .output();
+        if let Err(e) = branch_update {
+            anyhow::bail!("Failed to advance local '{}' branch: {}", target_branch, e);
+        }
+
+        // 3. Create tag on target_branch if tag name provided
+        if let Some(tag_name) = tag {
+            let msg = message.unwrap_or(tag_name);
+            let tag_res = Command::new("git")
+                .args(["-C", repo_str, "tag", "-a", tag_name, "-m", msg, &commit_sha])
+                .output();
+            if let Ok(ref t) = tag_res {
+                if !t.status.success() {
+                    // Tag might already exist
+                }
+            }
+        }
+
+        // 4. Push export_branch:target_branch to origin
+        if push {
+            let push_ref = format!("{}:{}", export_branch, target_branch);
+            let mut push_args = vec!["-C", repo_str, "push"];
+            if force {
+                push_args.push("--force-with-lease");
+            }
+            push_args.push("origin");
+            push_args.push(&push_ref);
+
+            let push_res = Command::new("git")
+                .args(&push_args)
+                .output()
+                .context("Failed to push to remote origin")?;
+
+            if !push_res.status.success() {
+                anyhow::bail!("git push to origin failed: {}", String::from_utf8_lossy(&push_res.stderr));
+            }
+
+            // Push tags if tag created
+            if let Some(tag_name) = tag {
+                let tag_ref = format!("refs/tags/{}", tag_name);
+                let _ = Command::new("git")
+                    .args(["-C", repo_str, "push", "origin", &tag_ref])
+                    .output();
+            }
+        }
+
+        Ok(commit_sha)
+    }
+
     /// Inspects status of the Git repository.
     pub fn status(&self) -> Result<GitStatusInfo> {
         let branch_out = Command::new("git")
@@ -139,12 +503,15 @@ impl GitDriver {
             .parse::<usize>()
             .unwrap_or(0);
 
+        let divergence = self.get_divergence().ok();
+
         Ok(GitStatusInfo {
             branch,
             remote,
             is_dirty,
             dirty_files,
             unpushed_commits,
+            divergence,
         })
     }
 
@@ -1163,5 +1530,205 @@ mod tests {
         let adopt_res = GitDriver::setup_local_repo(remote_str, &new_target, "main");
         assert!(adopt_res.is_ok());
         assert_eq!(adopt_res.unwrap(), true); // true = was adopted
+    }
+
+    #[test]
+    fn test_export_branch_naming() {
+        let driver1 = GitDriver::new(PathBuf::from("/tmp"))
+            .with_branch("main".to_string())
+            .with_site_id(Some("splitphase.io".to_string()));
+        assert_eq!(driver1.export_branch_name(), "briefcase/splitphase.io");
+
+        let driver2 = GitDriver::new(PathBuf::from("/tmp"))
+            .with_branch("main".to_string())
+            .with_site_id(Some("brain endeavor".to_string()));
+        assert_eq!(driver2.export_branch_name(), "briefcase/brain-endeavor");
+
+        let driver3 = GitDriver::new(PathBuf::from("/tmp"))
+            .with_branch("production".to_string())
+            .with_site_id(None);
+        assert_eq!(driver3.export_branch_name(), "briefcase/production");
+    }
+
+    #[test]
+    fn test_ensure_export_branch_and_divergence() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-branch-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(99887)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let bare_remote = temp_base.join("remote.git");
+        let _ = Command::new("git").args(["init", "--bare", bare_remote.to_str().unwrap()]).output();
+
+        // Seed initial commit
+        let seed = temp_base.join("seed");
+        let _ = fs::create_dir_all(&seed);
+        let _ = Command::new("git").args(["init", seed.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "remote", "add", "origin", bare_remote.to_str().unwrap()]).output();
+        let _ = fs::write(seed.join("README.md"), "# Init");
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "commit", "-m", "init"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "push", "origin", "main"]).output();
+
+        // Local clone
+        let local_repo = temp_base.join("local");
+        let _ = Command::new("git").args(["clone", bare_remote.to_str().unwrap(), local_repo.to_str().unwrap()]).output();
+
+        let driver = GitDriver::new(local_repo.clone())
+            .with_branch("main".to_string())
+            .with_site_id(Some("test-site".to_string()));
+
+        // 1. Ensure export branch is created
+        let branch_name = driver.ensure_export_branch().unwrap();
+        assert_eq!(branch_name, "briefcase/test-site");
+
+        // 2. Initial divergence should be clean
+        let div = driver.get_divergence().unwrap();
+        assert_eq!(div.export_branch, "briefcase/test-site");
+        assert_eq!(div.ahead_count, 0);
+        assert_eq!(div.behind_count, 0);
+        assert!(div.pending_files.is_empty());
+
+        // 3. Make a commit on export branch
+        let local_str = local_repo.to_str().unwrap();
+        let _ = Command::new("git").args(["-C", local_str, "checkout", "briefcase/test-site"]).output();
+        let _ = fs::write(local_repo.join("content-1.json"), r#"{"title":"New"}"#);
+        let _ = Command::new("git").args(["-C", local_str, "add", "."]).output();
+        let _ = Command::new("git").args(["-C", local_str, "commit", "-m", "feat: new content"]).output();
+
+        // 4. Divergence should report 1 ahead with pending file
+        let div_after = driver.get_divergence().unwrap();
+        assert_eq!(div_after.ahead_count, 1);
+        assert_eq!(div_after.behind_count, 0);
+        assert_eq!(div_after.pending_files, vec!["content-1.json".to_string()]);
+    }
+
+    #[test]
+    fn test_rebase_clean_disjoint_upstream() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-rebase-clean-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(88776)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let bare_remote = temp_base.join("remote.git");
+        let _ = Command::new("git").args(["init", "--bare", bare_remote.to_str().unwrap()]).output();
+
+        // Seed initial commit
+        let seed = temp_base.join("seed");
+        let _ = fs::create_dir_all(&seed);
+        let _ = Command::new("git").args(["init", seed.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "remote", "add", "origin", bare_remote.to_str().unwrap()]).output();
+        let _ = fs::write(seed.join("base.txt"), "base");
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "commit", "-m", "init"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "push", "origin", "main"]).output();
+
+        // Local clone
+        let local_repo = temp_base.join("local");
+        let _ = Command::new("git").args(["clone", bare_remote.to_str().unwrap(), local_repo.to_str().unwrap()]).output();
+        let local_str = local_repo.to_str().unwrap();
+
+        let driver = GitDriver::new(local_repo.clone())
+            .with_branch("main".to_string())
+            .with_site_id(Some("test-site".to_string()));
+
+        let _ = driver.ensure_export_branch().unwrap();
+
+        // 1. Advance remote via seed (simulate Web CMS pushing upstream commit)
+        let seed_str = seed.to_str().unwrap();
+        let _ = fs::write(seed.join("cms-edit.json"), r#"{"title":"Web CMS"}"#);
+        let _ = Command::new("git").args(["-C", seed_str, "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed_str, "commit", "-m", "feat: web cms edit"]).output();
+        let _ = Command::new("git").args(["-C", seed_str, "push", "origin", "main"]).output();
+
+        // 2. Commit a disjoint file locally on export branch
+        let _ = Command::new("git").args(["-C", local_str, "checkout", "briefcase/test-site"]).output();
+        let _ = fs::write(local_repo.join("local-edit.json"), r#"{"title":"Local Workstation"}"#);
+        let _ = Command::new("git").args(["-C", local_str, "add", "."]).output();
+        let _ = Command::new("git").args(["-C", local_str, "commit", "-m", "feat: local edit"]).output();
+
+        // 3. Rebase export branch onto origin/main
+        let outcome = driver.rebase_export_branch().unwrap();
+        assert!(outcome.success, "Rebase should succeed cleanly for disjoint changes: {}", outcome.message);
+        assert!(!outcome.has_conflicts);
+
+        // 4. Push rebased to remote main
+        let commit_sha = driver.push_rebased_to_main(Some("release-test-v1"), Some("release v1"), true, false).unwrap();
+        assert!(!commit_sha.is_empty());
+
+        // Verify remote main has both files
+        let _ = Command::new("git").args(["-C", seed_str, "pull", "origin", "main"]).output();
+        assert!(seed.join("cms-edit.json").exists());
+        assert!(seed.join("local-edit.json").exists());
+    }
+
+    #[test]
+    fn test_rebase_conflict_and_abort() {
+        let temp_base = std::env::temp_dir().join(format!(
+            "slottd-rebase-conflict-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(77665)
+        ));
+        let _ = fs::create_dir_all(&temp_base);
+        let _guard = TempDirGuard(temp_base.clone());
+
+        let bare_remote = temp_base.join("remote.git");
+        let _ = Command::new("git").args(["init", "--bare", bare_remote.to_str().unwrap()]).output();
+
+        // Seed initial commit
+        let seed = temp_base.join("seed");
+        let _ = fs::create_dir_all(&seed);
+        let _ = Command::new("git").args(["init", seed.to_str().unwrap()]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "checkout", "-b", "main"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "remote", "add", "origin", bare_remote.to_str().unwrap()]).output();
+        let _ = fs::write(seed.join("shared.json"), r#"{"version":1}"#);
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "commit", "-m", "init"]).output();
+        let _ = Command::new("git").args(["-C", seed.to_str().unwrap(), "push", "origin", "main"]).output();
+
+        // Local clone
+        let local_repo = temp_base.join("local");
+        let _ = Command::new("git").args(["clone", bare_remote.to_str().unwrap(), local_repo.to_str().unwrap()]).output();
+        let local_str = local_repo.to_str().unwrap();
+
+        let driver = GitDriver::new(local_repo.clone())
+            .with_branch("main".to_string())
+            .with_site_id(Some("test-site".to_string()));
+
+        let _ = driver.ensure_export_branch().unwrap();
+
+        // 1. Advance remote with conflicting edit to shared.json
+        let seed_str = seed.to_str().unwrap();
+        let _ = fs::write(seed.join("shared.json"), r#"{"version":2,"from":"remote"}"#);
+        let _ = Command::new("git").args(["-C", seed_str, "add", "."]).output();
+        let _ = Command::new("git").args(["-C", seed_str, "commit", "-m", "feat: remote version 2"]).output();
+        let _ = Command::new("git").args(["-C", seed_str, "push", "origin", "main"]).output();
+
+        // 2. Make local conflicting edit to shared.json on export branch
+        let _ = Command::new("git").args(["-C", local_str, "checkout", "briefcase/test-site"]).output();
+        let _ = fs::write(local_repo.join("shared.json"), r#"{"version":2,"from":"local"}"#);
+        let _ = Command::new("git").args(["-C", local_str, "add", "."]).output();
+        let _ = Command::new("git").args(["-C", local_str, "commit", "-m", "feat: local version 2"]).output();
+
+        // 3. Attempt rebase: should halt with conflict
+        let outcome = driver.rebase_export_branch().unwrap();
+        assert!(!outcome.success, "Rebase should halt due to conflict");
+        assert!(outcome.has_conflicts);
+        assert!(outcome.conflicting_files.contains(&"shared.json".to_string()));
+
+        // 4. Abort rebase
+        let abort_res = driver.rebase_abort();
+        assert!(abort_res.is_ok(), "Rebase abort should succeed");
+
+        // 5. Verify local repo is clean and back on export branch
+        let status_out = String::from_utf8_lossy(
+            &Command::new("git").args(["-C", local_str, "status", "--porcelain"]).output().unwrap().stdout
+        ).to_string();
+        assert!(status_out.trim().is_empty(), "Working tree should be clean after abort: {}", status_out);
     }
 }

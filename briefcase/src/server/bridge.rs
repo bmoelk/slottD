@@ -211,6 +211,146 @@ Connection: close\r\n\
         return Ok(());
     }
 
+    // Branch & Divergence Status (/exec/branch/status)
+    if method == "POST" && path == "/exec/branch/status" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let req_url = parsed.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+
+        let mut git = GitDriver::new(target_repo)
+            .with_branch(req_branch.to_string())
+            .with_site_id(req_site_id);
+        if req_url.is_some() {
+            git = git.with_remote(req_url);
+        }
+
+        match git.get_divergence() {
+            Ok(div) => {
+                let resp = json!({
+                    "success": true,
+                    "exportBranch": div.export_branch,
+                    "targetBranch": div.target_branch,
+                    "aheadCount": div.ahead_count,
+                    "behindCount": div.behind_count,
+                    "pendingFiles": div.pending_files,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Failed to get branch status: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Pull / Rebase Export Branch (/exec/rebase)
+    if method == "POST" && path == "/exec/rebase" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+
+        let git = GitDriver::new(target_repo)
+            .with_branch(req_branch.to_string())
+            .with_site_id(req_site_id);
+
+        match git.rebase_export_branch() {
+            Ok(outcome) => {
+                let status_code = if outcome.has_conflicts { 409 } else { 200 };
+                let resp = json!({
+                    "success": outcome.success,
+                    "hasConflicts": outcome.has_conflicts,
+                    "conflictingFiles": outcome.conflicting_files,
+                    "message": outcome.message,
+                });
+                send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Rebase failed: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Continue Rebase (/exec/rebase/continue)
+    if method == "POST" && path == "/exec/rebase/continue" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+        let git = GitDriver::new(target_repo);
+
+        match git.rebase_continue() {
+            Ok(outcome) => {
+                let status_code = if outcome.has_conflicts { 409 } else { 200 };
+                let resp = json!({
+                    "success": outcome.success,
+                    "hasConflicts": outcome.has_conflicts,
+                    "conflictingFiles": outcome.conflicting_files,
+                    "message": outcome.message,
+                });
+                send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Rebase continue failed: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Abort Rebase (/exec/rebase/abort)
+    if method == "POST" && path == "/exec/rebase/abort" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+        let git = GitDriver::new(target_repo);
+
+        match git.rebase_abort() {
+            Ok(_) => {
+                let resp = json!({
+                    "success": true,
+                    "message": "Rebase successfully aborted and reset to pre-rebase HEAD.",
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Rebase abort failed: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
     // 3. Execute Release (Export D1 + Git Commit, Tag, Push)
     if method == "POST" && path == "/exec/release" {
         let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);

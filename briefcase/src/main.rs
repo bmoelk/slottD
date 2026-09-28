@@ -411,6 +411,7 @@ fn run_tui(
         is_dirty: false,
         dirty_files: vec![],
         unpushed_commits: 0,
+        divergence: None,
     });
     let mut last_status_check = std::time::Instant::now();
     let status_poll_interval = std::time::Duration::from_secs(2);
@@ -595,6 +596,21 @@ fn run_tui(
                             Span::styled("✅ Clean", Style::default().fg(Color::LightGreen))
                         },
                         Span::raw(format!(" (Branch: {})", git_status.branch)),
+                        if let Some(ref div) = git_status.divergence {
+                            if div.ahead_count > 0 || div.behind_count > 0 {
+                                Span::styled(
+                                    format!(" | ⚡ {} (+{} to push, -{} behind)", div.export_branch, div.ahead_count, div.behind_count),
+                                    Style::default().fg(Color::LightYellow),
+                                )
+                            } else {
+                                Span::styled(
+                                    format!(" | 🌿 {}", div.export_branch),
+                                    Style::default().fg(Color::DarkGray),
+                                )
+                            }
+                        } else {
+                            Span::raw("")
+                        },
                         if is_monorepo {
                             Span::styled(" | 📁 Monorepo Scoped", Style::default().fg(Color::Magenta))
                         } else {
@@ -692,10 +708,23 @@ fn run_tui(
                         }
                         LogTab::Git => {
                             let mut lines = Vec::new();
-                            lines.push(format!(
-                                "🌿 Branch: {}  |  Remote: {}  |  Unpushed: {} commit(s)",
-                                git_status.branch, git_status.remote, git_status.unpushed_commits
-                            ));
+                            if let Some(ref div) = git_status.divergence {
+                                lines.push(format!(
+                                    "🌿 Branch: {}  |  Export Branch: {} (+{} to push, -{} behind)  |  Remote: {}",
+                                    git_status.branch, div.export_branch, div.ahead_count, div.behind_count, git_status.remote
+                                ));
+                                if !div.pending_files.is_empty() {
+                                    lines.push(format!("📦 Pending file(s) to push to main CMS ({}):", div.pending_files.len()));
+                                    for f in &div.pending_files {
+                                        lines.push(format!("   + {}", f));
+                                    }
+                                }
+                            } else {
+                                lines.push(format!(
+                                    "🌿 Branch: {}  |  Remote: {}  |  Unpushed: {} commit(s)",
+                                    git_status.branch, git_status.remote, git_status.unpushed_commits
+                                ));
+                            }
                             if git_status.is_dirty {
                                 lines.push(format!(
                                     "⚠️ Working tree has {} uncommitted change(s):",
