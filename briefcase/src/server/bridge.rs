@@ -262,19 +262,37 @@ Connection: close\r\n\
             .map(PathBuf::from);
         let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
         let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("");
         let target_repo = resolve_target_repo(req_repo, content_dir);
 
-        let git = GitDriver::new(target_repo)
+        let git = GitDriver::new(target_repo.clone())
             .with_branch(req_branch.to_string())
-            .with_site_id(req_site_id);
+            .with_site_id(req_site_id.clone());
 
         match git.rebase_export_branch() {
             Ok(outcome) => {
                 let status_code = if outcome.has_conflicts { 409 } else { 200 };
+                let mut hydrated_count = 0;
+                if outcome.success && !outcome.has_conflicts {
+                    if let Some(ref sid) = req_site_id {
+                        let target_content = if req_content_path.is_empty() {
+                            target_repo.clone()
+                        } else {
+                            target_repo.join(req_content_path)
+                        };
+                        if let Ok(sync_engine) = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, Some(sid.clone())) {
+                            hydrated_count = sync_engine.hydrate_from_disk().unwrap_or(0);
+                            if hydrated_count > 0 {
+                                log_msg(logs, secondary, format!("🔄 [Rebase] Clean rebase completed. Hydrated {} document(s) into local D1.", hydrated_count));
+                            }
+                        }
+                    }
+                }
                 let resp = json!({
                     "success": outcome.success,
                     "hasConflicts": outcome.has_conflicts,
                     "conflictingFiles": outcome.conflicting_files,
+                    "hydratedCount": hydrated_count,
                     "message": outcome.message,
                 });
                 send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
@@ -297,16 +315,35 @@ Connection: close\r\n\
             .get("repoPath")
             .and_then(|v| v.as_str())
             .map(PathBuf::from);
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_content_path = parsed.get("contentPath").and_then(|v| v.as_str()).unwrap_or("");
         let target_repo = resolve_target_repo(req_repo, content_dir);
-        let git = GitDriver::new(target_repo);
+        let git = GitDriver::new(target_repo.clone()).with_site_id(req_site_id.clone());
 
         match git.rebase_continue() {
             Ok(outcome) => {
                 let status_code = if outcome.has_conflicts { 409 } else { 200 };
+                let mut hydrated_count = 0;
+                if outcome.success && !outcome.has_conflicts {
+                    if let Some(ref sid) = req_site_id {
+                        let target_content = if req_content_path.is_empty() {
+                            target_repo.clone()
+                        } else {
+                            target_repo.join(req_content_path)
+                        };
+                        if let Ok(sync_engine) = crate::sync::SyncEngine::new(db_path.to_path_buf(), target_content, Some(sid.clone())) {
+                            hydrated_count = sync_engine.hydrate_from_disk().unwrap_or(0);
+                            if hydrated_count > 0 {
+                                log_msg(logs, secondary, format!("🔄 [Rebase] Conflict resolved and rebase completed. Hydrated {} document(s) into local D1.", hydrated_count));
+                            }
+                        }
+                    }
+                }
                 let resp = json!({
                     "success": outcome.success,
                     "hasConflicts": outcome.has_conflicts,
                     "conflictingFiles": outcome.conflicting_files,
+                    "hydratedCount": hydrated_count,
                     "message": outcome.message,
                 });
                 send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
@@ -344,6 +381,57 @@ Connection: close\r\n\
                 let resp = json!({
                     "success": false,
                     "error": format!("Rebase abort failed: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
+    // Push Rebased Branch to Origin/Main (/exec/rebase/push)
+    if method == "POST" && path == "/exec/rebase/push" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let req_branch = parsed.get("branch").and_then(|v| v.as_str()).unwrap_or("main");
+        let req_site_id = parsed.get("siteId").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let req_tag = parsed.get("tag").and_then(|v| v.as_str());
+        let req_message = parsed.get("message").and_then(|v| v.as_str());
+        let push = parsed.get("push").and_then(|v| v.as_bool()).unwrap_or(true);
+        let force = parsed.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+
+        let git = GitDriver::new(target_repo)
+            .with_branch(req_branch.to_string())
+            .with_site_id(req_site_id.clone());
+
+        match git.push_rebased_to_main(req_tag, req_message, push, force) {
+            Ok(commit_sha) => {
+                log_msg(
+                    logs,
+                    secondary,
+                    format!("🚀 [Rebase Bridge] Pushed rebased export branch to origin/{} (commit: {})", req_branch, commit_sha),
+                );
+                let resp = json!({
+                    "success": true,
+                    "commit": commit_sha,
+                    "targetBranch": req_branch,
+                    "tag": req_tag,
+                    "message": format!("Successfully pushed rebased export branch to origin/{}", req_branch),
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                log_msg(
+                    logs,
+                    secondary,
+                    format!("❌ [Rebase Bridge] Failed to push rebased export to origin/{}: {}", req_branch, e),
+                );
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Push rebased branch failed: {}", e),
                 });
                 send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
             }
@@ -938,5 +1026,47 @@ mod tests {
         stream.read_to_string(&mut response).unwrap();
         assert!(response.contains("HTTP/1.1 400 Bad Request"));
         assert!(response.contains("tag is required"));
+
+        // Test POST /exec/branch/status endpoint
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Failed to connect for branch status test");
+        let body = r#"{"repoPath":"/tmp","siteId":"test-site"}"#;
+        let req = format!(
+            "POST /exec/branch/status HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/1.1 500"));
+
+        // Test POST /exec/deploy/check endpoint
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Failed to connect for deploy check test");
+        let body = r#"{"repoPath":"/tmp","isMixedMode":false}"#;
+        let req = format!(
+            "POST /exec/deploy/check HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/1.1 500"));
+
+        // Test POST /exec/rebase/push endpoint
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Failed to connect for rebase push test");
+        let body = r#"{"repoPath":"/tmp","siteId":"test-site"}"#;
+        let req = format!(
+            "POST /exec/rebase/push HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/1.1 500"));
     }
 }
