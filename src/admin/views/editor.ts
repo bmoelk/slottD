@@ -526,11 +526,31 @@ export function renderEditorView(
           });
 
           if (res.ok) {
+            try { localStorage.removeItem(autosaveKey); } catch (e) {}
             if (isDraftSave) {
               window.location.reload();
             } else {
               window.location.href = '/admin/content/' + collection + itemSiteQuery;
             }
+          } else if (res.status === 409) {
+            const errText = await res.text();
+            let parsedErr = null;
+            try { parsedErr = JSON.parse(errText); } catch {}
+
+            const conflictBanner = document.getElementById('conflictPersistentBanner');
+            const conflictMsg = document.getElementById('conflictBannerMessage');
+            if (conflictBanner) {
+              if (parsedErr && (parsedErr.message || parsedErr.error)) {
+                conflictMsg.textContent = parsedErr.message || parsedErr.error;
+              }
+              conflictBanner.style.display = 'block';
+              conflictBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } else {
+              alert('409 Conflict: Upstream changes were ingested from Git while editing. Your modifications have been preserved as a working draft.');
+            }
+            if (publishBtn) { publishBtn.innerText = hasDraft ? '🚀 Promote Draft to Live' : '💾 Save'; publishBtn.disabled = false; }
+            if (saveDraftBtn) { saveDraftBtn.innerText = '💾 Save as Draft'; window.updateDraftButtonState(); }
+            return;
           } else {
             const errText = await res.text();
             let parsedErr = null;
@@ -1163,6 +1183,102 @@ export function renderEditorView(
         alert('Upload error: ' + e.message);
       }
     };
+
+    // 6. Client-Side LocalStorage Autosave & Recovery
+    const autosaveKey = 'slottd_autosave_' + (activeSite || 'default') + '_' + collection + '_' + (docId || 'new');
+    let autosaveTimer = null;
+
+    function scheduleAutosave() {
+      if (showingLive) return;
+      clearTimeout(autosaveTimer);
+      autosaveTimer = setTimeout(function() {
+        try {
+          const currentVals = captureFormValues();
+          if (!currentVals) return;
+          const backupPayload = {
+            timestamp: Date.now(),
+            collection: collection,
+            docId: docId,
+            siteId: activeSite,
+            values: currentVals,
+          };
+          localStorage.setItem(autosaveKey, JSON.stringify(backupPayload));
+        } catch (e) {}
+      }, 1000);
+    }
+
+    setInterval(scheduleAutosave, 10000);
+
+    if (editorForm) {
+      editorForm.addEventListener('input', scheduleAutosave);
+      editorForm.addEventListener('change', scheduleAutosave);
+      editorForm.addEventListener('trix-change', scheduleAutosave);
+    }
+
+    try {
+      const rawBackup = localStorage.getItem(autosaveKey);
+      if (rawBackup) {
+        const backup = JSON.parse(rawBackup);
+        const ageSec = Math.round((Date.now() - (backup.timestamp || 0)) / 1000);
+        if (backup && backup.values && ageSec >= 2) {
+          const recBanner = document.getElementById('autosaveRecoveryBanner');
+          const recTime = document.getElementById('autosaveRecoveryTime');
+          const btnRestore = document.getElementById('btnRestoreAutosave');
+          const btnDiscard = document.getElementById('btnDiscardAutosave');
+
+          if (recBanner && recTime) {
+            const timeStr = new Date(backup.timestamp).toLocaleTimeString();
+            recTime.textContent = 'Detected recovery draft saved at ' + timeStr + ' (' + ageSec + 's ago).';
+            recBanner.style.display = 'block';
+
+            if (btnRestore) {
+              btnRestore.onclick = function() {
+                const vals = backup.values;
+                for (const k in vals) {
+                  const val = vals[k];
+                  const input = document.getElementById(k) || document.querySelector('[name="' + k + '"]');
+                  if (input) {
+                    input.value = typeof val === 'object' ? JSON.stringify(val, null, 2) : val;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  const hidden = document.getElementById(k + '_hidden');
+                  if (hidden) hidden.value = val;
+                  const md = document.getElementById(k + '_md_textarea');
+                  if (md) {
+                    md.value = String(val);
+                    md.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  const raw = document.getElementById(k + '_raw_textarea');
+                  if (raw) {
+                    raw.value = String(val);
+                    raw.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  if (pellEditors[k] && pellEditors[k].content) {
+                    pellEditors[k].content.innerHTML = String(val);
+                  }
+                  if (toastEditors[k]) {
+                    try { toastEditors[k].setMarkdown(String(val)); } catch (e) {}
+                  }
+                  const trix = document.querySelector('trix-editor[input="' + k + '_trix_input"]');
+                  if (trix && trix.editor) {
+                    try { trix.editor.loadHTML(String(val)); } catch (e) {}
+                  }
+                }
+                recBanner.style.display = 'none';
+                window.updateDraftButtonState();
+              };
+            }
+
+            if (btnDiscard) {
+              btnDiscard.onclick = function() {
+                try { localStorage.removeItem(autosaveKey); } catch (e) {}
+                recBanner.style.display = 'none';
+              };
+            }
+          }
+        }
+      }
+    } catch (e) {}
   `;
 
   return renderLayout(isNew ? `New ${collection}` : `Edit: ${doc.title || doc.slug || collection}`, 'content', user, html`
@@ -1182,6 +1298,52 @@ export function renderEditorView(
         <button type="button" id="publishBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; gap: 4px; ${hasDraft ? 'background: #059669; border-color: #10b981;' : ''}">
           ${hasDraft ? '🚀 Promote Draft to Live' : '💾 Save'}
         </button>
+      </div>
+    </div>
+
+    <!-- Persistent 409 Conflict Banner (No Auto-Redirects) -->
+    <div id="conflictPersistentBanner" style="display: none; background: #1c1308; border: 1px solid #d97706; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; box-shadow: 0 4px 16px rgba(217, 119, 6, 0.25);">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <span style="font-size: 22px; line-height: 1;">⚠️</span>
+          <div>
+            <div style="color: #fb923c; font-size: 14px; font-weight: 700;">Upstream Changes Detected (409 Conflict)</div>
+            <div id="conflictBannerMessage" style="font-size: 12px; color: #cbd5e1; margin-top: 2px;">
+              Upstream changes were ingested from Git while you were editing. Your modifications have been safely preserved as a working draft.
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" class="btn" style="background: #451a03; border: 1px solid #d97706; color: #fb923c; font-weight: 700; font-size: 12px; padding: 6px 14px; cursor: pointer;" onclick="if(typeof window.setEditorViewMode==='function')window.setEditorViewMode('draft');document.getElementById('conflictPersistentBanner').style.display='none';">
+            Open Working Draft ↗
+          </button>
+          <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px; cursor: pointer;" onclick="document.getElementById('conflictPersistentBanner').style.display='none';">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LocalStorage Autosave Recovery Banner -->
+    <div id="autosaveRecoveryBanner" style="display: none; background: #0c1a2e; border: 1px solid #2563eb; border-radius: 8px; padding: 12px 18px; margin-bottom: 20px; box-shadow: 0 4px 16px rgba(37, 99, 235, 0.2);">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;">
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <span style="font-size: 20px; line-height: 1;">💾</span>
+          <div>
+            <strong style="color: #60a5fa; font-size: 13px;">Unsaved Browser Recovery Backup Detected</strong>
+            <div id="autosaveRecoveryTime" style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+              An unsaved recovery draft was detected from your previous browser session.
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" id="btnRestoreAutosave" class="btn" style="background: #1d4ed8; border: 1px solid #3b82f6; color: #ffffff; font-weight: 600; font-size: 12px; padding: 5px 12px; cursor: pointer;">
+            Restore Unsaved Typing
+          </button>
+          <button type="button" id="btnDiscardAutosave" class="btn btn-secondary" style="font-size: 12px; padding: 5px 12px; cursor: pointer;">
+            Discard Backup
+          </button>
+        </div>
       </div>
     </div>
 

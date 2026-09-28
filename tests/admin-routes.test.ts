@@ -772,6 +772,58 @@ describe('SlottD Admin Router Deep Links', () => {
       expect(html).toContain('🖼️');
     });
 
+    it('renders editor view with LocalStorage autosave recovery banner and non-intrusive 409 persistent banner', async () => {
+      const mockDoc = {
+        id: 'first-post',
+        collection: 'posts',
+        title: 'First Post',
+        slug: 'first-post',
+        status: 'published',
+        data: JSON.stringify({ content: '# Hello World' }),
+        updated_at: 100,
+      };
+
+      const mockDb = {
+        prepare: vi.fn().mockReturnValue({
+          bind: vi.fn().mockReturnThis(),
+          all: vi.fn().mockResolvedValue({ results: [], meta: { changes: 0 } }),
+          raw: vi.fn().mockResolvedValue([]),
+          first: vi.fn().mockResolvedValue(null),
+          run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+        }),
+        selectFrom: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
+          selectAll: vi.fn().mockReturnThis(),
+          select: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnThis(),
+          executeTakeFirst: vi.fn().mockResolvedValue(mockDoc),
+          execute: vi.fn().mockResolvedValue([mockDoc]),
+        }),
+      };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/edit/first-post?collection=posts', {
+          headers: { host: 'localhost:8787' },
+        }),
+        { ...mockEnv, DB: mockDb }
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+
+      // Autosave & recovery elements
+      expect(html).toContain('id="autosaveRecoveryBanner"');
+      expect(html).toContain('id="btnRestoreAutosave"');
+      expect(html).toContain('id="btnDiscardAutosave"');
+      expect(html).toContain('slottd_autosave_');
+
+      // 409 Conflict persistent banner & non-intrusive recovery
+      expect(html).toContain('id="conflictPersistentBanner"');
+      expect(html).toContain('Upstream Changes Detected (409 Conflict)');
+      expect(html).toContain('Open Working Draft ↗');
+      expect(html).toContain('window.setEditorViewMode');
+      expect(html).toContain('localStorage.removeItem(autosaveKey)');
+    });
+
     it('serves /admin/vendor/marked.js with correct headers', async () => {
       const res = await app.fetch(
         new Request('http://localhost:8787/admin/vendor/marked.js', {
