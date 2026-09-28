@@ -1,4 +1,4 @@
-import { isSshUrl, type GitDriver, type GitDriverOptions, type GitReleaseResult } from './driver.js';
+import { isSshUrl, type GitDriver, type GitDriverOptions, type GitReleaseResult, type TagDetails } from './driver.js';
 import type { GitContentItem, SerializedGitFile } from './git-sync.js';
 
 export class NativeShellGitDriver implements GitDriver {
@@ -51,6 +51,37 @@ export class NativeShellGitDriver implements GitDriver {
     );
   }
 
+  async getTagDetails(tag: string): Promise<TagDetails | null> {
+    if (!tag) return null;
+    try {
+      const bridgeRes = await fetch(`${this.bridgeUrl}/exec/tag-details`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tag,
+          repoPath: this.repoPath,
+          url: this.url,
+          siteId: this.siteId,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (bridgeRes.ok) {
+        const json: any = await bridgeRes.json();
+        if (json.success && json.message && (json.commitSha || json.author || json.message !== `Release ${tag}`)) {
+          return {
+            tag,
+            commitSha: json.commitSha,
+            message: json.message,
+            author: json.author,
+            date: json.date,
+          };
+        }
+      }
+    } catch {}
+    return null;
+  }
+
   async loadTagContent(tag: string): Promise<GitContentItem[]> {
     if (!tag) {
       throw new Error('Tag name is required to load content.');
@@ -95,6 +126,8 @@ export class NativeShellGitDriver implements GitDriver {
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
+    force?: boolean;
+    useLocal?: boolean;
     author?: { name: string; email: string };
   }): Promise<GitReleaseResult> {
     let bridgeRes: Response;
@@ -110,6 +143,8 @@ export class NativeShellGitDriver implements GitDriver {
           tag: options.tag,
           message: options.message,
           push: options.push !== false,
+          force: options.force === true || options.useLocal === true,
+          useLocal: options.useLocal === true,
           siteId: this.siteId,
         }),
         signal: AbortSignal.timeout(30000),
@@ -132,6 +167,15 @@ export class NativeShellGitDriver implements GitDriver {
     }
 
     const errJson: any = await bridgeRes.json().catch(() => ({}));
+    if (bridgeRes.status === 409 || errJson.conflict) {
+      const conflictErr: any = new Error(errJson.message || 'Upstream conflict detected');
+      conflictErr.status = 409;
+      conflictErr.conflict = true;
+      conflictErr.conflictingFiles = errJson.conflictingFiles || [];
+      conflictErr.remoteCommits = errJson.remoteCommits;
+      throw conflictErr;
+    }
+
     throw new Error(
       errJson.error || errJson.message || `Git Bridge release failed with HTTP ${bridgeRes.status} ${bridgeRes.statusText}`
     );

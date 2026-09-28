@@ -1,7 +1,7 @@
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/web';
 import { Volume, createFsFromVolume } from 'memfs';
-import type { GitDriver, GitDriverOptions, GitReleaseResult } from './driver.js';
+import type { GitDriver, GitDriverOptions, GitReleaseResult, TagDetails } from './driver.js';
 import { normalizeGitUrl } from './driver.js';
 import type { GitContentItem, SerializedGitFile } from './git-sync.js';
 
@@ -53,6 +53,15 @@ export class IsomorphicGitDriver implements GitDriver {
       .filter((tag) => !tag.endsWith('^{}'))
       .sort()
       .reverse();
+  }
+
+  /**
+   * Retrieves tag details if supported by the driver.
+   * IsomorphicGitDriver operates without a full local checkout; returns null
+   * so callers fall back to D1 activity_log records.
+   */
+  async getTagDetails(tag: string): Promise<TagDetails | null> {
+    return null;
   }
 
   /**
@@ -160,6 +169,8 @@ export class IsomorphicGitDriver implements GitDriver {
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
+    force?: boolean;
+    useLocal?: boolean;
     author?: { name: string; email: string };
   }): Promise<GitReleaseResult> {
     if (!this.url) {

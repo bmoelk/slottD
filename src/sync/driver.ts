@@ -24,15 +24,26 @@ export interface GitReleaseResult {
   isMonorepo?: boolean;
 }
 
+export interface TagDetails {
+  tag: string;
+  commitSha?: string;
+  message: string;
+  author?: string;
+  date?: string;
+}
+
 export interface GitDriver {
   readonly engineName: string;
   listTags(): Promise<string[]>;
+  getTagDetails?(tag: string): Promise<TagDetails | null>;
   loadTagContent(tag: string): Promise<GitContentItem[]>;
   createRelease(options: {
     tag?: string;
     message: string;
     files: SerializedGitFile[];
     push?: boolean;
+    force?: boolean;
+    useLocal?: boolean;
     author?: { name: string; email: string };
   }): Promise<GitReleaseResult>;
 }

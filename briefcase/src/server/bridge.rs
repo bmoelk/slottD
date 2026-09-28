@@ -273,6 +273,9 @@ Connection: close\r\n\
             git = git.with_remote(req_url);
         }
 
+        let force = parsed.get("force").and_then(|v| v.as_bool()).unwrap_or(false)
+            || parsed.get("useLocal").and_then(|v| v.as_bool()).unwrap_or(false);
+
         let has_local_git = target_repo.join(".git").exists();
         let release_result = if has_local_git {
             log_msg(
@@ -280,7 +283,7 @@ Connection: close\r\n\
                 secondary,
                 format!("📂 [Git Bridge] Releasing directly in local repository: {:?}", target_repo),
             );
-            git.release_direct(db_path, &tag, &message, push)
+            git.release_direct(db_path, &tag, &message, push, force)
         } else {
             log_msg(
                 logs,
@@ -324,14 +327,18 @@ Connection: close\r\n\
                 return Ok(());
             }
             Err(e) => {
+                let err_str = e.to_string();
+                let is_conflict = err_str.contains("UPSTREAM_CONFLICT");
+                let status_code = if is_conflict { 409 } else { 500 };
                 let err_msg = format!("Failed to create release: {}", e);
                 log_msg(logs, secondary, format!("❌ [Git Bridge] {}", err_msg));
                 let resp = json!({
                     "success": false,
+                    "conflict": is_conflict,
                     "error": err_msg,
-                    "message": e.to_string(),
+                    "message": err_str,
                 });
-                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+                send_json_response(&mut stream, status_code, &resp.to_string(), cors_headers)?;
                 return Ok(());
             }
         }
@@ -490,6 +497,46 @@ Connection: close\r\n\
         return Ok(());
     }
 
+    // 8. Tag Details (/exec/tag-details)
+    if method == "POST" && path == "/exec/tag-details" {
+        let parsed: Value = serde_json::from_str(&body_str).unwrap_or(Value::Null);
+        let tag = parsed.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+        if tag.is_empty() {
+            let resp = json!({ "success": false, "error": "tag is required" });
+            send_json_response(&mut stream, 400, &resp.to_string(), cors_headers)?;
+            return Ok(());
+        }
+
+        let req_repo = parsed
+            .get("repoPath")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        let target_repo = resolve_target_repo(req_repo, content_dir);
+        let git = GitDriver::new(target_repo);
+
+        match git.get_tag_details(tag) {
+            Ok(details) => {
+                let resp = json!({
+                    "success": true,
+                    "tag": details.tag,
+                    "commitSha": details.commit_sha,
+                    "message": details.message,
+                    "author": details.author,
+                    "date": details.date,
+                });
+                send_json_response(&mut stream, 200, &resp.to_string(), cors_headers)?;
+            }
+            Err(e) => {
+                let resp = json!({
+                    "success": false,
+                    "error": format!("Failed to get tag details: {}", e),
+                });
+                send_json_response(&mut stream, 500, &resp.to_string(), cors_headers)?;
+            }
+        }
+        return Ok(());
+    }
+
     // 404 Not Found for unrecognized routes
     let resp = json!({ "error": "Endpoint not found on Git bridge" });
     send_json_response(&mut stream, 404, &resp.to_string(), cors_headers)?;
@@ -637,5 +684,20 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         assert!(response.contains("HTTP/1.1 200 OK") || response.contains("HTTP/1.1 500"));
+
+        // Test POST /exec/tag-details missing tag validation
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Failed to connect for tag-details test");
+        let body = r#"{"tag":""}"#;
+        let req = format!(
+            "POST /exec/tag-details HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("tag is required"));
     }
 }

@@ -588,14 +588,15 @@ itemsRouter.patch('/:collection/:id', async (c) => {
   // Sync view if new keys were introduced
   await syncCollectionView(db, collection, Object.keys(mergedData));
 
+  const wasDraft = Boolean(existing.draft_status && existing.draft_status !== 'none');
   await logActivity(db, {
     siteId,
     actor: user?.email || 'admin@localhost',
-    action: 'update',
+    action: wasDraft ? 'draft_promote' : 'update',
     collection,
     documentId: existing.id,
     documentTitle: updatedTitle,
-    details: JSON.stringify({ slug: updatedSlug, status: updatedStatus }),
+    details: JSON.stringify({ slug: updatedSlug, status: updatedStatus, promoted: wasDraft }),
   });
 
   safeWaitUntil(
@@ -665,6 +666,82 @@ itemsRouter.post('/:collection/:id/discard-draft', async (c) => {
   return c.json({
     success: true,
     message: `Working draft for '${existing.title || existing.slug}' discarded successfully`,
+  });
+});
+
+// 5.5. Promote Working Copy Draft into Live Published State
+itemsRouter.post('/:collection/:id/promote-draft', async (c) => {
+  const collection = c.req.param('collection');
+  const idOrSlug = c.req.param('id');
+  const siteId = c.req.query('site_id') || (c as any).get('siteId') || (await resolveSiteId(c));
+  const db = createDb(c.env.DB);
+
+  const existing = await db
+    .selectFrom('documents')
+    .where('site_id', '=', siteId)
+    .where('collection', '=', collection)
+    .where((eb: any) => eb.or([eb('id', '=', idOrSlug), eb('slug', '=', idOrSlug)]))
+    .selectAll()
+    .executeTakeFirst();
+
+  if (!existing) {
+    return c.json({ error: `Item '${idOrSlug}' not found` }, 404);
+  }
+
+  let existingData: Record<string, any> = {};
+  let draftData: Record<string, any> = {};
+  try {
+    existingData = typeof existing.data === 'string' ? JSON.parse(existing.data) : (existing.data || {});
+  } catch {}
+  try {
+    draftData = typeof existing.draft_data === 'string' ? JSON.parse(existing.draft_data) : (existing.draft_data || {});
+  } catch {}
+
+  const promotedData = { ...existingData, ...draftData };
+  const updatedTitle = draftData.title || existing.title;
+  const updatedSlug = draftData.slug || existing.slug;
+  const now = Date.now();
+
+  await db
+    .updateTable('documents')
+    .set({
+      title: updatedTitle,
+      slug: updatedSlug,
+      data: JSON.stringify(promotedData),
+      draft_data: null,
+      draft_status: 'none',
+      draft_updated_at: null,
+      updated_at: now,
+    })
+    .where('id', '=', existing.id)
+    .where('site_id', '=', siteId)
+    .execute();
+
+  await syncCollectionView(db, collection, Object.keys(promotedData));
+
+  const user = await getAuthenticatedUser(c);
+  await logActivity(db, {
+    siteId,
+    actor: user?.email || 'admin@localhost',
+    action: 'draft_promote',
+    collection,
+    documentId: existing.id,
+    documentTitle: updatedTitle,
+    details: JSON.stringify({ slug: updatedSlug, promoted: true }),
+  });
+
+  return c.json({
+    data: {
+      id: existing.id,
+      site_id: siteId,
+      collection,
+      slug: updatedSlug,
+      title: updatedTitle,
+      status: existing.status,
+      draft_status: 'none',
+      updated_at: now,
+      ...promotedData,
+    },
   });
 });
 
