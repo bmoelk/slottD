@@ -11,6 +11,8 @@ export interface SiteRenameResult {
 
 export interface SiteInfo {
   site_id: string;
+  mode?: 'briefcase' | 'mixed' | string;
+  cloud_cms_url?: string;
   git_remote_url?: string;
   git_branch?: string;
   content_path?: string;
@@ -147,6 +149,8 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
         sitesMap.set(row.site_id, { site_id: row.site_id, updated_at: row.updated_at });
       }
       const entry = sitesMap.get(row.site_id)!;
+      if (row.key === 'mode' || row.key === 'site_mode') entry.mode = row.value;
+      if (row.key === 'cloud_cms_url' || row.key === 'cms_url') entry.cloud_cms_url = row.value;
       if (row.key === 'git_remote_url') entry.git_remote_url = row.value;
       if (row.key === 'git_branch') entry.git_branch = row.value;
       if (row.key === 'content_path') entry.content_path = row.value;
@@ -174,17 +178,24 @@ export async function listSites(db: Kysely<Database>): Promise<SiteInfo[]> {
     }
   } catch {}
 
-  return Array.from(sitesMap.values()).map((s) => ({
-    site_id: s.site_id!,
-    git_remote_url: s.git_remote_url,
-    git_branch: s.git_branch || 'main',
-    content_path: s.content_path ?? '',
-    repo_path: s.repo_path,
-    deploy_hook: s.deploy_hook,
-    has_token: !!s.has_token,
-    favicon: s.favicon,
-    updated_at: s.updated_at || Date.now(),
-  }));
+  return Array.from(sitesMap.values()).map((s) => {
+    const rawMode = (s.mode || (s.site_id === 'brainendeavor.com' ? 'mixed' : 'briefcase')).toLowerCase();
+    const mode = rawMode.includes('mixed') ? 'mixed' : 'briefcase';
+    const cloud_cms_url = s.cloud_cms_url || (mode === 'mixed' ? `https://cms.${s.site_id}` : undefined);
+    return {
+      site_id: s.site_id!,
+      mode,
+      cloud_cms_url,
+      git_remote_url: s.git_remote_url,
+      git_branch: s.git_branch || 'main',
+      content_path: s.content_path ?? '',
+      repo_path: s.repo_path,
+      deploy_hook: s.deploy_hook,
+      has_token: !!s.has_token,
+      favicon: s.favicon,
+      updated_at: s.updated_at || Date.now(),
+    };
+  });
 }
 
 /**

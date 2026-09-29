@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import app from '../src/index.js';
 import { resolveSiteId, normalizeSiteId, SiteResolutionError } from '../src/auth/site.js';
 import { renameSite, listSites, registerSite } from '../src/admin/sites.js';
 import { hydrateFromGit } from '../src/sync/git-sync.js';
 import { createDb } from '../src/db/client.js';
+import * as driverModule from '../src/sync/driver.js';
 
 describe('SlottD Multi-Site Architecture & Tenancy', () => {
   describe('Site ID Normalization & Resolution Priority', () => {
@@ -437,6 +438,20 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
   });
 
   describe('Admin Studio Multi-Site Navigation & Views', () => {
+    let driverSpy: any;
+    beforeEach(() => {
+      driverSpy = vi.spyOn(driverModule, 'getGitDriver').mockResolvedValue({
+        engineName: 'MockGitDriver',
+        listTags: vi.fn().mockResolvedValue(['v1.0.0']),
+        loadTagContent: vi.fn().mockResolvedValue([]),
+        createRelease: vi.fn().mockResolvedValue({ commitSha: 'mock-sha', tagCreated: true, message: 'ok', pushed: false }),
+      } as any);
+    });
+
+    afterEach(() => {
+      driverSpy?.mockRestore();
+    });
+
     const mockEnv: any = {
       DB: {
         prepare: vi.fn().mockReturnValue({
@@ -471,8 +486,128 @@ describe('SlottD Multi-Site Architecture & Tenancy', () => {
       expect(html).toContain('https://alpha.dev/favicon.svg');
       expect(html).toContain('Git Remote:');
       expect(html).toContain('Local Clone Path:');
+      expect(html).toContain('Operating Mode:');
+      expect(html).toContain('Briefcase Only');
+      expect(html).toContain('Pull Content');
       expect(html).toContain('Atomic Domain Rename');
       expect(html).toContain('Delete / Unregister Site');
+    });
+
+    it('clearly displays site cards in briefcase only and mixed modes, retaining Pull Content action for both', async () => {
+      const customEnv: any = {
+        DB: {
+          prepare: vi.fn().mockImplementation((sql: string) => {
+            return {
+              bind: vi.fn().mockReturnThis(),
+              all: vi.fn().mockImplementation(async () => {
+                if (sql.includes('system_site_settings')) {
+                  return {
+                    results: [
+                      { site_id: 'local-only.dev', key: 'mode', value: 'briefcase', updated_at: 1000 },
+                      { site_id: 'local-only.dev', key: 'git_remote_url', value: 'git@github.com:org/local.git', updated_at: 1000 },
+                      { site_id: 'hybrid-cms.dev', key: 'mode', value: 'mixed', updated_at: 2000 },
+                      { site_id: 'hybrid-cms.dev', key: 'git_remote_url', value: 'git@github.com:org/hybrid.git', updated_at: 2000 },
+                    ],
+                    meta: { changes: 0 },
+                  };
+                }
+                return { results: [], meta: { changes: 0 } };
+              }),
+              raw: vi.fn().mockResolvedValue([]),
+              first: vi.fn().mockResolvedValue(null),
+              run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+            };
+          }),
+        },
+        ENVIRONMENT: 'development',
+      };
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/sites?site=local-only.dev', {
+          headers: { host: 'localhost:8787' },
+        }),
+        customEnv
+      );
+
+      expect(res.status).toBe(200);
+      const html = await res.text();
+
+      // Verify mode badges on site cards
+      expect(html).toContain('🧳 Briefcase Only');
+      expect(html).toContain('🔀 Mixed');
+      expect(html).toContain('Operating Mode:');
+
+      // Verify Cloud CMS URL is displayed for mixed mode sites, defaulting to cms.<domain>
+      expect(html).toContain('Cloud CMS URL:');
+      expect(html).toContain('https://cms.hybrid-cms.dev');
+      expect(html).toContain('Open ↗');
+
+      // Verify "Pull Content" action is rendered for both modes (valid for multi-user briefcases and mixed mode)
+      const pullContentMatches = html.match(/⬇ Pull Content/g);
+      expect(pullContentMatches).not.toBeNull();
+      expect(pullContentMatches!.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('persists and defaults cloud_cms_url for mixed mode sites during registration and updates', async () => {
+      const executedInserts: any[] = [];
+      const mockEnvWithCapture: any = {
+        DB: {
+          prepare: vi.fn().mockImplementation((sql: string) => {
+            let binds: any[] = [];
+            return {
+              bind: vi.fn().mockImplementation((...args: any[]) => {
+                binds = args;
+                return {
+                  all: vi.fn().mockImplementation(async () => {
+                    executedInserts.push({ sql, binds });
+                    return { results: [], meta: { changes: 1 } };
+                  }),
+                  first: vi.fn().mockResolvedValue(null),
+                  run: vi.fn().mockImplementation(async () => {
+                    executedInserts.push({ sql, binds });
+                    return { success: true, meta: { changes: 1 } };
+                  }),
+                };
+              }),
+              all: vi.fn().mockImplementation(async () => {
+                executedInserts.push({ sql, binds: [] });
+                return { results: [], meta: { changes: 1 } };
+              }),
+              first: vi.fn().mockResolvedValue(null),
+              run: vi.fn().mockImplementation(async () => {
+                executedInserts.push({ sql, binds: [] });
+                return { success: true, meta: { changes: 1 } };
+              }),
+            };
+          }),
+        },
+        ENVIRONMENT: 'development',
+      };
+
+      const formData = new FormData();
+      formData.append('siteId', 'newmix.dev');
+      formData.append('mode', 'mixed');
+      // Intentionally omit cloud_cms_url so it defaults to https://cms.newmix.dev
+
+      const res = await app.fetch(
+        new Request('http://localhost:8787/admin/sites/create', {
+          method: 'POST',
+          body: formData,
+        }),
+        mockEnvWithCapture
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/admin/sites?created=1');
+
+      // Verify cloud_cms_url was defaulted to https://cms.newmix.dev and mode was set to mixed
+      const cloudCmsInsert = executedInserts.find((i) => i.sql.includes('cloud_cms_url'));
+      expect(cloudCmsInsert).toBeDefined();
+      expect(cloudCmsInsert.sql).toContain('https://cms.newmix.dev');
+
+      const modeInsert = executedInserts.find((i) => i.sql.includes('mode'));
+      expect(modeInsert).toBeDefined();
+      expect(modeInsert.sql).toContain('mixed');
     });
 
     it('renders Git view with segmented tabs, inline fetch tags button, and execute import button', async () => {

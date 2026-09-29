@@ -1,7 +1,22 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import app from '../src/index.js';
+import * as driverModule from '../src/sync/driver.js';
 
 describe('SlottD Admin Router Deep Links', () => {
+  let driverSpy: any;
+  beforeEach(() => {
+    driverSpy = vi.spyOn(driverModule, 'getGitDriver').mockResolvedValue({
+      engineName: 'MockGitDriver',
+      listTags: vi.fn().mockResolvedValue(['v1.0.0']),
+      loadTagContent: vi.fn().mockResolvedValue([]),
+      createRelease: vi.fn().mockResolvedValue({ commitSha: 'sha', tagCreated: true, message: 'ok', pushed: false }),
+    } as any);
+  });
+
+  afterEach(() => {
+    driverSpy?.mockRestore();
+  });
+
   const mockEnv: any = {
     DB: {
       prepare: vi.fn().mockReturnValue({

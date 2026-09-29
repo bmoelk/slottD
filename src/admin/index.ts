@@ -1165,7 +1165,8 @@ adminRouter.get('/git', async (c) => {
         siteId: activeSite,
       });
       engineName = driver.engineName;
-      tags = await driver.listTags();
+      const fetchedTags = await driver.listTags();
+      tags = Array.isArray(fetchedTags) ? fetchedTags : [];
     } catch (err: any) {
       console.warn('Failed to list git tags:', err.message);
     }
@@ -1927,7 +1928,7 @@ adminRouter.get('/sites', async (c) => {
           siteId: siteContext.activeSite,
         });
         const tags = await driver.listTags();
-        tagCount = tags.length;
+        tagCount = Array.isArray(tags) ? tags.length : 0;
       } catch {}
     }
   } catch {}
@@ -1988,13 +1989,23 @@ adminRouter.post('/sites/create', async (c) => {
 
   const db = createDb(c.env.DB);
   try {
+    const rawMode = ((body.mode as string) || 'briefcase').trim().toLowerCase();
+    const mode = rawMode.includes('mixed') ? 'mixed' : 'briefcase';
+    let cloudCmsUrl = ((body.cloud_cms_url as string) || '').trim();
+    if (mode === 'mixed' && !cloudCmsUrl) {
+      cloudCmsUrl = `https://cms.${siteId}`;
+    }
     const settings: Record<string, string> = {
+      mode,
       git_remote_url: ((body.git_remote_url as string) || '').trim(),
       git_branch: ((body.git_branch as string) || 'main').trim(),
       content_path: typeof body.content_path === 'string' ? body.content_path.trim() : '',
       repo_path: ((body.repo_path as string) || '').trim(),
       deploy_hook: ((body.deploy_hook as string) || '').trim(),
     };
+    if (cloudCmsUrl) {
+      settings.cloud_cms_url = cloudCmsUrl;
+    }
     const gitToken = ((body.git_token as string) || '').trim();
     if (gitToken) {
       const secret = c.env.JWT_SECRET || 'briefcase-local-secret';
@@ -2027,6 +2038,22 @@ adminRouter.post('/sites/update', async (c) => {
       repo_path: ((body.repo_path as string) || '').trim(),
       deploy_hook: ((body.deploy_hook as string) || '').trim(),
     };
+    if (typeof body.mode === 'string' && body.mode.trim()) {
+      const rawMode = body.mode.trim().toLowerCase();
+      settings.mode = rawMode.includes('mixed') ? 'mixed' : 'briefcase';
+    }
+    if (typeof body.cloud_cms_url === 'string') {
+      let cloudCmsUrl = body.cloud_cms_url.trim();
+      const currentMode = settings.mode || 'briefcase';
+      if (currentMode === 'mixed' && !cloudCmsUrl) {
+        cloudCmsUrl = `https://cms.${siteId}`;
+      }
+      if (cloudCmsUrl) {
+        settings.cloud_cms_url = cloudCmsUrl;
+      }
+    } else if (settings.mode === 'mixed') {
+      settings.cloud_cms_url = `https://cms.${siteId}`;
+    }
     if (typeof body.favicon === 'string' && body.favicon.trim()) {
       settings.favicon = body.favicon.trim();
     }

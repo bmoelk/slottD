@@ -1,10 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   synthesizeCommitFromActivities,
   synthesizeConventionalCommit,
 } from '../src/sync/git-sync.js';
 import type { ActivityLogRow } from '../src/types.js';
 import app from '../src/index.js';
+import * as driverModule from '../src/sync/driver.js';
 
 describe('Audit-Driven Conventional Commit Synthesis', () => {
   it('handles empty activity log gracefully', () => {
@@ -303,6 +304,20 @@ describe('Audit-Driven Conventional Commit Synthesis', () => {
 });
 
 describe('Git Tag Details Resolution & Admin View', () => {
+  let driverSpy: any;
+  beforeEach(() => {
+    driverSpy = vi.spyOn(driverModule, 'getGitDriver').mockResolvedValue({
+      engineName: 'MockGitDriver',
+      listTags: vi.fn().mockResolvedValue(['v1.2.0']),
+      loadTagContent: vi.fn().mockResolvedValue([]),
+      createRelease: vi.fn().mockResolvedValue({ commitSha: 'sha', tagCreated: true, message: 'ok', pushed: false }),
+    } as any);
+  });
+
+  afterEach(() => {
+    driverSpy?.mockRestore();
+  });
+
   it('GET /admin/git/tag-details requires tag parameter', async () => {
     const mockEnv: any = {
       DB: {
